@@ -1,0 +1,114 @@
+import numpy as np
+import pandas as pd
+from scipy.signal import find_peaks
+
+from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+
+
+class HitFrameLocalizationStage:
+    name = "hit_frame_localization"
+    input_keys = ["shuttle", "pose"]
+    output_keys = ["hits"]
+
+    TRAJECTORY_CHANGE_WEIGHT = 0.4
+    SPEED_PEAK_WEIGHT = 0.3
+    PROXIMITY_WEIGHT = 0.2
+    SWING_WEIGHT = 0.1
+
+    def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
+        shuttle_df = artifacts.get_parquet("shuttle")
+        if shuttle_df is None or len(shuttle_df) == 0:
+            return StageResult.from_error("Shuttle tracking data required")
+
+        pose_df = artifacts.get_parquet("pose")
+
+        trajectory_score = self._compute_trajectory_change(shuttle_df)
+        speed_score = self._compute_speed_peaks(shuttle_df)
+        proximity_score = self._compute_proximity(shuttle_df, pose_df) if pose_df is not None else np.zeros(len(shuttle_df))
+        swing_score = self._compute_swing_peaks(pose_df) if pose_df is not None else np.zeros(len(shuttle_df))
+
+        combined = (
+            self.TRAJECTORY_CHANGE_WEIGHT * trajectory_score +
+            self.SPEED_PEAK_WEIGHT * speed_score +
+            self.PROXIMITY_WEIGHT * proximity_score +
+            self.SWING_WEIGHT * swing_score
+        )
+
+        threshold = np.percentile(combined, 85)
+        hit_frames = np.where(combined > threshold)[0]
+
+        hits = []
+        for idx in hit_frames:
+            frame = int(shuttle_df.iloc[idx]["frame"])
+            hits.append({
+                "frame": frame,
+                "confidence": float(combined[idx]),
+            })
+
+        hits_data = pd.DataFrame(hits)
+        artifacts.set_parquet("hits", hits_data)
+
+        return StageResult.success(
+            artifacts={"hits": artifacts.path("hits")},
+            metadata={"hits": hits, "hit_count": len(hits), "frames_analyzed": len(shuttle_df)}
+        )
+
+    def _compute_trajectory_change(self, shuttle_df: pd.DataFrame) -> np.ndarray:
+        x = shuttle_df["x"].values
+        y = shuttle_df["y"].values
+        dx = np.diff(x, prepend=x[0])
+        dy = np.diff(y, prepend=y[0])
+        angle = np.arctan2(dy, dx)
+        angle_diff = np.abs(np.diff(angle, prepend=angle[0]))
+        score = angle_diff / (np.pi + 1e-6)
+        return score / (score.max() + 1e-6)
+
+    def _compute_speed_peaks(self, shuttle_df: pd.DataFrame) -> np.ndarray:
+        x = shuttle_df["x"].values
+        y = shuttle_df["y"].values
+        speed = np.sqrt(np.diff(x, prepend=x[0])**2 + np.diff(y, prepend=y[0])**2)
+        peaks, _ = find_peaks(speed, distance=5)
+        score = np.zeros(len(speed))
+        score[peaks] = speed[peaks]
+        return score / (score.max() + 1e-6)
+
+    def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame) -> np.ndarray:
+        score = np.zeros(len(shuttle_df))
+        shuttle_positions = shuttle_df[["x", "y"]].values
+
+        for player_id in pose_df["player_id"].unique():
+            player_poses = pose_df[pose_df["player_id"] == player_id]
+            for _, row in player_poses.iterrows():
+                frame_idx = int(row["frame"])
+                if frame_idx >= len(score):
+                    continue
+                kps = np.array(row["keypoints"])
+                if kps.ndim == 1:
+                    kps = np.array(kps.tolist())
+                if kps.shape == (17, 3):
+                    wrist = kps[9][:2] if kps[9][2] > 0.5 else kps[10][:2]
+                    shuttle_pos = shuttle_positions[min(frame_idx, len(shuttle_positions) - 1)]
+                    dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
+                    score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / 100.0))
+
+        return score / (score.max() + 1e-6)
+
+    def _compute_swing_peaks(self, pose_df: pd.DataFrame) -> np.ndarray:
+        max_frame = pose_df["frame"].max() + 1
+        score = np.zeros(max_frame)
+
+        for player_id in pose_df["player_id"].unique():
+            player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
+            if len(player_poses) < 3:
+                continue
+            prev_kps = None
+            for _, row in player_poses.iterrows():
+                kps = np.array(row["keypoints"])
+                if kps.ndim == 1:
+                    kps = np.array(kps.tolist())
+                if prev_kps is not None and kps.shape == (17, 3) and prev_kps.shape == (17, 3):
+                    arm_velocity = np.sqrt(np.sum((kps[9][:2] - prev_kps[9][:2])**2))
+                    score[row["frame"]] = arm_velocity
+                prev_kps = kps
+
+        return score / (score.max() + 1e-6)
