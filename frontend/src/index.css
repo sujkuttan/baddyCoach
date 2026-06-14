@@ -1,0 +1,108 @@
+@import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=DM+Sans:ital,opsz,wght@0,9..40,100..1000;1,9..40,100..1000&family=JetBrains+Mono:wght@400;500;600&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --color-court-dark: #0f1419;
+  --color-court-mid: #1a2028;
+  --color-court-surface: #232d38;
+  --color-court-line: #3d4f63;
+  --color-shuttle-lime: #c8ff00;
+  --color-shuttle-lime-dim: #9abf00;
+  --color-feather-green: #00e676;
+  --color-net-amber: #ffab00;
+  --color-error-red: #ff5252;
+  --color-smash-magenta: #e040fb;
+  --color-text-primary: #e8edf2;
+  --color-text-secondary: #8899aa;
+  --color-text-muted: #556677;
+  --font-display: 'Bebas Neue', sans-serif;
+  --font-body: 'DM Sans', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-body);
+  background-color: var(--color-court-dark);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Court line pattern background */
+.court-pattern {
+  background-image:
+    linear-gradient(rgba(61, 79, 99, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(61, 79, 99, 0.08) 1px, transparent 1px);
+  background-size: 40px 40px;
+}
+
+/* Broadcast-style corner brackets */
+.bracket-frame {
+  position: relative;
+}
+.bracket-frame::before,
+.bracket-frame::after {
+  content: '';
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border-color: var(--color-shuttle-lime);
+  border-style: solid;
+}
+.bracket-frame::before {
+  top: 0; left: 0;
+  border-width: 2px 0 0 2px;
+}
+.bracket-frame::after {
+  bottom: 0; right: 0;
+  border-width: 0 2px 2px 0;
+}
+
+/* Pulse animation for live status */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(200, 255, 0, 0.4); }
+  50% { opacity: 0.8; box-shadow: 0 0 20px 4px rgba(200, 255, 0, 0.15); }
+}
+.pulse-live {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Staggered entrance */
+@keyframes slide-up-fade {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-entrance {
+  animation: slide-up-fade 0.5s ease-out forwards;
+  opacity: 0;
+}
+
+/* Progress bar glow */
+@keyframes progress-glow {
+  0% { box-shadow: 0 0 5px rgba(200, 255, 0, 0.3); }
+  50% { box-shadow: 0 0 20px rgba(200, 255, 0, 0.5); }
+  100% { box-shadow: 0 0 5px rgba(200, 255, 0, 0.3); }
+}
+.progress-active {
+  animation: progress-glow 1.5s ease-in-out infinite;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--color-court-dark);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-court-line);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-muted);
+}
