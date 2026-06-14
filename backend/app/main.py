@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
+from app.api.websocket import ws_manager
+from app.storage.jobs import job_manager
 
 app = FastAPI(title="BMCA - Badminton Coaching Assistant", version="1.0.0")
 
@@ -13,3 +15,15 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+
+@app.websocket("/api/jobs/{job_id}/progress")
+async def job_progress_ws(websocket: WebSocket, job_id: str):
+    await ws_manager.connect(job_id, websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text('{"type": "pong"}')
+    except WebSocketDisconnect:
+        ws_manager.disconnect(job_id, websocket)
