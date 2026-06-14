@@ -146,3 +146,43 @@ def test_tactical_analytics_shot_distribution(tmp_job_dir):
 
     assert result.status == "success"
     assert "shot_distribution" in result.metadata
+
+
+from app.pipeline.analytics.technical import TechnicalAnalyticsStage
+
+
+def test_technical_analytics_evaluates_shots(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    shots_df = pd.DataFrame({
+        "frame": [0, 10, 20],
+        "player_id": ["player_1", "player_1", "player_1"],
+        "stroke_type": ["smash", "clear", "net_shot"],
+        "stroke_confidence": [0.9, 0.85, 0.88],
+    })
+    store.set_parquet("shots", shots_df)
+
+    pose_df = pd.DataFrame({
+        "frame": [0, 10, 20],
+        "player_id": ["player_1", "player_1", "player_1"],
+        "keypoints": [np.random.rand(17, 3).tolist() for _ in range(3)],
+    })
+    store.set_parquet("pose", pose_df)
+
+    shuttle_df = pd.DataFrame({
+        "frame": [0, 10, 20],
+        "x": [2.5, 1.0, 4.0],
+        "y": [3.0, 10.0, 7.0],
+        "confidence": [0.95, 0.92, 0.88],
+    })
+    store.set_parquet("shuttle", shuttle_df)
+
+    court_data = {"court_length": 13.4, "court_width": 5.18}
+    store.set("court", court_data)
+
+    stage = TechnicalAnalyticsStage()
+    result = stage.run(store, config)
+
+    assert result.status == "success"
+    assert "technical_assessment" in result.metadata
