@@ -73,3 +73,43 @@ def test_footwork_metrics_computed(tmp_job_dir):
     assert result.status == "success"
     assert "distance_covered" in result.metadata
     assert "recovery_times" in result.metadata
+
+
+from app.pipeline.analytics.fitness import FitnessAnalyticsStage
+
+
+def test_fitness_metrics_computed(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    footwork_data = {
+        "player_1": {
+            "distance_covered": 500.0,
+            "recovery_times": [0.8, 1.2, 0.9, 1.5, 1.1],
+            "avg_recovery": 1.1,
+        }
+    }
+    store.set("footwork_analytics", footwork_data)
+
+    rallies_df = pd.DataFrame({
+        "rally_id": [1, 2, 3],
+        "start_frame": [0, 50, 100],
+        "end_frame": [45, 95, 145],
+        "shot_count": [5, 6, 4],
+    })
+    store.set_parquet("rallies", rallies_df)
+
+    shots_df = pd.DataFrame({
+        "frame": [0, 10, 20, 55, 65, 105, 115],
+        "player_id": ["player_1"] * 7,
+        "stroke_type": ["serve", "clear", "drop", "smash", "clear", "net_shot", "drop"],
+        "stroke_confidence": [0.9] * 7,
+    })
+    store.set_parquet("shots", shots_df)
+
+    stage = FitnessAnalyticsStage()
+    result = stage.run(store, config)
+
+    assert result.status == "success"
+    assert "rally_intensity" in result.metadata
+    assert "fatigue_trend" in result.metadata
