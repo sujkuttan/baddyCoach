@@ -1,0 +1,41 @@
+rules:
+  - name: smash_efficiency
+    condition: smash_win_rate < 0.3
+    min_shots: 10
+    recommendation: "Your smash conversion rate is low. Focus on placement over power — aim for the sidelines and body rather than simply hitting hard."
+    category: weakness
+    drill: "Practice targeted smashes to designated court zones with a feeder."
+
+  - name: recovery_speed
+    condition: avg_recovery > 1.2
+    min_rallies: 5
+    recommendation: "Recovery after shots is slower than optimal. Work on split-step timing and base positioning."
+    category: weakness
+    drill: "Shadow footwork drills: return to base after each shot call, 3 sets of 20."
+
+  - name: shot_variety
+    condition: max_shot_pct > 0.5
+    min_shots: 20
+    recommendation: "Shot selection is predictable. Vary your attack to keep opponents off balance."
+    category: weakness
+    drill: "Rally drills with constraint: alternate clear/drop/net each shot."
+
+  - name: fatigue_management
+    condition: fatigue_trend == declining
+    recommendation: "Performance declines in later rallies. Improve match fitness and manage energy in early games."
+    category: weakness
+    drill: "Interval training: 12x (30s high intensity + 30s rest) to build rally endurance."
+
+  - name: net_play_strength
+    condition: net_shot_pct > 0.2
+    min_shots: 10
+    recommendation: "Strong net play presence. Use this to set up attacking opportunities."
+    category: strength
+    drill: "Maintain net dominance with variation: net kill, net lift, net spin."
+
+  - name: clear_usage
+    condition: clear_pct > 0.35
+    min_shots: 10
+    recommendation: "Heavy use of clears — effective for defense but consider mixing with drops and smashes."
+    category: neutral
+    drill: "Clear-drop combination drills from rear court."
