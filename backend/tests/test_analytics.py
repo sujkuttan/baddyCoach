@@ -113,3 +113,36 @@ def test_fitness_metrics_computed(tmp_job_dir):
     assert result.status == "success"
     assert "rally_intensity" in result.metadata
     assert "fatigue_trend" in result.metadata
+
+
+from app.pipeline.analytics.tactical import TacticalAnalyticsStage
+
+
+def test_tactical_analytics_shot_distribution(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    shots_df = pd.DataFrame({
+        "frame": list(range(20)),
+        "player_id": ["player_1"] * 20,
+        "stroke_type": ["clear"] * 8 + ["smash"] * 5 + ["drop"] * 4 + ["net_shot"] * 3,
+        "stroke_confidence": [0.9] * 20,
+    })
+    store.set_parquet("shots", shots_df)
+
+    court_data = {"court_length": 13.4, "court_width": 5.18}
+    store.set("court", court_data)
+
+    shuttle_df = pd.DataFrame({
+        "frame": list(range(20)),
+        "x": np.random.uniform(0, 5.18, 20),
+        "y": np.random.uniform(0, 13.4, 20),
+        "confidence": [0.95] * 20,
+    })
+    store.set_parquet("shuttle", shuttle_df)
+
+    stage = TacticalAnalyticsStage()
+    result = stage.run(store, config)
+
+    assert result.status == "success"
+    assert "shot_distribution" in result.metadata
