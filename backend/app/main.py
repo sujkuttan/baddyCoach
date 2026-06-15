@@ -1,3 +1,4 @@
+import asyncio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes import router
@@ -15,6 +16,11 @@ app.add_middleware(
 )
 
 app.include_router(router)
+
+
+@app.on_event("startup")
+async def startup():
+    ws_manager.set_main_loop(asyncio.get_running_loop())
 
 
 @app.websocket("/api/jobs/{job_id}/progress")
