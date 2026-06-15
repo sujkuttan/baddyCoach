@@ -3,6 +3,7 @@ import { getReport } from '../utils/api';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { ShotChart } from '../components/ShotChart';
 import { CoachPanel } from '../components/CoachPanel';
+import { CourtHeatmap } from '../components/CourtHeatmap';
 
 interface ReportViewProps {
   jobId: string;
@@ -167,6 +168,23 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
                 </div>
                 <div className="p-5">
                   <ShotChart distribution={shotDistribution} />
+                </div>
+              </div>
+            </div>
+
+            {/* Coach Recommendations - full width */}
+            <div className="lg:col-span-12">
+              <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
+                <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
+                  <h2 className="font-display text-lg text-text-primary tracking-wide">COURT HEATMAP</h2>
+                  <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
+                </div>
+                <div className="p-4">
+                  <CourtHeatmap
+                    zoneTransitions={report.court_analytics?.zone_transitions || []}
+                    courtDimensions={report.court_analytics?.court_dimensions || { length: 13.4, width: 5.18 }}
+                    selectedPlayer={selectedPlayer}
+                  />
                 </div>
               </div>
             </div>
