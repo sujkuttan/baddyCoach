@@ -8,7 +8,8 @@ import { FatigueTrendChart } from '../components/FatigueTrendChart';
 import { FitnessStats } from '../components/FitnessStats';
 
 interface ReportViewProps {
-  jobId: string;
+  jobId: string | null;
+  reportData?: any;
   onBack: () => void;
 }
 
@@ -28,19 +29,30 @@ function playerLabel(id: string): string {
   return id.replace('player_', 'P');
 }
 
-export function ReportView({ jobId, onBack }: ReportViewProps) {
+export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical' | 'fitness'>('overview');
   const [selectedPlayer, setSelectedPlayer] = useState<string>('');
 
   useEffect(() => {
+    if (reportData) {
+      setReport(reportData);
+      const players = getPlayers(reportData);
+      if (players.length > 0) setSelectedPlayer(players[0]);
+      setLoading(false);
+      return;
+    }
+    if (!jobId) {
+      setLoading(false);
+      return;
+    }
     getReport(jobId).then(data => {
       setReport(data);
       const players = getPlayers(data);
       if (players.length > 0) setSelectedPlayer(players[0]);
     }).catch(console.error).finally(() => setLoading(false));
-  }, [jobId]);
+  }, [jobId, reportData]);
 
   const players = useMemo(() => report ? getPlayers(report) : [], [report]);
 
@@ -164,10 +176,26 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
               <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
                 <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                   <h2 className="font-display text-lg text-text-primary tracking-wide">MATCH FOOTAGE</h2>
-                  <span className="font-mono text-[10px] text-text-muted">{rallies.length} RALLIES</span>
+                  {jobId ? (
+                    <span className="font-mono text-[10px] text-text-muted">{rallies.length} RALLIES</span>
+                  ) : (
+                    <span className="font-mono text-[10px] text-shuttle-lime">IMPORTED REPORT</span>
+                  )}
                 </div>
                 <div className="p-4">
-                  <VideoPlayer jobId={jobId} rallies={rallies} fps={30} />
+                  {jobId ? (
+                    <VideoPlayer jobId={jobId} rallies={rallies} fps={30} />
+                  ) : (
+                    <div className="flex items-center justify-center h-48 rounded-xl bg-court-dark/40 border border-court-line/10">
+                      <div className="text-center">
+                        <svg className="w-10 h-10 mx-auto mb-3 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        <p className="font-mono text-xs text-text-muted">Report loaded from Colab</p>
+                        <p className="font-mono text-[10px] text-text-muted mt-1">No video available</p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

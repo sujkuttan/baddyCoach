@@ -3,6 +3,7 @@ import { uploadVideo, processVideo, getJob } from '../utils/api';
 
 interface UploadViewProps {
   onJobCreated: (jobId: string) => void;
+  onLoadReport?: (report: any) => void;
 }
 
 interface Job {
@@ -13,7 +14,7 @@ interface Job {
   stages_completed?: string[];
 }
 
-export function UploadView({ onJobCreated }: UploadViewProps) {
+export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
@@ -222,6 +223,39 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
                 </button>
               ))}
             </div>
+          </div>
+        )}
+
+        {/* Load Report */}
+        {onLoadReport && (
+          <div className="mt-8 text-center">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="flex-1 h-px bg-court-line/20" />
+              <span className="font-mono text-[10px] text-text-muted tracking-widest">OR</span>
+              <div className="flex-1 h-px bg-court-line/20" />
+            </div>
+            <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
+              <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span className="font-mono text-xs text-text-secondary">Load a report from Colab</span>
+              <input
+                type="file"
+                accept=".json"
+                className="hidden"
+                onChange={async (e) => {
+                  const f = e.target.files?.[0];
+                  if (!f || !onLoadReport) return;
+                  try {
+                    const text = await f.text();
+                    const report = JSON.parse(text);
+                    onLoadReport(report);
+                  } catch {
+                    setError('Invalid report file');
+                  }
+                }}
+              />
+            </label>
           </div>
         )}
 

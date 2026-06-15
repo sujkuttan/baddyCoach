@@ -11,6 +11,7 @@ const STORAGE_KEY = 'baddycoach_job_id';
 function App() {
   const [state, setState] = useState<AppState>('upload');
   const [jobId, setJobId] = useState<string | null>(null);
+  const [loadedReport, setLoadedReport] = useState<any>(null);
   const [restoring, setRestoring] = useState(true);
 
   useEffect(() => {
@@ -41,9 +42,16 @@ function App() {
     setState('processing');
   };
 
+  const handleLoadReport = (report: any) => {
+    setLoadedReport(report);
+    setJobId(null);
+    setState('report');
+  };
+
   const handleBack = () => {
     localStorage.removeItem(STORAGE_KEY);
     setJobId(null);
+    setLoadedReport(null);
     setState('upload');
   };
 
@@ -58,13 +66,13 @@ function App() {
   return (
     <div className="min-h-screen bg-court-dark">
       {state === 'upload' && (
-        <UploadView onJobCreated={handleJobCreated} />
+        <UploadView onJobCreated={handleJobCreated} onLoadReport={handleLoadReport} />
       )}
       {state === 'processing' && jobId && (
         <ProcessingView jobId={jobId} onComplete={() => setState('report')} />
       )}
-      {state === 'report' && jobId && (
-        <ReportView jobId={jobId} onBack={handleBack} />
+      {state === 'report' && (
+        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} />
       )}
     </div>
   );
