@@ -8,6 +8,11 @@ export async function uploadVideo(file: File): Promise<{ job_id: string }> {
   return res.json();
 }
 
+export async function processVideo(jobId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/process`, { method: 'POST' });
+  if (!res.ok) throw new Error(await res.text());
+}
+
 export async function getJob(jobId: string): Promise<any> {
   const res = await fetch(`${API_BASE}/jobs/${jobId}`);
   if (!res.ok) throw new Error('Job not found');

@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react';
-import { uploadVideo } from '../utils/api';
+import { uploadVideo, processVideo } from '../utils/api';
 
 interface UploadViewProps {
   onJobCreated: (jobId: string) => void;
@@ -39,6 +39,7 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
     setError('');
     try {
       const { job_id } = await uploadVideo(file);
+      await processVideo(job_id);
       onJobCreated(job_id);
     } catch (e: any) {
       setError(e.message || 'Upload failed');
