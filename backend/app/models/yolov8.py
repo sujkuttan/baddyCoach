@@ -1,8 +1,8 @@
 import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
 import numpy as np
 from dataclasses import dataclass
-
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 @dataclass
@@ -28,7 +28,7 @@ class YOLOv8Detector:
     def detect_persons(self, frame: np.ndarray, frame_idx: int) -> list[Detection]:
         if self.model is None:
             return []
-        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False, device=self.device)
+        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False, device="cpu")
         detections = []
         for r in results:
             for box in r.boxes:
@@ -54,14 +54,7 @@ class YOLOv8Tracker:
             self.model = YOLO("yolov8n.pt")
 
     def track_frames(self, frames: list[np.ndarray]) -> dict:
-        """Track persons across multiple frames.
-
-        Args:
-            frames: List of BGR frames
-
-        Returns:
-            Dictionary with 'frames' (per-frame detections) and 'tracks' (track IDs)
-        """
+        """Track persons across multiple frames."""
         all_detections = {}
 
         for frame_idx, frame in enumerate(frames):
@@ -71,7 +64,7 @@ class YOLOv8Tracker:
                 conf=self.conf_threshold,
                 verbose=False,
                 persist=True,
-                device=self.device
+                device="cpu"
             )
 
             frame_detections = []
