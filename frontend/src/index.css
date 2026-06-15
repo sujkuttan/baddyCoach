@@ -106,3 +106,81 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-muted);
 }
+
+/* Print styles for PDF export */
+@media print {
+  body {
+    background: white !important;
+    color: #1a1a1a !important;
+  }
+
+  .court-pattern {
+    background-image: none !important;
+  }
+
+  header {
+    display: none !important;
+  }
+
+  [data-vjs-player],
+  .vjs-control-bar,
+  .vjs-modal-lock {
+    display: none !important;
+  }
+
+  .bg-court-mid\/60,
+  .bg-court-dark\/60,
+  .bg-court-surface\/50,
+  .bg-court-dark\/40 {
+    background: #f5f5f5 !important;
+    border-color: #ddd !important;
+  }
+
+  .text-text-primary,
+  .text-text-secondary {
+    color: #1a1a1a !important;
+  }
+
+  .text-text-muted {
+    color: #666 !important;
+  }
+
+  .text-shuttle-lime {
+    color: #2d5a00 !important;
+  }
+
+  .pulse-live {
+    display: none !important;
+  }
+
+  .animate-entrance {
+    animation: none !important;
+  }
+
+  .rounded-2xl,
+  .rounded-xl {
+    border-radius: 8px !important;
+  }
+
+  main {
+    padding: 1rem !important;
+  }
+
+  .grid {
+    gap: 0.75rem !important;
+  }
+
+  .space-y-6 > * + * {
+    margin-top: 0.75rem !important;
+  }
+
+  canvas {
+    max-width: 100% !important;
+    height: auto !important;
+  }
+
+  @page {
+    margin: 1cm;
+    size: A4;
+  }
+}
