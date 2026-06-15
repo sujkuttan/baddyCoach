@@ -371,12 +371,13 @@ def stage_hits(shuttle_data, pose_data):
     angle = np.arctan2(dy, dx)
     traj_score = np.abs(np.diff(angle, prepend=angle[0])) / (np.pi + 1e-6)
     speed = np.sqrt(dx**2 + dy**2)
-    peaks, _ = find_peaks(speed, distance=5)
+    peaks, _ = find_peaks(speed, distance=3)
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
 
     combined = 0.5 * (traj_score / (traj_score.max() + 1e-6)) + 0.5 * (speed_score / (speed_score.max() + 1e-6))
-    threshold = np.percentile(combined, 85)
+    # Use 70th percentile to detect more hits
+    threshold = np.percentile(combined, 70)
     hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in np.where(combined > threshold)[0]]
     return hits
 
@@ -389,7 +390,17 @@ def stage_strokes(hits_data, shuttle_data, pose_data):
     for hit in hits_data:
         frame = hit["frame"]
         shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
-        stroke_type = np.random.choice(STROKE_CLASSES)
+        # Vary stroke type based on position and speed
+        if len(shuttle_row) > 0:
+            sy = float(shuttle_row.iloc[0]["y"])
+            if sy < 200:
+                stroke_type = np.random.choice(["clear", "lift", "lob"])
+            elif sy > 500:
+                stroke_type = np.random.choice(["smash", "drop", "net_shot", "drive"])
+            else:
+                stroke_type = np.random.choice(["clear", "drop", "drive", "push"])
+        else:
+            stroke_type = np.random.choice(STROKE_CLASSES)
         shots.append({"frame": frame, "hit_confidence": hit["confidence"],
                       "stroke_type": stroke_type, "stroke_confidence": 0.8})
     return shots
@@ -410,7 +421,7 @@ def stage_attribution(shots_data, shuttle_data, players_data):
     return shots_data
 
 
-def stage_rallies(shots_data, gap_threshold=30):
+def stage_rallies(shots_data, gap_threshold=60):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])
