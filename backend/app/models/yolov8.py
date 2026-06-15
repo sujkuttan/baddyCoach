@@ -1,5 +1,8 @@
+import os
 import numpy as np
 from dataclasses import dataclass
+
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 @dataclass
