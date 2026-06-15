@@ -280,14 +280,24 @@ class RTMPoseEstimator:
 
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
-def extract_frames(video_path, max_frames=200):
+def extract_frames(video_path, max_frames=500, target_fps=1):
+    """Extract frames sampled across entire video duration."""
     cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    duration = total_frames / fps
+
+    # Sample at target_fps (default 1 frame per second)
+    sample_interval = max(1, int(fps / target_fps))
+    num_samples = min(total_frames // sample_interval, max_frames)
+
     frames = []
-    while len(frames) < max_frames:
+    for i in range(num_samples):
+        frame_idx = int(i * total_frames / num_samples)
+        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
         ret, frame = cap.read()
-        if not ret:
-            break
-        frames.append(frame)
+        if ret:
+            frames.append(frame)
     cap.release()
     return frames
 
@@ -578,9 +588,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
     setup_models(device)
 
-    # 1. Extract frames
+    # 1. Extract frames (1 per second across entire video)
     print("[1/14] Extracting frames...")
-    frames = extract_frames(video_path, max_frames=200)
+    frames = extract_frames(video_path, max_frames=500, target_fps=1)
     print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
 
     # 2. Court detection
