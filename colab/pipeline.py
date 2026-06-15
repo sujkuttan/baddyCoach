@@ -32,7 +32,7 @@ CKPT_DIR.mkdir(exist_ok=True)
 TRACKNET_PATH = CKPT_DIR / "TrackNet_best.pt"
 YOLOV8_MODEL = "yolov8s.pt"
 RTMOPOSE_PATH = CKPT_DIR / "rtmpose" / "rtmpose-m_8xb64-270e_coco-256x192.onnx"
-BST_PATH = CKPT_DIR / "bst" / "bst_CG_AP.pt"
+BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
 
 COURT_LENGTH = 13.4
 COURT_WIDTH = 5.18
@@ -123,10 +123,8 @@ def setup_models(device: str):
     if not BST_PATH.exists():
         try:
             import gdown
-            gdown.download_folder(
-                "https://drive.google.com/drive/folders/1D4172WZDJWPvpJdpaHDhy_cA-s8F-zR5",
-                output=str(bst_dir), quiet=False
-            )
+            print("  Downloading BST weights...")
+            gdown.download(id="1yHLpW4s8Rk8FYIUKF_NvC29Z8b8XuDq2", output=str(BST_PATH), quiet=False)
         except Exception as e:
             print(f"  BST download failed: {e}")
 
