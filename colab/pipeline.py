@@ -284,7 +284,7 @@ class RTMPoseEstimator:
 
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
-def extract_frames(video_path, max_frames=50000, target_fps=10):
+def extract_frames(video_path, max_frames=50000, target_fps=10, max_width=1280):
     """Extract frames by sequential read + subsample with progress bar."""
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -295,7 +295,7 @@ def extract_frames(video_path, max_frames=50000, target_fps=10):
     num_samples = min(total_frames // sample_interval, max_frames)
 
     print(f"  Video: {duration:.0f}s, {total_frames} frames @ {video_fps:.0f}fps")
-    print(f"  Sampling: every {sample_interval} frames → ~{num_samples} frames ({target_fps}fps)")
+    print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames ({target_fps}fps)")
 
     frames = []
     frame_count = 0
@@ -305,6 +305,10 @@ def extract_frames(video_path, max_frames=50000, target_fps=10):
         if not ret:
             break
         if frame_count % sample_interval == 0:
+            h, w = frame.shape[:2]
+            if w > max_width:
+                scale = max_width / w
+                frame = cv2.resize(frame, (max_width, int(h * scale)))
             frames.append(frame)
             pbar.update(1)
         frame_count += 1
