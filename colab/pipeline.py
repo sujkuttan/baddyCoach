@@ -183,49 +183,26 @@ class TrackNetV3:
 
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
-
         results = []
-        batch_inputs = []
         for i in range(len(frames)):
             window = frames[max(0, i-8):i+1]
             while len(window) < 9:
                 window.insert(0, window[0])
+            processed = []
             for f in window[-9:]:
                 r = cv2.resize(f, (self.input_width, self.input_height))
                 r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                batch_inputs.append(r)
-
-            if len(batch_inputs) >= 27 * 64:
-                n = len(batch_inputs) // 27
-                batch = np.stack(batch_inputs[:n * 27]).reshape(n, 27, self.input_height, self.input_width)
-                batch_inputs = batch_inputs[n * 27:]
-                tensor = torch.from_numpy(batch).float().to(self.device)
-                with torch.no_grad():
-                    out = self.model(tensor)
-                for j in range(n):
-                    heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[j, 0]))
-                    y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
-                    results.append({"x": float(x_idx * ow / self.input_width),
-                                  "y": float(y_idx * oh / self.input_height),
-                                  "confidence": float(heatmap.max())})
-
-        if batch_inputs:
-            n = len(batch_inputs) // 27
-            if n > 0:
-                batch = np.stack(batch_inputs[:n * 27]).reshape(n, 27, self.input_height, self.input_width)
-                tensor = torch.from_numpy(batch).float().to(self.device)
-                with torch.no_grad():
-                    out = self.model(tensor)
-                for j in range(n):
-                    heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[j, 0]))
-                    y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
-                    results.append({"x": float(x_idx * ow / self.input_width),
-                                  "y": float(y_idx * oh / self.input_height),
-                                  "confidence": float(heatmap.max())})
-
-        while len(results) < len(frames):
-            results.append({"x": 0, "y": 0, "confidence": 0})
-        return results[:len(frames)]
+                processed.append(r)
+            batch = np.stack(processed).reshape(-1, self.input_height, self.input_width)
+            tensor = torch.from_numpy(batch[np.newaxis]).float().to(self.device)
+            with torch.no_grad():
+                out = self.model(tensor)
+            heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[0, 0]))
+            y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
+            results.append({"x": float(x_idx * ow / self.input_width),
+                          "y": float(y_idx * oh / self.input_height),
+                          "confidence": float(heatmap.max())})
+        return results
 
 
 class YOLOv8Tracker:
@@ -526,7 +503,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 # ─── Main Pipeline (streaming/batched) ──────────────────────────────────────
 
-BATCH_SIZE = 2000
+BATCH_SIZE = 500
 
 def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     start_time = time.time()
@@ -591,11 +568,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
                 batch_count += 1
                 _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                                tracker, tracknet, pose_estimator, device,
-                               all_shuttle, all_det, all_pose, all_player_detections)
-                tqdm.write(f"  Batch {batch_count}/{total_batches} done | "
-                          f"Shuttle: {len(all_shuttle)} | "
-                          f"Players: {len(all_player_detections)} | "
-                          f"Pose: {len(all_pose)}")
+                               all_shuttle, all_det, all_pose, all_player_detections,
+                               batch_count, total_batches)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -608,11 +582,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
         batch_count += 1
         _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                        tracker, tracknet, pose_estimator, device,
-                       all_shuttle, all_det, all_pose, all_player_detections)
-        tqdm.write(f"  Batch {batch_count}/{total_batches} done | "
-                  f"Shuttle: {len(all_shuttle)} | "
-                  f"Players: {len(all_player_detections)} | "
-                  f"Pose: {len(all_pose)}")
+                       all_shuttle, all_det, all_pose, all_player_detections,
+                       batch_count, total_batches)
         batch_frames = []
         batch_global_indices = []
         gc.collect()
@@ -742,12 +713,15 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
 def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
-                   all_shuttle, all_det, all_pose, all_player_detections):
+                   all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
 
-    # 1. Player tracking
+    tag = f"  Batch {batch_num}/{total_batches}"
+
+    # 1. Player tracking (YOLOv8)
+    tqdm.write(f"{tag} | YOLOv8 tracking {len(frames)} frames...")
     batch_det = tracker.track_batch(frames, 0)
     h, w = frames[0].shape[:2]
     court_mid_y = h * 0.5
@@ -759,14 +733,17 @@ def _process_batch(frames, global_indices, batch_start_offset,
             all_det[global_idx] = all_det.get(global_idx, [])
             all_det[global_idx].append(d)
 
-    # 2. Shuttle tracking
+    # 2. Shuttle tracking (TrackNet)
+    tqdm.write(f"{tag} | TrackNet shuttle tracking...")
     ow, oh = frames[0].shape[1], frames[0].shape[0]
     shuttle_preds = tracknet.predict_batch(frames, original_size=(ow, oh))
     for local_idx, global_idx in enumerate(global_indices):
         if local_idx < len(shuttle_preds):
             all_shuttle.append({"frame": global_idx, **shuttle_preds[local_idx]})
 
-    # 3. Pose estimation (only for frames with detections)
+    # 3. Pose estimation (RTMPose)
+    pose_count = sum(1 for gi in global_indices if all_det.get(gi))
+    tqdm.write(f"{tag} | RTMPose pose estimation ({pose_count} frames)...")
     for local_idx, global_idx in enumerate(global_indices):
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
@@ -781,6 +758,8 @@ def _process_batch(frames, global_indices, batch_start_offset,
             pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
             kps = pose_estimator.estimate(frame, d["bbox"])
             all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
+
+    tqdm.write(f"{tag} done | Shuttle: {len(all_shuttle)} | Players: {len(all_player_detections)} | Pose: {len(all_pose)}")
 
 
 if __name__ == "__main__":
