@@ -17,7 +17,11 @@ class StrokeClassificationStage:
         shuttle_df = artifacts.get_parquet("shuttle")
         pose_df = artifacts.get_parquet("pose")
 
-        from app.models.bst import STROKE_CLASSES
+        from app.models.bst import BSTClassifier, STROKE_CLASSES
+        from app.config.settings import settings
+
+        model_path = str(settings.bst_model_path) if settings.bst_model_path else None
+        classifier = BSTClassifier(model_path, device="cuda" if settings.gpu_enabled else "cpu")
 
         shots = []
         for _, hit in hits_df.iterrows():
@@ -27,7 +31,14 @@ class StrokeClassificationStage:
             pose_features = self._extract_pose_features(pose_df, frame) if pose_df is not None else np.zeros(8)
             combined = np.concatenate([shuttle_features, pose_features])
 
-            stroke_type, confidence = self._classify(combined, STROKE_CLASSES)
+            # Pad or truncate to expected feature size
+            target_size = 144
+            if len(combined) < target_size:
+                combined = np.pad(combined, (0, target_size - len(combined)))
+            else:
+                combined = combined[:target_size]
+
+            stroke_type, confidence = classifier.predict(combined)
 
             shots.append({
                 "frame": frame,
@@ -87,7 +98,3 @@ class StrokeClassificationStage:
             np.arctan2(wrist[1] - elbow[1], wrist[0] - elbow[0]),
             np.sqrt(np.sum((wrist - hip)**2)),
         ])
-
-    def _classify(self, features: np.ndarray, classes: list[str]) -> tuple[str, float]:
-        idx = np.random.randint(len(classes))
-        return classes[idx], 0.8
