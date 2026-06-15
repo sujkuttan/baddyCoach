@@ -184,7 +184,8 @@ class TrackNetV3:
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
 
-        all_windows = []
+        results = []
+        batch_inputs = []
         for i in range(len(frames)):
             window = frames[max(0, i-8):i+1]
             while len(window) < 9:
@@ -192,25 +193,35 @@ class TrackNetV3:
             for f in window[-9:]:
                 r = cv2.resize(f, (self.input_width, self.input_height))
                 r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                all_windows.append(r)
+                batch_inputs.append(r)
 
-        batch_size = 64
-        results = []
-        for start in range(0, len(all_windows), batch_size * 9):
-            chunk = all_windows[start:start + batch_size * 9]
-            n = len(chunk) // 9
-            if n == 0:
-                break
-            batch = np.stack(chunk).reshape(n, 9 * 3, self.input_height, self.input_width)
-            tensor = torch.from_numpy(batch).float().to(self.device)
-            with torch.no_grad():
-                out = self.model(tensor)
-            for j in range(n):
-                heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[j, 0]))
-                y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
-                results.append({"x": float(x_idx * ow / self.input_width),
-                              "y": float(y_idx * oh / self.input_height),
-                              "confidence": float(heatmap.max())})
+            if len(batch_inputs) >= 27 * 64:
+                n = len(batch_inputs) // 27
+                batch = np.stack(batch_inputs[:n * 27]).reshape(n, 27, self.input_height, self.input_width)
+                batch_inputs = batch_inputs[n * 27:]
+                tensor = torch.from_numpy(batch).float().to(self.device)
+                with torch.no_grad():
+                    out = self.model(tensor)
+                for j in range(n):
+                    heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[j, 0]))
+                    y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
+                    results.append({"x": float(x_idx * ow / self.input_width),
+                                  "y": float(y_idx * oh / self.input_height),
+                                  "confidence": float(heatmap.max())})
+
+        if batch_inputs:
+            n = len(batch_inputs) // 27
+            if n > 0:
+                batch = np.stack(batch_inputs[:n * 27]).reshape(n, 27, self.input_height, self.input_width)
+                tensor = torch.from_numpy(batch).float().to(self.device)
+                with torch.no_grad():
+                    out = self.model(tensor)
+                for j in range(n):
+                    heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[j, 0]))
+                    y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
+                    results.append({"x": float(x_idx * ow / self.input_width),
+                                  "y": float(y_idx * oh / self.input_height),
+                                  "confidence": float(heatmap.max())})
 
         while len(results) < len(frames):
             results.append({"x": 0, "y": 0, "confidence": 0})
