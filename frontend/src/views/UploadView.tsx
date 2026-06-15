@@ -1,8 +1,16 @@
-import { useState, useRef } from 'react';
-import { uploadVideo, processVideo } from '../utils/api';
+import { useState, useRef, useEffect } from 'react';
+import { uploadVideo, processVideo, getJob } from '../utils/api';
 
 interface UploadViewProps {
   onJobCreated: (jobId: string) => void;
+}
+
+interface Job {
+  id: string;
+  filename: string;
+  status: string;
+  created_at: string;
+  stages_completed?: string[];
 }
 
 export function UploadView({ onJobCreated }: UploadViewProps) {
@@ -10,7 +18,15 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [dragActive, setDragActive] = useState(false);
+  const [jobs, setJobs] = useState<Job[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    fetch('/api/jobs')
+      .then(r => r.json())
+      .then(data => setJobs((data.jobs || []).reverse()))
+      .catch(() => {});
+  }, []);
 
   const validateAndSet = (f: File) => {
     const ext = f.name.split('.').pop()?.toLowerCase();
@@ -39,6 +55,7 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
     setError('');
     try {
       const { job_id } = await uploadVideo(file);
+      localStorage.setItem('baddycoach_job_id', job_id);
       await processVideo(job_id);
       onJobCreated(job_id);
     } catch (e: any) {
@@ -47,6 +64,24 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
       setUploading(false);
     }
   };
+
+  const handleResume = (job: Job) => {
+    localStorage.setItem('baddycoach_job_id', job.id);
+    if (job.status === 'completed') {
+      onJobCreated(job.id);
+    } else {
+      onJobCreated(job.id);
+    }
+  };
+
+  const statusColor = (s: string) => {
+    if (s === 'completed') return 'text-feather-green';
+    if (s === 'processing') return 'text-shuttle-lime';
+    if (s === 'error') return 'text-error-red';
+    return 'text-text-muted';
+  };
+
+  const statusLabel = (s: string) => s.toUpperCase();
 
   return (
     <div className="min-h-screen court-pattern flex items-center justify-center p-6">
@@ -150,6 +185,45 @@ export function UploadView({ onJobCreated }: UploadViewProps) {
             'START ANALYSIS'
           )}
         </button>
+
+        {/* Job History */}
+        {jobs.length > 0 && (
+          <div className="mt-10">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="font-display text-lg text-text-primary tracking-wide">RECENT MATCHES</h2>
+              <span className="font-mono text-[10px] text-text-muted">{jobs.length} TOTAL</span>
+            </div>
+            <div className="space-y-2">
+              {jobs.slice(0, 5).map(job => (
+                <button
+                  key={job.id}
+                  onClick={() => handleResume(job)}
+                  className="w-full flex items-center justify-between px-4 py-3 rounded-xl bg-court-mid/60 border border-court-line/15 hover:border-shuttle-lime/30 transition-colors text-left group"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${
+                      job.status === 'completed' ? 'bg-feather-green' :
+                      job.status === 'processing' ? 'bg-shuttle-lime pulse-live' :
+                      job.status === 'error' ? 'bg-error-red' : 'bg-text-muted'
+                    }`} />
+                    <div className="min-w-0">
+                      <p className="font-mono text-sm text-text-primary truncate">{job.filename}</p>
+                      <p className="font-mono text-[10px] text-text-muted">{job.id}</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-3 flex-shrink-0">
+                    <span className={`font-mono text-[10px] tracking-wider ${statusColor(job.status)}`}>
+                      {statusLabel(job.status)}
+                    </span>
+                    <svg className="w-4 h-4 text-text-muted group-hover:text-shuttle-lime transition-colors" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Footer info */}
         <div className="mt-8 flex items-center justify-center gap-6 text-text-muted">
