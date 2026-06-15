@@ -96,8 +96,14 @@ def setup_models(device: str):
     rtmpose_dir.mkdir(parents=True, exist_ok=True)
     if not RTMOPOSE_PATH.exists():
         try:
-            url = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/rtmpose-m_8xb64-270e_coco-256x192.onnx"
-            download_file(url, RTMOPOSE_PATH)
+            import gdown
+            import zipfile
+            print("  Downloading RTMPose weights...")
+            zip_path = str(rtmpose_dir / "rtmpose.zip")
+            gdown.download(id="1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN", output=zip_path, quiet=False)
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                z.extractall(str(rtmpose_dir))
+            os.remove(zip_path)
         except Exception as e:
             print(f"  RTMPose download failed: {e}")
 
