@@ -1,3 +1,6 @@
+import numpy as np
+from pathlib import Path
+
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 
 
@@ -6,10 +9,18 @@ class PlayerTrackingStage:
     input_keys = ["court"]
     output_keys = ["players"]
 
-    def run(self, artifacts: ArtifactStore, config: StageConfig, detections: list[dict] | None = None) -> StageResult:
-        if not detections:
-            return StageResult.from_error("No player detections provided")
+    def run(
+        self,
+        artifacts: ArtifactStore,
+        config: StageConfig,
+        frames: list[np.ndarray] | None = None,
+        detections: list[dict] | None = None
+    ) -> StageResult:
+        """Run player tracking.
 
+        If frames provided, runs YOLOv8 inference.
+        If detections provided, uses pre-computed data.
+        """
         court = artifacts.get("court")
         court_corners = court.get("corners_pixel", []) if court else []
         if court_corners:
@@ -17,26 +28,78 @@ class PlayerTrackingStage:
         else:
             court_mid_y = 300
 
+        if detections:
+            return self._process_detections(artifacts, detections, court_mid_y)
+
+        if frames:
+            detections = self._run_yolov8(frames)
+            return self._process_detections(artifacts, detections, court_mid_y)
+
+        return StageResult.from_error("No frames or detections provided")
+
+    def _run_yolov8(self, frames: list[np.ndarray]) -> list[dict]:
+        """Run YOLOv8 on video frames."""
+        from app.models.yolov8 import YOLOv8Tracker
+        from app.config.settings import settings
+
+        model_path = str(settings.yolov8_model_path) if settings.yolov8_model_path else None
+        tracker = YOLOv8Tracker(model_path, conf_threshold=0.5)
+
+        results = tracker.track_frames(frames)
+
+        detections = []
+        for frame_idx, frame_dets in results["frames"].items():
+            for det in frame_dets:
+                detections.append({
+                    "frame": frame_idx,
+                    "bbox": det.bbox,
+                    "confidence": det.confidence,
+                    "track_id": det.track_id,
+                })
+
+        return detections
+
+    def _process_detections(
+        self,
+        artifacts: ArtifactStore,
+        detections: list[dict],
+        court_mid_y: float
+    ) -> StageResult:
+        """Process detections and assign players to sides."""
+        if not detections:
+            return StageResult.from_error("No player detections provided")
+
         players = {}
         for det in detections:
             bbox = det["bbox"]
             center_y = (bbox[1] + bbox[3]) / 2
             side = "near" if center_y > court_mid_y else "far"
 
+            track_id = det.get("track_id")
             matched = False
-            for pid, player in players.items():
-                last_bbox = player["detections"][-1]["bbox"]
-                iou = self._compute_iou(bbox, last_bbox)
-                if iou > 0.3 and player["side"] == side:
-                    player["detections"].append(det)
-                    matched = True
-                    break
+
+            if track_id is not None:
+                for pid, player in players.items():
+                    if player.get("track_id") == track_id:
+                        player["detections"].append(det)
+                        matched = True
+                        break
+
+            if not matched:
+                for pid, player in players.items():
+                    last_bbox = player["detections"][-1]["bbox"]
+                    iou = self._compute_iou(bbox, last_bbox)
+                    if iou > 0.3 and player["side"] == side:
+                        player["detections"].append(det)
+                        matched = True
+                        break
 
             if not matched:
                 pid = f"player_{len(players) + 1}"
                 players[pid] = {
                     "id": pid,
                     "side": side,
+                    "track_id": track_id,
                     "detections": [det],
                 }
 
