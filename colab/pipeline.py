@@ -81,12 +81,18 @@ def setup_models(device: str):
     if not TRACKNET_PATH.exists():
         try:
             import gdown
+            import zipfile
             print("  Downloading TrackNetV3 weights...")
-            gdown.download(id="1CfzE87a0f6LhBp0kniSl1-89zaLCZ8cA", output=str(TRACKNET_PATH), quiet=False)
-            # Verify it's a valid file (not HTML redirect)
-            if TRACKNET_PATH.stat().st_size < 1000:
-                TRACKNET_PATH.unlink()
-                print("  TrackNet download failed (invalid file)")
+            zip_path = str(CKPT_DIR / "tracknet.zip")
+            gdown.download(id="1rhKXbff1GITgrFTYptW6gAvWZ76E_qzp", output=zip_path, quiet=False)
+            with zipfile.ZipFile(zip_path, 'r') as z:
+                z.extractall(str(CKPT_DIR))
+            os.remove(zip_path)
+            # Find the extracted .pt file
+            for f in CKPT_DIR.rglob("*.pt"):
+                if "TrackNet" in f.name:
+                    f.rename(TRACKNET_PATH)
+                    break
         except Exception as e:
             print(f"  TrackNet download failed: {e}")
             print("  Shuttle tracking will use fallback")
