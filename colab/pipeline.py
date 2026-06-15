@@ -281,29 +281,27 @@ class RTMPoseEstimator:
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def extract_frames(video_path, max_frames=50000, target_fps=10):
-    """Extract frames sampled across entire video duration.
-
-    For a 30-min playing-time video at 10fps: 18,000 frames.
-    High sampling rate for accurate shot identification and classification.
-    """
+    """Extract frames by sequential read + subsample. Much faster than seeking."""
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30
-    duration = total_frames / fps
+    video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    duration = total_frames / video_fps
 
-    sample_interval = max(1, int(fps / target_fps))
+    sample_interval = max(1, int(video_fps / target_fps))
     num_samples = min(total_frames // sample_interval, max_frames)
 
-    print(f"  Video: {duration:.0f}s, {total_frames} frames @ {fps:.0f}fps")
-    print(f"  Sampling: {num_samples} frames ({target_fps}fps, every {sample_interval} frames)")
+    print(f"  Video: {duration:.0f}s, {total_frames} frames @ {video_fps:.0f}fps")
+    print(f"  Sampling: every {sample_interval} frames → ~{num_samples} frames ({target_fps}fps)")
 
     frames = []
-    for i in range(num_samples):
-        frame_idx = int(i * total_frames / num_samples)
-        cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+    frame_count = 0
+    while len(frames) < num_samples:
         ret, frame = cap.read()
-        if ret:
+        if not ret:
+            break
+        if frame_count % sample_interval == 0:
             frames.append(frame)
+        frame_count += 1
     cap.release()
     return frames
 
