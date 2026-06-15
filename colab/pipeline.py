@@ -152,30 +152,32 @@ class TrackNetV3:
                 self.u2 = nn.ModuleDict({'c1': SingleConv(384, 128), 'c2': SingleConv(128, 128)})
                 self.u3 = nn.ModuleDict({'c1': SingleConv(192, 64), 'c2': SingleConv(64, 64)})
                 self.pred = nn.Conv2d(64, 8, 1)
+
             def forward(self, x):
-                d1 = self.u3['c2'](self.u3['c1'](
-                    torch.cat([nn.functional.interpolate(self.u2['c2'](self.u2['c1'](
-                        torch.cat([nn.functional.interpolate(self.u1['c3'](self.u1['c2'](self.u1['c1'](
-                            torch.cat([nn.functional.interpolate(self.bn_b['c3'](self.bn_b['c2'](self.bn_b['c1'](
-                                nn.functional.max_pool2d(self.d3['c3'](self.d3['c2'](self.d3['c1'](
-                                    nn.functional.max_pool2d(self.d2['c2'](self.d2['c1'](
-                                        nn.functional.max_pool2d(self.d1['c2'](self.d1['c1'](x)), 2)
-                                    )), 2)
-                                )), 2)
-                            )), size=self.d3['c1'].conv.kernel_size[0:0] or [0,0], mode='bilinear', align_corners=True),
-                            self.d3['c3'](self.d3['c2'](self.d3['c1'](
-                                nn.functional.max_pool2d(self.d2['c2'](self.d2['c1'](
-                                    nn.functional.max_pool2d(self.d1['c2'](self.d1['c1'](x)), 2)
-                                )), 2)
-                            )))
-                        ], dim=1)), size=[0,0], mode='bilinear', align_corners=True),
-                        self.d2['c2'](self.d2['c1'](
-                            nn.functional.max_pool2d(self.d1['c2'](self.d1['c1'](x)), 2)
-                        )))
-                    ], dim=1)), size=self.d1['c1'].conv.kernel_size[0:0] or [0,0], mode='bilinear', align_corners=True),
-                    self.d1['c2'](self.d1['c1'](x)))
-                ], dim=1)))
-                return self.pred(d1)
+                # Encoder
+                d1 = self.d1['c2'](self.d1['c1'](x))
+                d1_pool = nn.functional.max_pool2d(d1, 2)
+
+                d2 = self.d2['c2'](self.d2['c1'](d1_pool))
+                d2_pool = nn.functional.max_pool2d(d2, 2)
+
+                d3 = self.d3['c3'](self.d3['c2'](self.d3['c1'](d2_pool)))
+                d3_pool = nn.functional.max_pool2d(d3, 2)
+
+                # Bottleneck
+                b = self.bn_b['c3'](self.bn_b['c2'](self.bn_b['c1'](d3_pool)))
+
+                # Decoder
+                b_up = nn.functional.interpolate(b, size=d3.shape[2:], mode='bilinear', align_corners=True)
+                u1 = self.u1['c3'](self.u1['c2'](self.u1['c1'](torch.cat([b_up, d3], dim=1))))
+
+                u1_up = nn.functional.interpolate(u1, size=d2.shape[2:], mode='bilinear', align_corners=True)
+                u2 = self.u2['c2'](self.u2['c1'](torch.cat([u1_up, d2], dim=1)))
+
+                u2_up = nn.functional.interpolate(u2, size=d1.shape[2:], mode='bilinear', align_corners=True)
+                u3 = self.u3['c2'](self.u3['c1'](torch.cat([u2_up, d1], dim=1)))
+
+                return self.pred(u3)
 
         checkpoint = torch.load(model_path, map_location=device)
         state_dict = checkpoint.get('model', checkpoint.get('state_dict', checkpoint))
