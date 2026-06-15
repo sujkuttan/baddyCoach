@@ -44,22 +44,28 @@ STROKE_CLASSES = [
 ]
 
 RULES = [
-    {"name": "smash_efficiency", "min_shots": 10, "check": lambda d, f, fw: d.get("smash", 0) < 0.3 and f.get("total_shots", 0) >= 10,
+    {"name": "smash_efficiency",
+     "check": {"field": "tactical.shot_distribution.smash", "operator": "<", "threshold": 0.3, "min_shots": "tactical.total_shots >= 10"},
      "recommendation": "Your smash conversion rate is low. Focus on placement over power.",
      "category": "weakness", "drill": "Practice targeted smashes to designated court zones."},
-    {"name": "recovery_speed", "check": lambda d, f, fw: fw.get("avg_recovery", 0) > 1.2,
+    {"name": "recovery_speed",
+     "check": {"field": "footwork.avg_recovery", "operator": ">", "threshold": 1.2},
      "recommendation": "Recovery after shots is slower than optimal. Work on split-step timing.",
      "category": "weakness", "drill": "Shadow footwork drills: return to base after each shot."},
-    {"name": "shot_variety", "min_shots": 20, "check": lambda d, f, fw: max(d.values()) > 0.5 if d else False,
+    {"name": "shot_variety",
+     "check": {"field": "tactical.max_shot_percentage", "operator": ">", "threshold": 0.5, "min_shots": "tactical.total_shots >= 20"},
      "recommendation": "Shot selection is predictable. Vary your attack.",
      "category": "weakness", "drill": "Rally drills: alternate clear/drop/net each shot."},
-    {"name": "fatigue_management", "check": lambda d, f, fw: f.get("fatigue_trend") == "declining",
+    {"name": "fatigue_management",
+     "check": {"field": "fitness.fatigue_trend", "operator": "==", "value": "declining"},
      "recommendation": "Performance declines in later rallies. Improve match fitness.",
      "category": "weakness", "drill": "Interval training: 12x (30s high intensity + 30s rest)."},
-    {"name": "net_play_strength", "min_shots": 10, "check": lambda d, f, fw: d.get("net_shot", 0) > 0.2 and f.get("total_shots", 0) >= 10,
+    {"name": "net_play_strength",
+     "check": {"field": "tactical.shot_distribution.net_shot", "operator": ">", "threshold": 0.2, "min_shots": "tactical.total_shots >= 10"},
      "recommendation": "Strong net play presence. Use this to set up attacking opportunities.",
      "category": "strength", "drill": "Maintain net dominance with variation."},
-    {"name": "clear_usage", "min_shots": 10, "check": lambda d, f, fw: d.get("clear", 0) > 0.35 and f.get("total_shots", 0) >= 10,
+    {"name": "clear_usage",
+     "check": {"field": "tactical.shot_distribution.clear", "operator": ">", "threshold": 0.35, "min_shots": "tactical.total_shots >= 10"},
      "recommendation": "Heavy use of clears — mix with drops and smashes.",
      "category": "neutral", "drill": "Clear-drop combination drills from rear court."},
 ]
@@ -319,26 +325,151 @@ def stage_hits(shuttle_data):
     return hits
 
 
-def stage_strokes(hits_data, shuttle_data):
+def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda"):
+    """Classify strokes using BST model with feature extraction."""
     if not hits_data:
         return []
-    shuttle_df = pd.DataFrame(shuttle_data)
+    
+    shuttle_df = pd.DataFrame(shuttle_data) if shuttle_data else pd.DataFrame()
+    pose_df = pd.DataFrame(pose_data) if pose_data else pd.DataFrame()
+    
+    # Import BST components
+    bst_path = str(BST_PATH) if BST_PATH.exists() else None
+    
+    # Simple BST classifier (inline for self-contained pipeline)
+    class SimpleBSTClassifier:
+        def __init__(self, model_path, device):
+            self.model = None
+            self.classes = STROKE_CLASSES
+            if model_path:
+                try:
+                    import torch
+                    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+                    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                        model = checkpoint['model']
+                        if callable(model) and hasattr(model, 'eval'):
+                            model.eval()
+                            self.model = model
+                except Exception:
+                    pass
+        
+        def predict(self, features):
+            if self.model is None:
+                return self._rule_based_predict(features)
+            import torch
+            tensor = torch.from_numpy(features).float().unsqueeze(0)
+            if torch.cuda.is_available() and "cuda" in str(self.model.device):
+                tensor = tensor.cuda()
+            with torch.no_grad():
+                output = self.model(tensor)
+            probs = torch.softmax(output, dim=1).cpu().numpy()[0]
+            idx = int(np.argmax(probs))
+            return self.classes[idx], float(probs[idx])
+        
+        def _rule_based_predict(self, features):
+            shuttle_speed = features[16] if len(features) > 16 else 0
+            shuttle_height = features[30] if len(features) > 30 else 0.5
+            shuttle_dy = features[22] if len(features) > 22 else 0
+            
+            if shuttle_speed > 0.3 and shuttle_dy > 0.1:
+                return "smash", 0.6
+            elif shuttle_height < 0.3 and shuttle_speed < 0.1:
+                return "net_shot", 0.5
+            elif shuttle_dy < -0.1 and shuttle_speed > 0.15:
+                return "clear" if shuttle_speed > 0.25 else "lift", 0.5
+            elif shuttle_speed > 0.2 and abs(shuttle_dy) < 0.05:
+                return "drive", 0.5
+            elif shuttle_height > 0.6 and shuttle_speed < 0.15:
+                return "drop", 0.5
+            else:
+                return "clear", 0.4
+    
+    classifier = SimpleBSTClassifier(bst_path, device)
+    
+    # Get video dimensions
+    frame_width = 640
+    frame_height = 480
+    if shuttle_df is not None and len(shuttle_df) > 0:
+        frame_width = max(shuttle_df["x"].max(), 640)
+        frame_height = max(shuttle_df["y"].max(), 480)
+    
+    # Feature extractor (inline)
+    def extract_features(target_frame, player_id="player_1"):
+        features = []
+        
+        # Shuttle trajectory (24 dims)
+        if shuttle_df is not None and len(shuttle_df) > 0:
+            window = shuttle_df[(shuttle_df["frame"] >= target_frame - 8) & (shuttle_df["frame"] <= target_frame)].sort_values("frame")
+            if len(window) >= 2:
+                x = window["x"].values / frame_width
+                y = window["y"].values / frame_height
+                dx, dy = np.diff(x), np.diff(y)
+                ddx = np.diff(dx) if len(dx) > 1 else np.array([0.0])
+                ddy = np.diff(dy) if len(dy) > 1 else np.array([0.0])
+                speed = np.sqrt(dx**2 + dy**2)
+                features.extend([np.mean(dx), np.std(dx), np.min(dx), np.max(dx),
+                                np.mean(dy), np.std(dy), np.min(dy), np.max(dy),
+                                np.mean(ddx), np.std(ddx), np.min(ddx), np.max(ddx),
+                                np.mean(ddy), np.std(ddy), np.min(ddy), np.max(ddy),
+                                np.mean(speed), np.max(speed),
+                                np.mean(np.abs(dx)), np.mean(np.abs(dy)),
+                                np.mean(np.abs(ddx + ddy)),
+                                dx[-1] if len(dx) > 0 else 0, dy[-1] if len(dy) > 0 else 0,
+                                x[-1] - x[0] if len(x) > 1 else 0])
+            else:
+                features.extend([0] * 24)
+        else:
+            features.extend([0] * 24)
+        
+        # Shuttle position (6 dims)
+        if shuttle_df is not None and len(shuttle_df) > 0:
+            row = shuttle_df[shuttle_df["frame"] == target_frame]
+            if len(row) > 0:
+                x, y = float(row.iloc[0]["x"]) / frame_width, float(row.iloc[0]["y"]) / frame_height
+                features.extend([x, y, 0, 0, y, abs(y - 0.5)])
+            else:
+                features.extend([0] * 6)
+        else:
+            features.extend([0] * 6)
+        
+        # Pose joints (48 dims)
+        if pose_df is not None and len(pose_df) > 0:
+            row = pose_df[(pose_df["frame"] == target_frame) & (pose_df["player_id"] == player_id)]
+            if len(row) > 0:
+                kps = np.array(row.iloc[0]["keypoints"])
+                if kps.shape == (17, 3):
+                    coords = kps[:, :2]
+                    bbox_min, bbox_max = coords.min(axis=0), coords.max(axis=0)
+                    diag = max(np.linalg.norm(bbox_max - bbox_min), 1)
+                    coords_norm = (coords - bbox_min) / diag
+                    flat = coords_norm.flatten()
+                    features.extend(np.pad(flat, (0, 48 - len(flat)))[:48])
+                else:
+                    features.extend([0] * 48)
+            else:
+                features.extend([0] * 48)
+        else:
+            features.extend([0] * 48)
+        
+        # Pad to 144 dims
+        while len(features) < 144:
+            features.append(0)
+        
+        return np.array(features[:144])
+    
     shots = []
+    previous_shots = []
+    
     for hit in hits_data:
         frame = hit["frame"]
-        shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
-        if len(shuttle_row) > 0:
-            sy = float(shuttle_row.iloc[0]["y"])
-            if sy < 200:
-                stroke_type = np.random.choice(["clear", "lift", "lob"])
-            elif sy > 500:
-                stroke_type = np.random.choice(["smash", "drop", "net_shot", "drive"])
-            else:
-                stroke_type = np.random.choice(["clear", "drop", "drive", "push"])
-        else:
-            stroke_type = np.random.choice(STROKE_CLASSES)
+        features = extract_features(frame)
+        stroke_type, confidence = classifier.predict(features)
+        
         shots.append({"frame": frame, "hit_confidence": hit["confidence"],
-                      "stroke_type": stroke_type, "stroke_confidence": 0.8})
+                      "stroke_type": stroke_type, "stroke_confidence": confidence})
+        
+        previous_shots.append({"stroke_type": stroke_type, "frame": frame, "stroke_confidence": confidence})
+    
     return shots
 
 
@@ -415,19 +546,55 @@ def stage_footwork(pose_data, shots_data):
 
 
 def stage_fitness(footwork_data, rallies_data, shots_data):
+    """Compute fitness analytics with real fatigue trend detection."""
     fitness = {}
     shots_df = pd.DataFrame(shots_data) if shots_data else pd.DataFrame()
     rallies_df = pd.DataFrame(rallies_data) if rallies_data else pd.DataFrame()
+    
+    def compute_fatigue_trend(intensities):
+        if len(intensities) < 5:
+            return "insufficient_data"
+        n = len(intensities)
+        q1 = intensities[:n//4]
+        q4 = intensities[3*n//4:]
+        avg_q1, avg_q4 = np.mean(q1), np.mean(q4)
+        x = np.arange(len(intensities))
+        slope = np.polyfit(x, intensities, 1)[0]
+        avg_intensity = np.mean(intensities)
+        normalized_slope = slope / avg_intensity if avg_intensity > 0 else 0
+        if avg_q4 < avg_q1 * 0.8 and normalized_slope < -0.01:
+            return "declining"
+        elif avg_q4 > avg_q1 * 1.2 and normalized_slope > 0.01:
+            return "improving"
+        return "stable"
+    
     for pid, fw in footwork_data.items():
         intensities = []
-        for _, rally in rallies_df.iterrows():
-            if len(shots_df) > 0:
-                rs = shots_df[(shots_df["frame"] >= rally["start_frame"]) & (shots_df["frame"] <= rally["end_frame"]) & (shots_df.get("player_id", pd.Series()) == pid)]
-                dur = max((rally["end_frame"] - rally["start_frame"]) / 30, 1)
-                intensities.append(len(rs) / dur)
-        fitness[pid] = {"rally_intensity": float(np.mean(intensities)) if intensities else 0,
-                       "rally_intensities": intensities, "fatigue_trend": "insufficient_data",
-                       "avg_recovery": fw.get("avg_recovery", 0), "total_distance": fw.get("distance_covered", 0)}
+        
+        if len(rallies_df) > 0 and len(shots_df) > 0:
+            for _, rally in rallies_df.iterrows():
+                rs = shots_df[(shots_df["frame"] >= rally["start_frame"]) & 
+                              (shots_df["frame"] <= rally["end_frame"]) & 
+                              (shots_df["player_id"] == pid)]
+                duration = max((rally["end_frame"] - rally["start_frame"]) / 30, 0.1)
+                intensities.append(float(len(rs) / duration))
+        
+        fatigue_trend = compute_fatigue_trend(intensities)
+        avg_intensity = float(np.mean(intensities)) if intensities else 0
+        peak_intensity = float(np.max(intensities)) if intensities else 0
+        late_fatigue = 0.0
+        if len(intensities) >= 6:
+            first_half = intensities[:len(intensities)//2]
+            second_half = intensities[len(intensities)//2:]
+            avg_first = np.mean(first_half)
+            if avg_first > 0:
+                late_fatigue = float((avg_first - np.mean(second_half)) / avg_first)
+        
+        fitness[pid] = {"rally_intensity": avg_intensity, "rally_intensities": intensities,
+                       "fatigue_trend": fatigue_trend, "avg_recovery": fw.get("avg_recovery", 0),
+                       "total_distance": fw.get("distance_covered", 0),
+                       "peak_intensity": peak_intensity, "late_rally_fatigue": late_fatigue,
+                       "rally_count": len(intensities)}
     return fitness
 
 
@@ -464,15 +631,82 @@ def stage_technical(shots_data):
 
 
 def stage_coach(tactical, fitness, footwork):
+    """Generate coaching recommendations using dot-notation rules."""
     strengths, weaknesses, improvements, drills, evidence = [], [], [], [], []
+    
+    def get_nested(data, path):
+        keys = path.split(".")
+        current = data
+        for key in keys:
+            if current is None:
+                return 0
+            if isinstance(current, dict):
+                current = current.get(key, 0)
+            elif isinstance(current, (list, tuple)):
+                try:
+                    idx = int(key)
+                    current = current[idx] if 0 <= idx < len(current) else 0
+                except (ValueError, IndexError):
+                    return 0
+            else:
+                return 0
+        return current if current is not None else 0
+    
+    def compare(actual, op, expected):
+        try:
+            actual, expected = float(actual), float(expected)
+        except (TypeError, ValueError):
+            return str(actual) == str(expected) if op == "==" else False
+        if op == "<": return actual < expected
+        elif op == ">": return actual > expected
+        elif op == "<=": return actual <= expected
+        elif op == ">=": return actual >= expected
+        elif op == "==": return actual == expected
+        elif op == "!=": return actual != expected
+        return False
+    
+    def evaluate_condition(expr, analytics):
+        parts = expr.split()
+        if len(parts) != 3:
+            return False
+        field_path, op, val_str = parts
+        try:
+            val = float(val_str)
+        except ValueError:
+            return False
+        return compare(get_nested(analytics, field_path), op, val)
+    
+    def evaluate_rule(rule, analytics):
+        check = rule.get("check", {})
+        if not check:
+            return False
+        min_shots = check.get("min_shots")
+        if min_shots and not evaluate_condition(min_shots, analytics):
+            return False
+        field_path = check.get("field")
+        op = check.get("operator")
+        threshold = check.get("threshold", check.get("value"))
+        if not field_path or not op:
+            return False
+        return compare(get_nested(analytics, field_path), op, threshold)
+    
     for pid in set(list(tactical.keys()) + list(fitness.keys())):
-        d = tactical.get(pid, {}).get("shot_distribution", {})
-        f = fitness.get(pid, {})
-        fw = footwork.get(pid, {})
-        total = tactical.get(pid, {}).get("total_shots", 0)
+        player_analytics = {
+            "tactical": tactical.get(pid, {}),
+            "fitness": fitness.get(pid, {}),
+            "footwork": footwork.get(pid, {}),
+        }
+        
+        tactical_data = player_analytics["tactical"]
+        if tactical_data:
+            shot_dist = tactical_data.get("shot_distribution", {})
+            tactical_data["max_shot_percentage"] = max(shot_dist.values()) if shot_dist else 0
+        
+        total = tactical_data.get("total_shots", 0)
+        
         for rule in RULES:
             try:
-                if rule["check"](d, f if isinstance(f, dict) else {}, fw if isinstance(fw, dict) else {}):
+                if evaluate_rule(rule, player_analytics):
                     entry = {"finding": rule["recommendation"], "metrics": [f"total shots: {total}"]}
                     evidence.append(entry)
                     if rule["category"] == "strength":
@@ -483,6 +717,7 @@ def stage_coach(tactical, fitness, footwork):
                         drills.append(rule.get("drill", ""))
             except Exception:
                 continue
+    
     return {"strengths": strengths, "weaknesses": weaknesses,
             "top_3_improvements": improvements[:3], "recommended_drills": drills[:3], "evidence": evidence}
 
@@ -634,7 +869,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"  Found {len(hits)} hits")
 
     print("\n[7/14] Stroke classification...")
-    shots = stage_strokes(hits, all_shuttle)
+    shots = stage_strokes(hits, all_shuttle, all_pose, court, device)
     shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
 

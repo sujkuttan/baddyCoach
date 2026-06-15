@@ -16,34 +16,51 @@ class StrokeClassificationStage:
 
         shuttle_df = artifacts.get_parquet("shuttle")
         pose_df = artifacts.get_parquet("pose")
+        court = artifacts.get("court") or {}
 
         from app.models.bst import BSTClassifier, STROKE_CLASSES
+        from app.models.bst_features import BSTFeatureExtractor
         from app.config.settings import settings
 
         model_path = str(settings.bst_model_path) if settings.bst_model_path else None
         classifier = BSTClassifier(model_path, device=settings.device)
+        
+        frame_width = config.frame_width if hasattr(config, 'frame_width') else 640
+        frame_height = config.frame_height if hasattr(config, 'frame_height') else 480
+        extractor = BSTFeatureExtractor(
+            frame_width=frame_width,
+            frame_height=frame_height,
+            court_length=court.get("court_length", 13.4),
+            court_width=court.get("court_width", 5.18),
+        )
 
         shots = []
+        previous_shots = []
+        
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
-
-            shuttle_features = self._extract_shuttle_features(shuttle_df, frame) if shuttle_df is not None else np.zeros(6)
-            pose_features = self._extract_pose_features(pose_df, frame) if pose_df is not None else np.zeros(8)
-            combined = np.concatenate([shuttle_features, pose_features])
-
-            # Pad or truncate to expected feature size
-            target_size = 144
-            if len(combined) < target_size:
-                combined = np.pad(combined, (0, target_size - len(combined)))
-            else:
-                combined = combined[:target_size]
-
-            stroke_type, confidence = classifier.predict(combined)
-
-            shots.append({
+            
+            features = extractor.extract(
+                shuttle_df=shuttle_df,
+                pose_df=pose_df,
+                target_frame=frame,
+                player_id="player_1",
+                previous_shots=previous_shots,
+            )
+            
+            stroke_type, confidence = classifier.predict(features)
+            
+            shot = {
                 "frame": frame,
                 "hit_confidence": float(hit["confidence"]),
                 "stroke_type": stroke_type,
+                "stroke_confidence": confidence,
+            }
+            shots.append(shot)
+            
+            previous_shots.append({
+                "stroke_type": stroke_type,
+                "frame": frame,
                 "stroke_confidence": confidence,
             })
 
@@ -52,49 +69,17 @@ class StrokeClassificationStage:
 
         return StageResult.success(
             artifacts={"shots": artifacts.path("shots")},
-            metadata={"shot_count": len(shots)}
+            metadata={
+                "shot_count": len(shots),
+                "stroke_distribution": self._compute_distribution(shots),
+            }
         )
-
-    def _extract_shuttle_features(self, shuttle_df: pd.DataFrame, frame: int) -> np.ndarray:
-        window = shuttle_df[(shuttle_df["frame"] >= frame - 5) & (shuttle_df["frame"] <= frame + 5)]
-        if len(window) < 2:
-            return np.zeros(6)
-
-        x = window["x"].values
-        y = window["y"].values
-        speed = np.sqrt(np.diff(x)**2 + np.diff(y)**2)
-        return np.array([
-            speed.mean() if len(speed) > 0 else 0,
-            speed.max() if len(speed) > 0 else 0,
-            x[-1] - x[0],
-            y[-1] - y[0],
-            np.polyfit(range(len(x)), x, 1)[0] if len(x) > 1 else 0,
-            np.polyfit(range(len(y)), y, 1)[0] if len(y) > 1 else 0,
-        ])
-
-    def _extract_pose_features(self, pose_df: pd.DataFrame, frame: int) -> np.ndarray:
-        player_poses = pose_df[pose_df["frame"] == frame]
-        if len(player_poses) == 0:
-            return np.zeros(8)
-
-        kps = np.array(player_poses.iloc[0]["keypoints"])
-        if kps.shape != (17, 3):
-            kps = np.array(kps.tolist())
-        if kps.shape != (17, 3):
-            return np.zeros(8)
-
-        shoulder = kps[5][:2]
-        elbow = kps[7][:2]
-        wrist = kps[9][:2]
-        hip = kps[11][:2]
-
-        return np.array([
-            np.sqrt(np.sum((shoulder - elbow)**2)),
-            np.sqrt(np.sum((elbow - wrist)**2)),
-            np.sqrt(np.sum((shoulder - hip)**2)),
-            wrist[1] - shoulder[1],
-            wrist[0] - shoulder[0],
-            np.arctan2(elbow[1] - shoulder[1], elbow[0] - shoulder[0]),
-            np.arctan2(wrist[1] - elbow[1], wrist[0] - elbow[0]),
-            np.sqrt(np.sum((wrist - hip)**2)),
-        ])
+    
+    @staticmethod
+    def _compute_distribution(shots):
+        if not shots:
+            return {}
+        from collections import Counter
+        dist = Counter(s["stroke_type"] for s in shots)
+        total = len(shots)
+        return {k: v / total for k, v in dist.items()}
