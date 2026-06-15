@@ -12,8 +12,9 @@ class Detection:
 
 
 class YOLOv8Detector:
-    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.5):
+    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.5, device: str = "cpu"):
         self.conf_threshold = conf_threshold
+        self.device = device
         self.model = None
         from ultralytics import YOLO
         if model_path:
@@ -24,7 +25,7 @@ class YOLOv8Detector:
     def detect_persons(self, frame: np.ndarray, frame_idx: int) -> list[Detection]:
         if self.model is None:
             return []
-        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False)
+        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False, device=self.device)
         detections = []
         for r in results:
             for box in r.boxes:
@@ -39,8 +40,9 @@ class YOLOv8Detector:
 
 
 class YOLOv8Tracker:
-    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.5):
+    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.5, device: str = "cpu"):
         self.conf_threshold = conf_threshold
+        self.device = device
         self.model = None
         from ultralytics import YOLO
         if model_path:
@@ -65,7 +67,8 @@ class YOLOv8Tracker:
                 classes=[0],
                 conf=self.conf_threshold,
                 verbose=False,
-                persist=True
+                persist=True,
+                device=self.device
             )
 
             frame_detections = []

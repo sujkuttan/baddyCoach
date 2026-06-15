@@ -62,8 +62,13 @@ class BSTClassifier:
         self.classes = STROKE_CLASSES
         if model_path and Path(model_path).exists():
             import torch
-            self.model = torch.load(model_path, map_location=device)
-            self.model.eval()
+            checkpoint = torch.load(model_path, map_location=device)
+            if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                self.model = checkpoint['model']
+            else:
+                self.model = checkpoint
+            if hasattr(self.model, 'eval'):
+                self.model.eval()
 
     def predict(self, features: np.ndarray) -> tuple[str, float]:
         if self.model is None:

@@ -43,7 +43,8 @@ class PlayerTrackingStage:
         from app.config.settings import settings
 
         model_path = str(settings.yolov8_model_path) if settings.yolov8_model_path else None
-        tracker = YOLOv8Tracker(model_path, conf_threshold=0.5)
+        device = "cuda" if settings.gpu_enabled else "cpu"
+        tracker = YOLOv8Tracker(model_path, conf_threshold=0.5, device=device)
 
         results = tracker.track_frames(frames)
 
