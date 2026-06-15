@@ -281,25 +281,7 @@ class RTMPoseEstimator:
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def extract_frames(video_path, max_frames=50000, target_fps=10):
-    """Extract frames using GPU-accelerated decoding when available."""
-    try:
-        # Try GPU-accelerated decoding with torchvision
-        import torch
-        from torchvision.io import read_video
-        if torch.cuda.is_available():
-            print("  Using GPU-accelerated video decoding...")
-            video, _, _ = read_video(video_path, pts_unit='sec')
-            # video shape: (T, H, W, C)
-            total_frames = video.shape[0]
-            sample_interval = max(1, int(30 / target_fps))  # assume 30fps source
-            indices = torch.arange(0, min(total_frames, max_frames * sample_interval), sample_interval)
-            frames = [video[i].numpy() for i in indices if i < total_frames]
-            print(f"  Decoded {len(frames)} frames on GPU")
-            return frames
-    except Exception:
-        pass
-
-    # Fallback: CPU sequential read
+    """Extract frames by sequential read + subsample."""
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
