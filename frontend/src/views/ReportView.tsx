@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { getReport } from '../utils/api';
 import { VideoPlayer } from '../components/VideoPlayer';
 import { ShotChart } from '../components/ShotChart';
@@ -9,14 +9,37 @@ interface ReportViewProps {
   onBack: () => void;
 }
 
+function getPlayers(report: any): string[] {
+  const players = new Set<string>();
+  for (const source of [report.footwork, report.fitness, report.tactical, report.technical]) {
+    if (source && typeof source === 'object') {
+      Object.keys(source).forEach(k => players.add(k));
+    }
+  }
+  return Array.from(players).sort();
+}
+
+function playerLabel(id: string): string {
+  if (id === 'player_1') return 'Near';
+  if (id === 'player_2') return 'Far';
+  return id.replace('player_', 'P');
+}
+
 export function ReportView({ jobId, onBack }: ReportViewProps) {
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical' | 'fitness'>('overview');
+  const [selectedPlayer, setSelectedPlayer] = useState<string>('');
 
   useEffect(() => {
-    getReport(jobId).then(setReport).catch(console.error).finally(() => setLoading(false));
+    getReport(jobId).then(data => {
+      setReport(data);
+      const players = getPlayers(data);
+      if (players.length > 0) setSelectedPlayer(players[0]);
+    }).catch(console.error).finally(() => setLoading(false));
   }, [jobId]);
+
+  const players = useMemo(() => report ? getPlayers(report) : [], [report]);
 
   if (loading) {
     return (
@@ -42,7 +65,9 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
     );
   }
 
-  const shotDistribution = report.shot_distribution || report.tactical?.player_1?.shot_distribution || {};
+  const shotDistribution = report.tactical?.[selectedPlayer]?.shot_distribution || report.shot_distribution || {};
+  const commonPatterns = report.tactical?.[selectedPlayer]?.common_patterns || [];
+  const technicalAssessments = report.technical?.[selectedPlayer] || null;
   const rallies = report.rallies || [];
 
   return (
@@ -69,23 +94,49 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
             </div>
           </div>
 
-          {/* Tab navigation */}
-          <div className="flex items-center gap-1 bg-court-surface/50 rounded-lg p-1">
-            {(['overview', 'tactical', 'technical'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                className={`
-                  px-4 py-1.5 rounded-md font-mono text-xs tracking-wider uppercase transition-all duration-200
-                  ${activeTab === tab
-                    ? 'bg-shuttle-lime text-court-dark'
-                    : 'text-text-muted hover:text-text-primary'
-                  }
-                `}
-              >
-                {tab}
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            {/* Player selector */}
+            {players.length > 1 && (
+              <div className="flex items-center gap-2">
+                <span className="font-mono text-[10px] text-text-muted tracking-widest">PLAYER</span>
+                <div className="flex items-center gap-1 bg-court-surface/50 rounded-lg p-1">
+                  {players.map(p => (
+                    <button
+                      key={p}
+                      onClick={() => setSelectedPlayer(p)}
+                      className={`
+                        px-3 py-1.5 rounded-md font-mono text-xs tracking-wider transition-all duration-200
+                        ${selectedPlayer === p
+                          ? 'bg-shuttle-lime text-court-dark'
+                          : 'text-text-muted hover:text-text-primary'
+                        }
+                      `}
+                    >
+                      {playerLabel(p)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Tab navigation */}
+            <div className="flex items-center gap-1 bg-court-surface/50 rounded-lg p-1">
+              {(['overview', 'tactical', 'technical', 'fitness'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setActiveTab(tab)}
+                  className={`
+                    px-4 py-1.5 rounded-md font-mono text-xs tracking-wider uppercase transition-all duration-200
+                    ${activeTab === tab
+                      ? 'bg-shuttle-lime text-court-dark'
+                      : 'text-text-muted hover:text-text-primary'
+                    }
+                  `}
+                >
+                  {tab}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </header>
@@ -110,8 +161,9 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
             {/* Shot Distribution - 4 cols */}
             <div className="lg:col-span-4">
               <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden h-full">
-                <div className="px-5 py-3 border-b border-court-line/10">
+                <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                   <h2 className="font-display text-lg text-text-primary tracking-wide">SHOT DISTRIBUTION</h2>
+                  <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
                 </div>
                 <div className="p-5">
                   <ShotChart distribution={shotDistribution} />
@@ -146,8 +198,9 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
         {activeTab === 'tactical' && (
           <div className="animate-entrance">
             <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
-              <div className="px-5 py-3 border-b border-court-line/10">
+              <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                 <h2 className="font-display text-lg text-text-primary tracking-wide">TACTICAL ANALYSIS</h2>
+                <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
               </div>
               <div className="p-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -158,12 +211,14 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
                   <div>
                     <h3 className="font-display text-sm text-text-muted tracking-widest mb-4">COMMON PATTERNS</h3>
                     <div className="space-y-2">
-                      {(report.tactical?.player_1?.common_patterns || []).map((p: any, i: number) => (
+                      {commonPatterns.length > 0 ? commonPatterns.map((p: any, i: number) => (
                         <div key={i} className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-court-dark/40">
                           <span className="font-mono text-xs text-text-secondary">{p.pattern}</span>
                           <span className="font-mono text-xs text-shuttle-lime">{p.count}×</span>
                         </div>
-                      ))}
+                      )) : (
+                        <p className="font-mono text-xs text-text-muted">No pattern data available</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -175,42 +230,50 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
         {activeTab === 'technical' && (
           <div className="animate-entrance">
             <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
-              <div className="px-5 py-3 border-b border-court-line/10">
+              <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                 <h2 className="font-display text-lg text-text-primary tracking-wide">TECHNICAL ASSESSMENT</h2>
+                <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
               </div>
               <div className="p-6">
-                {report.technical ? (
-                  <div className="space-y-6">
-                    {Object.entries(report.technical).map(([playerId, assessments]: [string, any]) => (
-                      <div key={playerId}>
-                        <h3 className="font-display text-sm text-text-muted tracking-widest mb-4">{playerId.toUpperCase()}</h3>
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-                          {Object.entries(assessments).map(([stroke, data]: [string, any]) => (
-                            <div key={stroke} className="px-4 py-3 rounded-xl bg-court-dark/40 border border-court-line/10">
-                              <div className="flex items-center justify-between mb-2">
-                                <span className="font-body text-sm text-text-primary capitalize">
-                                  {stroke.replace(/_/g, ' ')}
-                                </span>
-                                <span className="font-mono text-xs text-text-muted">{data.shot_count}×</span>
-                              </div>
-                              <div className="w-full h-1.5 bg-court-surface rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-gradient-to-r from-shuttle-lime to-feather-green rounded-full"
-                                  style={{ width: `${(data.avg_score || 0) * 100}%` }}
-                                />
-                              </div>
-                              <p className="font-mono text-[10px] text-text-muted mt-1.5">
-                                Score: {(data.avg_score || 0).toFixed(2)}
-                              </p>
-                            </div>
-                          ))}
+                {technicalAssessments ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                    {Object.entries(technicalAssessments).map(([stroke, data]: [string, any]) => (
+                      <div key={stroke} className="px-4 py-3 rounded-xl bg-court-dark/40 border border-court-line/10">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="font-body text-sm text-text-primary capitalize">
+                            {stroke.replace(/_/g, ' ')}
+                          </span>
+                          <span className="font-mono text-xs text-text-muted">{data.shot_count}×</span>
                         </div>
+                        <div className="w-full h-1.5 bg-court-surface rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-gradient-to-r from-shuttle-lime to-feather-green rounded-full"
+                            style={{ width: `${(data.avg_score || 0) * 100}%` }}
+                          />
+                        </div>
+                        <p className="font-mono text-[10px] text-text-muted mt-1.5">
+                          Score: {(data.avg_score || 0).toFixed(2)}
+                        </p>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="text-text-muted font-mono text-sm">No technical data available</p>
+                  <p className="text-text-muted font-mono text-sm">No technical data available for this player</p>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'fitness' && (
+          <div className="animate-entrance">
+            <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
+              <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
+                <h2 className="font-display text-lg text-text-primary tracking-wide">FITNESS & FOOTWORK</h2>
+                <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
+              </div>
+              <div className="p-6">
+                <p className="font-mono text-xs text-text-muted">Coming soon — fatigue trend chart and court coverage stats</p>
               </div>
             </div>
           </div>
