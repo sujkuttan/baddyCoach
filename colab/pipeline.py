@@ -320,7 +320,7 @@ def stage_hits(shuttle_data):
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
     combined = 0.5 * (traj_score / (traj_score.max() + 1e-6)) + 0.5 * (speed_score / (speed_score.max() + 1e-6))
-    threshold = np.percentile(combined, 90)
+    threshold = np.percentile(combined, 95)
     hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in np.where(combined > threshold)[0]]
     return hits
 
@@ -344,45 +344,167 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             if model_path:
                 try:
                     import torch
+                    import torch.nn as nn
                     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
+                    
+                    # Strategy 1: checkpoint['model'] is nn.Module
                     if isinstance(checkpoint, dict) and 'model' in checkpoint:
                         model = checkpoint['model']
                         if callable(model) and hasattr(model, 'eval'):
                             model.eval()
                             self.model = model
-                except Exception:
-                    pass
+                            print(f"BST loaded from checkpoint['model']")
+                            return
+                    
+                    # Strategy 2: checkpoint is nn.Module directly
+                    if callable(checkpoint) and hasattr(checkpoint, 'eval'):
+                        checkpoint.eval()
+                        self.model = checkpoint
+                        print(f"BST loaded as direct model")
+                        return
+                    
+                    # Strategy 3: raw state_dict — try known architectures
+                    state_dict = checkpoint if isinstance(checkpoint, dict) else None
+                    if state_dict and any('weight' in k for k in list(state_dict.keys())[:5]):
+                        # Try MLP architecture
+                        model = self._try_mlp(state_dict, device)
+                        if model:
+                            self.model = model
+                            print(f"BST loaded as MLP")
+                            return
+                        # Try ResNet1D architecture
+                        model = self._try_resnet1d(state_dict, device)
+                        if model:
+                            self.model = model
+                            print(f"BST loaded as ResNet1D")
+                            return
+                        print(f"BST state_dict loaded but no matching architecture found")
+                    else:
+                        print(f"BST checkpoint format unrecognized: {type(checkpoint)}")
+                except Exception as e:
+                    print(f"BST load error: {e}")
+        
+        def _try_mlp(self, state_dict, device):
+            import torch
+            import torch.nn as nn
+            # Detect dimensions from state_dict
+            first_weight = None
+            for k, v in state_dict.items():
+                if 'weight' in k and v.dim() == 2:
+                    first_weight = v
+                    break
+            if first_weight is None:
+                return None
+            in_dim = first_weight.shape[1]
+            out_dim = first_weight.shape[0]
+            
+            class MLP(nn.Module):
+                def __init__(self, in_d, out_d):
+                    super().__init__()
+                    self.net = nn.Sequential(
+                        nn.Linear(in_d, 128), nn.ReLU(), nn.Dropout(0.3),
+                        nn.Linear(128, 128), nn.ReLU(), nn.Dropout(0.3),
+                        nn.Linear(128, out_d),
+                    )
+                def forward(self, x):
+                    return self.net(x)
+            
+            try:
+                model = MLP(in_dim, out_dim)
+                model.load_state_dict(state_dict)
+                model.to(device).eval()
+                return model
+            except Exception:
+                return None
+        
+        def _try_resnet1d(self, state_dict, device):
+            import torch
+            import torch.nn as nn
+            first_weight = None
+            for k, v in state_dict.items():
+                if 'weight' in k and v.dim() >= 2:
+                    first_weight = v
+                    break
+            if first_weight is None:
+                return None
+            out_channels = first_weight.shape[0]
+            
+            class ResNet1D(nn.Module):
+                def __init__(self, out_ch, num_classes):
+                    super().__init__()
+                    self.conv1 = nn.Conv1d(1, 32, 7, padding=3)
+                    self.bn1 = nn.BatchNorm1d(32)
+                    self.conv2 = nn.Conv1d(32, 64, 5, padding=2)
+                    self.bn2 = nn.BatchNorm1d(64)
+                    self.conv3 = nn.Conv1d(64, 128, 3, padding=1)
+                    self.bn3 = nn.BatchNorm1d(128)
+                    self.pool = nn.AdaptiveAvgPool1d(1)
+                    self.fc = nn.Linear(128, num_classes)
+                def forward(self, x):
+                    x = x.unsqueeze(1)
+                    x = torch.relu(self.bn1(self.conv1(x)))
+                    x = torch.relu(self.bn2(self.conv2(x)))
+                    x = torch.relu(self.bn3(self.conv3(x)))
+                    x = self.pool(x).squeeze(-1)
+                    return self.fc(x)
+            
+            try:
+                model = ResNet1D(out_channels, 12)
+                model.load_state_dict(state_dict)
+                model.to(device).eval()
+                return model
+            except Exception:
+                return None
         
         def predict(self, features):
             if self.model is None:
                 return self._rule_based_predict(features)
             import torch
             tensor = torch.from_numpy(features).float().unsqueeze(0)
-            if torch.cuda.is_available() and "cuda" in str(self.model.device):
-                tensor = tensor.cuda()
-            with torch.no_grad():
-                output = self.model(tensor)
-            probs = torch.softmax(output, dim=1).cpu().numpy()[0]
-            idx = int(np.argmax(probs))
-            return self.classes[idx], float(probs[idx])
+            try:
+                if torch.cuda.is_available():
+                    tensor = tensor.cuda()
+                with torch.no_grad():
+                    output = self.model(tensor)
+                probs = torch.softmax(output, dim=1).cpu().numpy()[0]
+                idx = int(np.argmax(probs))
+                return self.classes[idx], float(probs[idx])
+            except Exception:
+                return self._rule_based_predict(features)
         
         def _rule_based_predict(self, features):
-            shuttle_speed = features[16] if len(features) > 16 else 0
-            shuttle_height = features[30] if len(features) > 30 else 0.5
-            shuttle_dy = features[22] if len(features) > 22 else 0
+            """Improved rule-based fallback using shuttle trajectory features."""
+            # Feature layout: [0:24] shuttle trajectory, [24:30] shuttle position,
+            # [30:78] pose joints, [78:90] pose dynamics, [90:96] body orientation,
+            # [96:102] court position, [102:144] rally context
             
-            if shuttle_speed > 0.3 and shuttle_dy > 0.1:
-                return "smash", 0.6
-            elif shuttle_height < 0.3 and shuttle_speed < 0.1:
+            # Shuttle trajectory stats
+            shuttle_mean_speed = features[16] if len(features) > 16 else 0
+            shuttle_max_speed = features[17] if len(features) > 17 else 0
+            shuttle_mean_dx = features[0] if len(features) > 0 else 0
+            shuttle_mean_dy = features[4] if len(features) > 4 else 0
+            shuttle_dy_last = features[22] if len(features) > 22 else 0
+            
+            # Shuttle position
+            shuttle_y = features[30] if len(features) > 30 else 0.5  # height (0=top, 1=bottom)
+            
+            # Heuristic classification
+            if shuttle_max_speed > 0.4 and shuttle_dy_last > 0.15:
+                return "smash", 0.55
+            elif shuttle_y < 0.25 and shuttle_mean_speed < 0.08:
                 return "net_shot", 0.5
-            elif shuttle_dy < -0.1 and shuttle_speed > 0.15:
-                return "clear" if shuttle_speed > 0.25 else "lift", 0.5
-            elif shuttle_speed > 0.2 and abs(shuttle_dy) < 0.05:
+            elif shuttle_dy_last < -0.12 and shuttle_mean_speed > 0.12:
+                return "clear" if shuttle_mean_speed > 0.2 else "lift", 0.5
+            elif shuttle_mean_speed > 0.18 and abs(shuttle_dy_last) < 0.04:
                 return "drive", 0.5
-            elif shuttle_height > 0.6 and shuttle_speed < 0.15:
+            elif shuttle_y > 0.65 and shuttle_mean_speed < 0.12:
                 return "drop", 0.5
             else:
-                return "clear", 0.4
+                # Distribute based on speed
+                if shuttle_mean_speed > 0.15:
+                    return "drive", 0.4
+                else:
+                    return "clear", 0.4
     
     classifier = SimpleBSTClassifier(bst_path, device)
     
@@ -488,7 +610,7 @@ def stage_attribution(shots_data, shuttle_data):
     return shots_data
 
 
-def stage_rallies(shots_data, gap_threshold=30):
+def stage_rallies(shots_data, gap_threshold=30, min_shots=3):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])
@@ -498,15 +620,17 @@ def stage_rallies(shots_data, gap_threshold=30):
     count = 1
     for i in range(1, len(shots_sorted)):
         if shots_sorted[i]["frame"] - shots_sorted[i-1]["frame"] > gap_threshold:
-            rallies.append({"rally_id": rally_id, "start_frame": start,
-                          "end_frame": shots_sorted[i-1]["frame"], "shot_count": count})
-            rally_id += 1
+            if count >= min_shots:
+                rallies.append({"rally_id": rally_id, "start_frame": start,
+                              "end_frame": shots_sorted[i-1]["frame"], "shot_count": count})
+                rally_id += 1
             start = shots_sorted[i]["frame"]
             count = 1
         else:
             count += 1
-    rallies.append({"rally_id": rally_id, "start_frame": start,
-                   "end_frame": shots_sorted[-1]["frame"], "shot_count": count})
+    if count >= min_shots:
+        rallies.append({"rally_id": rally_id, "start_frame": start,
+                       "end_frame": shots_sorted[-1]["frame"], "shot_count": count})
     return rallies
 
 
@@ -632,7 +756,11 @@ def stage_technical(shots_data):
 
 def stage_coach(tactical, fitness, footwork):
     """Generate coaching recommendations using dot-notation rules."""
-    strengths, weaknesses, improvements, drills, evidence = [], [], [], [], []
+    strengths_set = set()
+    weaknesses_set = set()
+    improvements = []
+    drills = []
+    evidence = []
     
     def get_nested(data, path):
         keys = path.split(".")
@@ -707,17 +835,22 @@ def stage_coach(tactical, fitness, footwork):
         for rule in RULES:
             try:
                 if evaluate_rule(rule, player_analytics):
-                    entry = {"finding": rule["recommendation"], "metrics": [f"total shots: {total}"]}
+                    rec = rule["recommendation"]
+                    entry = {"finding": rec, "metrics": [f"player: {pid}", f"total shots: {total}"]}
                     evidence.append(entry)
                     if rule["category"] == "strength":
-                        strengths.append(rule["recommendation"])
+                        if rec not in strengths_set:
+                            strengths_set.add(rec)
                     elif rule["category"] == "weakness":
-                        weaknesses.append(rule["recommendation"])
-                        improvements.append(rule["recommendation"])
-                        drills.append(rule.get("drill", ""))
+                        if rec not in weaknesses_set:
+                            weaknesses_set.add(rec)
+                            improvements.append(rec)
+                            drills.append(rule.get("drill", ""))
             except Exception:
                 continue
     
+    strengths = list(strengths_set)
+    weaknesses = list(weaknesses_set)
     return {"strengths": strengths, "weaknesses": weaknesses,
             "top_3_improvements": improvements[:3], "recommended_drills": drills[:3], "evidence": evidence}
 
