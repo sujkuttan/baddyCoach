@@ -503,7 +503,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 # ─── Main Pipeline (streaming/batched) ──────────────────────────────────────
 
-BATCH_SIZE = 500
+BATCH_SIZE = 2000
 
 def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     start_time = time.time()
