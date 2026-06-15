@@ -156,7 +156,7 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
                   <span className="font-mono text-[10px] text-text-muted">{rallies.length} RALLIES</span>
                 </div>
                 <div className="p-4">
-                  <VideoPlayer jobId={jobId} />
+                  <VideoPlayer jobId={jobId} rallies={rallies} fps={30} />
                 </div>
               </div>
             </div>
