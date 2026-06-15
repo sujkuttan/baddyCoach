@@ -326,271 +326,394 @@ def stage_hits(shuttle_data):
 
 
 def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda"):
-    """Classify strokes using BST model with feature extraction."""
+    """Classify strokes using BST model with sequence inputs.
+    
+    This implementation follows the BST paper's approach:
+    1. Extract stroke clips (windows of frames around each hit)
+    2. Prepare BST inputs (pose sequences, shuttle sequences)
+    3. Run BST inference on the clips
+    """
     if not hits_data:
         return []
     
     shuttle_df = pd.DataFrame(shuttle_data) if shuttle_data else pd.DataFrame()
     pose_df = pd.DataFrame(pose_data) if pose_data else pd.DataFrame()
     
-    # Import BST components
+    # BST configuration
+    SEQ_LEN = 30  # Sequence length for BST
+    BST_CLASSES = [
+        "net_shot", "block", "smash", "lift", "clear", "drive",
+        "drop", "push", "rush", "cross_court", "short_serve", "long_serve"
+    ]
+    
+    # COCO bone pairs
+    BONE_PAIRS = [
+        (0, 1), (0, 2), (1, 2), (1, 3), (2, 4),
+        (3, 5), (4, 6),
+        (5, 7), (7, 9), (6, 8), (8, 10),
+        (5, 6), (5, 11), (6, 12), (11, 12),
+        (11, 13), (13, 15), (12, 14), (14, 16)
+    ]
+    
+    def create_bones(joints):
+        """Create bone vectors from joint positions.
+        joints: (T, M, J, 2) -> bones: (T, M, B, 2)
+        """
+        bones = []
+        for start, end in BONE_PAIRS:
+            start_j = joints[:, :, start, :]
+            end_j = joints[:, :, end, :]
+            bone = np.where((start_j != 0.0) & (end_j != 0.0), end_j - start_j, 0.0)
+            bones.append(bone)
+        return np.stack(bones, axis=-2)
+    
+    def prepare_bst_clip(clip_frames, seq_len):
+        """Prepare BST input from a clip of frames.
+        Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), video_len
+        """
+        n_frames = len(clip_frames)
+        
+        # Initialize arrays
+        joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
+        shuttle = np.zeros((seq_len, 2), dtype=np.float32)
+        
+        for t, frame in enumerate(clip_frames[:seq_len]):
+            # Shuttle position (normalized by video dims)
+            if 'shuttle_x' in frame and 'shuttle_y' in frame:
+                shuttle[t] = [frame['shuttle_x'], frame['shuttle_y']]
+            
+            # Pose for both players
+            for p_idx, pid in enumerate(['player_1', 'player_2']):
+                if pid in frame.get('pose', {}):
+                    kps = frame['pose'][pid]
+                    if kps is not None and len(kps) == 17:
+                        # Normalize by bounding box
+                        coords = kps[:, :2] if kps.shape[1] >= 2 else kps
+                        bbox_min = coords.min(axis=0)
+                        bbox_max = coords.max(axis=0)
+                        diag = max(np.linalg.norm(bbox_max - bbox_min), 1.0)
+                        joints[t, p_idx] = (coords - bbox_min) / diag
+        
+        # Create bones
+        bones = create_bones(joints)
+        
+        # Concatenate: (seq_len, 2, 17+19, 2) -> (seq_len, 2, 72)
+        JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)
+        
+        return JnB, shuttle, min(n_frames, seq_len)
+    
+    # Load BST model
     bst_path = str(BST_PATH) if BST_PATH.exists() else None
+    model = None
+    seq_len = SEQ_LEN
     
-    # Simple BST classifier (inline for self-contained pipeline)
-    class SimpleBSTClassifier:
-        def __init__(self, model_path, device):
-            self.model = None
-            self.classes = STROKE_CLASSES
-            if model_path:
-                try:
-                    import torch
-                    import torch.nn as nn
-                    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-                    
-                    # Strategy 1: checkpoint['model'] is nn.Module
-                    if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                        model = checkpoint['model']
-                        if callable(model) and hasattr(model, 'eval'):
-                            model.eval()
-                            self.model = model
-                            print(f"BST loaded from checkpoint['model']")
-                            return
-                    
-                    # Strategy 2: checkpoint is nn.Module directly
-                    if callable(checkpoint) and hasattr(checkpoint, 'eval'):
-                        checkpoint.eval()
-                        self.model = checkpoint
-                        print(f"BST loaded as direct model")
-                        return
-                    
-                    # Strategy 3: raw state_dict — try known architectures
-                    state_dict = checkpoint if isinstance(checkpoint, dict) else None
-                    if state_dict and any('weight' in k for k in list(state_dict.keys())[:5]):
-                        # Try MLP architecture
-                        model = self._try_mlp(state_dict, device)
-                        if model:
-                            self.model = model
-                            print(f"BST loaded as MLP")
-                            return
-                        # Try ResNet1D architecture
-                        model = self._try_resnet1d(state_dict, device)
-                        if model:
-                            self.model = model
-                            print(f"BST loaded as ResNet1D")
-                            return
-                        print(f"BST state_dict loaded but no matching architecture found")
-                    else:
-                        print(f"BST checkpoint format unrecognized: {type(checkpoint)}")
-                except Exception as e:
-                    print(f"BST load error: {e}")
-        
-        def _try_mlp(self, state_dict, device):
+    if bst_path:
+        try:
             import torch
-            import torch.nn as nn
-            # Detect dimensions from state_dict
-            first_weight = None
-            for k, v in state_dict.items():
-                if 'weight' in k and v.dim() == 2:
-                    first_weight = v
-                    break
-            if first_weight is None:
-                return None
-            in_dim = first_weight.shape[1]
-            out_dim = first_weight.shape[0]
+            checkpoint = torch.load(bst_path, map_location=device, weights_only=False)
             
-            class MLP(nn.Module):
-                def __init__(self, in_d, out_d):
-                    super().__init__()
-                    self.net = nn.Sequential(
-                        nn.Linear(in_d, 128), nn.ReLU(), nn.Dropout(0.3),
-                        nn.Linear(128, 128), nn.ReLU(), nn.Dropout(0.3),
-                        nn.Linear(128, out_d),
-                    )
-                def forward(self, x):
-                    return self.net(x)
+            # Detect model architecture from state_dict
+            state_dict = checkpoint if isinstance(checkpoint, dict) and 'model' not in checkpoint else None
+            if state_dict is None and isinstance(checkpoint, dict) and 'model' in checkpoint:
+                state_dict = checkpoint['model'] if isinstance(checkpoint['model'], dict) else None
             
-            try:
-                model = MLP(in_dim, out_dim)
+            if state_dict and any('tcn_pose' in k for k in list(state_dict.keys())[:10]):
+                # This is a BST state_dict - detect dimensions
+                in_dim = 72
+                n_classes = 25
+                detected_seq_len = SEQ_LEN
+                
+                for k, v in state_dict.items():
+                    if 'tcn_pose.net.0.weight' in k:
+                        in_dim = v.shape[1]
+                    if 'mlp_head.net.4.weight' in k:
+                        n_classes = v.shape[0]
+                    if 'embedding_tem' in k:
+                        detected_seq_len = v.shape[1] - 1
+                
+                seq_len = detected_seq_len
+                
+                # Create BST_CG model (inline for self-contained pipeline)
+                import torch.nn as nn
+                
+                class TCN(nn.Module):
+                    def __init__(self, in_ch, channels, kernel_size, drop_p=0.3):
+                        super().__init__()
+                        layers = []
+                        prev = in_ch
+                        for ch in channels:
+                            layers.extend([
+                                nn.Conv1d(prev, ch, kernel_size, padding=kernel_size//2),
+                                nn.BatchNorm1d(ch), nn.ReLU(), nn.Dropout(drop_p)
+                            ])
+                            prev = ch
+                        self.net = nn.Sequential(*layers)
+                    def forward(self, x):
+                        return self.net(x)
+                
+                class FeedForward(nn.Module):
+                    def __init__(self, in_d, out_d, hd, drop_p=0.3):
+                        super().__init__()
+                        self.net = nn.Sequential(
+                            nn.Linear(in_d, hd), nn.GELU(), nn.Dropout(drop_p),
+                            nn.Linear(hd, out_d), nn.Dropout(drop_p)
+                        )
+                    def forward(self, x):
+                        return self.net(x)
+                
+                class MLP(nn.Module):
+                    def __init__(self, in_d, out_d=None, hd=None, drop_p=0.3):
+                        super().__init__()
+                        if out_d is None: out_d = in_d
+                        if hd is None: hd = in_d * 2
+                        self.net = nn.Sequential(
+                            nn.Linear(in_d, hd), nn.GELU(), nn.Dropout(drop_p),
+                            nn.Linear(hd, out_d), nn.Dropout(drop_p)
+                        )
+                    def forward(self, x):
+                        return self.net(x)
+                
+                class TransformerEncoderLayer(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, hd_ff, drop_p=0.3):
+                        super().__init__()
+                        self.norm1 = nn.LayerNorm(d_model)
+                        self.attn = nn.MultiheadAttention(d_model, n_head, dropout=drop_p, batch_first=True)
+                        self.norm2 = nn.LayerNorm(d_model)
+                        self.ff = FeedForward(d_model, d_model, hd_ff, drop_p)
+                    def forward(self, x, mask=None):
+                        h = self.norm1(x)
+                        h, _ = self.attn(h, h, h, key_padding_mask=mask)
+                        x = x + h
+                        x = x + self.ff(self.norm2(x))
+                        return x
+                
+                class TransformerEncoder(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, depth, hd_ff, drop_p=0.3):
+                        super().__init__()
+                        self.layers = nn.ModuleList([
+                            TransformerEncoderLayer(d_model, d_head, n_head, hd_ff, drop_p)
+                            for _ in range(depth)
+                        ])
+                    def forward(self, x, mask=None):
+                        for layer in self.layers:
+                            x = layer(x, mask)
+                        return x
+                
+                class CrossAttention(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, drop_p=0.3):
+                        super().__init__()
+                        d_cat = d_head * n_head
+                        self.h = n_head
+                        self.to_q = nn.Linear(d_model, d_cat, bias=False)
+                        self.to_kv = nn.Linear(d_model, d_cat * 2, bias=False)
+                        self.scale = d_head ** -0.5
+                        self.attend = nn.Sequential(nn.Softmax(dim=-1), nn.Dropout(drop_p))
+                        self.tail = nn.Linear(d_cat, d_model) if n_head != 1 or d_cat != d_model else nn.Identity()
+                    def forward(self, x1, x2, mask=None):
+                        q = self.to_q(x1).view(x1.size(0), x1.size(1), self.h, -1).transpose(1, 2)
+                        kv = self.to_kv(x2).view(x2.size(0), x2.size(1), self.h, -1).chunk(2, dim=-1)
+                        k, v = kv[0].transpose(1, 2), kv[1].transpose(1, 2)
+                        dots = (q @ k.transpose(-1, -2)) * self.scale
+                        if mask is not None:
+                            dots = dots.masked_fill(mask.view(mask.size(0), 1, 1, -1) == 0, -torch.inf)
+                        att = self.attend(dots) @ v
+                        return self.tail(att.transpose(1, 2).reshape(x1.size(0), x1.size(1), -1))
+                
+                class CrossTransformerLayer(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, hd_ff, drop_p=0.3):
+                        super().__init__()
+                        self.norm1 = nn.LayerNorm(d_model)
+                        self.norm2 = nn.LayerNorm(d_model)
+                        self.cross_attn = CrossAttention(d_model, d_head, n_head, drop_p)
+                        self.ff = FeedForward(d_model, d_model, hd_ff, drop_p)
+                    def forward(self, x1, x2, mask=None):
+                        x = self.cross_attn(self.norm1(x1), self.norm1(x2), mask)
+                        return x + self.ff(self.norm2(x))
+                
+                class BST_CG(nn.Module):
+                    def __init__(self, in_dim, seq_len, n_classes, d_model=100, d_head=128, n_head=6,
+                                 depth_tem=2, depth_inter=1, drop_p=0.3, mlp_scale=4):
+                        super().__init__()
+                        d_ff = d_model * mlp_scale
+                        self.tcn_pose = TCN(in_dim, [d_model, d_model], 5, drop_p)
+                        self.tcn_shuttle = TCN(2, [d_model//2, d_model], 5, drop_p)
+                        self.token_tem = nn.Parameter(torch.randn(1, 1, d_model))
+                        self.embed_tem = nn.Parameter(torch.randn(1, 1+seq_len, d_model))
+                        self.drop = nn.Dropout(drop_p, inplace=True)
+                        self.enc_tem = TransformerEncoder(d_model, d_head, n_head, depth_tem, d_ff, drop_p)
+                        self.embed_cross = nn.Parameter(torch.randn(1, seq_len, d_model))
+                        self.cross_trans = CrossTransformerLayer(d_model, d_head, n_head, d_ff, drop_p)
+                        self.token_inter = nn.Parameter(torch.randn(1, 1, d_model))
+                        self.embed_inter = nn.Parameter(torch.randn(1, 1+seq_len, d_model))
+                        self.enc_inter = TransformerEncoder(d_model, d_head, n_head, depth_inter, d_ff, drop_p)
+                        self.mlp_clean = MLP(d_model, d_model, d_model, drop_p)
+                        self.head = nn.Sequential(
+                            nn.Linear(d_model*3, d_ff), nn.GELU(), nn.Dropout(drop_p), nn.Linear(d_ff, n_classes)
+                        )
+                    def forward(self, JnB, shuttle, video_len):
+                        b, t, n, dim = JnB.shape
+                        x = JnB.permute(0,2,3,1).reshape(b*n, dim, t)
+                        x = self.tcn_pose(x).view(b, n, -1, t).transpose(-2, -1)
+                        s = shuttle.transpose(1,2)
+                        s = self.tcn_shuttle(s).unsqueeze(1).transpose(-2, -1)
+                        x = torch.cat([x, s], dim=1)
+                        ct = self.token_tem.expand(b*n, -1, -1)
+                        x = torch.cat([ct, x.view(b*n, t, -1)], dim=1) + self.embed_tem
+                        mask = torch.arange(0, 1+t, device=x.device).unsqueeze(0) < (1 + video_len.unsqueeze(-1))
+                        mask_n = mask.repeat_interleave(n, dim=0)
+                        x = self.drop(x)
+                        x = self.enc_tem(x, mask_n).view(b, n, 1+t, -1)
+                        p1, p2, sh = x[:,0], x[:,1], x[:,2]
+                        p1c, p2c, shc = p1[:,0], p2[:,0], sh[:,0]
+                        p1 = self.cross_trans(p1[:,1:]+self.embed_cross, sh[:,1:]+self.embed_cross, mask[:,1:])
+                        p2 = self.cross_trans(p2[:,1:]+self.embed_cross, sh[:,1:]+self.embed_cross, mask[:,1:])
+                        ci = self.token_inter.expand(b, -1, -1)
+                        p1 = self.enc_inter(torch.cat([ci, p1], dim=1)+self.embed_inter, mask)
+                        p2 = self.enc_inter(torch.cat([ci, p2], dim=1)+self.embed_inter, mask)
+                        dirt = self.mlp_clean(torch.minimum(p1[:,0], p2[:,0]))
+                        shc = shc - dirt
+                        out = torch.cat([p1c+p1[:,0], p2c+p2[:,0], shc], dim=1)
+                        return self.head(out)
+                
+                model = BST_CG(in_dim, seq_len, n_classes)
                 model.load_state_dict(state_dict)
                 model.to(device).eval()
-                return model
-            except Exception:
-                return None
-        
-        def _try_resnet1d(self, state_dict, device):
-            import torch
-            import torch.nn as nn
-            first_weight = None
-            for k, v in state_dict.items():
-                if 'weight' in k and v.dim() >= 2:
-                    first_weight = v
-                    break
-            if first_weight is None:
-                return None
-            out_channels = first_weight.shape[0]
-            
-            class ResNet1D(nn.Module):
-                def __init__(self, out_ch, num_classes):
-                    super().__init__()
-                    self.conv1 = nn.Conv1d(1, 32, 7, padding=3)
-                    self.bn1 = nn.BatchNorm1d(32)
-                    self.conv2 = nn.Conv1d(32, 64, 5, padding=2)
-                    self.bn2 = nn.BatchNorm1d(64)
-                    self.conv3 = nn.Conv1d(64, 128, 3, padding=1)
-                    self.bn3 = nn.BatchNorm1d(128)
-                    self.pool = nn.AdaptiveAvgPool1d(1)
-                    self.fc = nn.Linear(128, num_classes)
-                def forward(self, x):
-                    x = x.unsqueeze(1)
-                    x = torch.relu(self.bn1(self.conv1(x)))
-                    x = torch.relu(self.bn2(self.conv2(x)))
-                    x = torch.relu(self.bn3(self.conv3(x)))
-                    x = self.pool(x).squeeze(-1)
-                    return self.fc(x)
-            
-            try:
-                model = ResNet1D(out_channels, 12)
-                model.load_state_dict(state_dict)
-                model.to(device).eval()
-                return model
-            except Exception:
-                return None
-        
-        def predict(self, features):
-            if self.model is None:
-                return self._rule_based_predict(features)
-            import torch
-            tensor = torch.from_numpy(features).float().unsqueeze(0)
-            try:
-                if torch.cuda.is_available():
-                    tensor = tensor.cuda()
-                with torch.no_grad():
-                    output = self.model(tensor)
-                probs = torch.softmax(output, dim=1).cpu().numpy()[0]
-                idx = int(np.argmax(probs))
-                return self.classes[idx], float(probs[idx])
-            except Exception:
-                return self._rule_based_predict(features)
-        
-        def _rule_based_predict(self, features):
-            """Improved rule-based fallback using shuttle trajectory features."""
-            # Feature layout: [0:24] shuttle trajectory, [24:30] shuttle position,
-            # [30:78] pose joints, [78:90] pose dynamics, [90:96] body orientation,
-            # [96:102] court position, [102:144] rally context
-            
-            # Shuttle trajectory stats
-            shuttle_mean_speed = features[16] if len(features) > 16 else 0
-            shuttle_max_speed = features[17] if len(features) > 17 else 0
-            shuttle_mean_dx = features[0] if len(features) > 0 else 0
-            shuttle_mean_dy = features[4] if len(features) > 4 else 0
-            shuttle_dy_last = features[22] if len(features) > 22 else 0
-            
-            # Shuttle position
-            shuttle_y = features[30] if len(features) > 30 else 0.5  # height (0=top, 1=bottom)
-            
-            # Heuristic classification
-            if shuttle_max_speed > 0.4 and shuttle_dy_last > 0.15:
-                return "smash", 0.55
-            elif shuttle_y < 0.25 and shuttle_mean_speed < 0.08:
-                return "net_shot", 0.5
-            elif shuttle_dy_last < -0.12 and shuttle_mean_speed > 0.12:
-                return "clear" if shuttle_mean_speed > 0.2 else "lift", 0.5
-            elif shuttle_mean_speed > 0.18 and abs(shuttle_dy_last) < 0.04:
-                return "drive", 0.5
-            elif shuttle_y > 0.65 and shuttle_mean_speed < 0.12:
-                return "drop", 0.5
+                print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
             else:
-                # Distribute based on speed
-                if shuttle_mean_speed > 0.15:
-                    return "drive", 0.4
-                else:
-                    return "clear", 0.4
+                print("BST state_dict not recognized, using rule-based fallback")
+        except Exception as e:
+            print(f"BST load error: {e}")
     
-    classifier = SimpleBSTClassifier(bst_path, device)
+    # Get video dimensions for normalization
+    vid_w, vid_h = 1280, 720
+    if len(shuttle_df) > 0:
+        vid_w = max(shuttle_df["x"].max(), 640)
+        vid_h = max(shuttle_df["y"].max(), 480)
     
-    # Get video dimensions
-    frame_width = 640
-    frame_height = 480
-    if shuttle_df is not None and len(shuttle_df) > 0:
-        frame_width = max(shuttle_df["x"].max(), 640)
-        frame_height = max(shuttle_df["y"].max(), 480)
-    
-    # Feature extractor (inline)
-    def extract_features(target_frame, player_id="player_1"):
-        features = []
-        
-        # Shuttle trajectory (24 dims)
-        if shuttle_df is not None and len(shuttle_df) > 0:
-            window = shuttle_df[(shuttle_df["frame"] >= target_frame - 8) & (shuttle_df["frame"] <= target_frame)].sort_values("frame")
-            if len(window) >= 2:
-                x = window["x"].values / frame_width
-                y = window["y"].values / frame_height
-                dx, dy = np.diff(x), np.diff(y)
-                ddx = np.diff(dx) if len(dx) > 1 else np.array([0.0])
-                ddy = np.diff(dy) if len(dy) > 1 else np.array([0.0])
-                speed = np.sqrt(dx**2 + dy**2)
-                features.extend([np.mean(dx), np.std(dx), np.min(dx), np.max(dx),
-                                np.mean(dy), np.std(dy), np.min(dy), np.max(dy),
-                                np.mean(ddx), np.std(ddx), np.min(ddx), np.max(ddx),
-                                np.mean(ddy), np.std(ddy), np.min(ddy), np.max(ddy),
-                                np.mean(speed), np.max(speed),
-                                np.mean(np.abs(dx)), np.mean(np.abs(dy)),
-                                np.mean(np.abs(ddx + ddy)),
-                                dx[-1] if len(dx) > 0 else 0, dy[-1] if len(dy) > 0 else 0,
-                                x[-1] - x[0] if len(x) > 1 else 0])
-            else:
-                features.extend([0] * 24)
-        else:
-            features.extend([0] * 24)
-        
-        # Shuttle position (6 dims)
-        if shuttle_df is not None and len(shuttle_df) > 0:
-            row = shuttle_df[shuttle_df["frame"] == target_frame]
-            if len(row) > 0:
-                x, y = float(row.iloc[0]["x"]) / frame_width, float(row.iloc[0]["y"]) / frame_height
-                features.extend([x, y, 0, 0, y, abs(y - 0.5)])
-            else:
-                features.extend([0] * 6)
-        else:
-            features.extend([0] * 6)
-        
-        # Pose joints (48 dims)
-        if pose_df is not None and len(pose_df) > 0:
-            row = pose_df[(pose_df["frame"] == target_frame) & (pose_df["player_id"] == player_id)]
-            if len(row) > 0:
-                kps = np.array(row.iloc[0]["keypoints"])
+    # Group pose by frame
+    pose_by_frame = {}
+    if len(pose_df) > 0:
+        for f_idx in pose_df['frame'].unique():
+            frame_poses = pose_df[pose_df['frame'] == f_idx]
+            pd_dict = {}
+            for _, row in frame_poses.iterrows():
+                kps = np.array(row['keypoints'])
                 if kps.shape == (17, 3):
-                    coords = kps[:, :2]
-                    bbox_min, bbox_max = coords.min(axis=0), coords.max(axis=0)
-                    diag = max(np.linalg.norm(bbox_max - bbox_min), 1)
-                    coords_norm = (coords - bbox_min) / diag
-                    flat = coords_norm.flatten()
-                    features.extend(np.pad(flat, (0, 48 - len(flat)))[:48])
-                else:
-                    features.extend([0] * 48)
-            else:
-                features.extend([0] * 48)
-        else:
-            features.extend([0] * 48)
-        
-        # Pad to 144 dims
-        while len(features) < 144:
-            features.append(0)
-        
-        return np.array(features[:144])
+                    pd_dict[row['player_id']] = kps
+            pose_by_frame[f_idx] = pd_dict
     
+    # Get all hit frames for smart clipping
+    hit_frames = sorted([h['frame'] for h in hits_data])
+    
+    # Process each hit
     shots = []
-    previous_shots = []
     
-    for hit in hits_data:
-        frame = hit["frame"]
-        features = extract_features(frame)
-        stroke_type, confidence = classifier.predict(features)
+    if model is not None:
+        import torch
         
-        shots.append({"frame": frame, "hit_confidence": hit["confidence"],
-                      "stroke_type": stroke_type, "stroke_confidence": confidence})
-        
-        previous_shots.append({"stroke_type": stroke_type, "frame": frame, "stroke_confidence": confidence})
+        for hit in hits_data:
+            hit_frame = hit['frame']
+            hit_pos = hit_frames.index(hit_frame)
+            
+            # Smart clipping: from previous hit to next hit
+            start_frame = hit_frames[hit_pos - 1] if hit_pos > 0 else max(0, hit_frame - seq_len // 2)
+            end_frame = hit_frames[hit_pos + 1] + 2 if hit_pos < len(hit_frames) - 1 else hit_frame + seq_len // 2 + 1
+            
+            # Extract clip frames
+            clip_frames = []
+            for f in range(start_frame, end_frame):
+                frame_data = {}
+                
+                # Shuttle (normalized)
+                if len(shuttle_df) > 0:
+                    s_row = shuttle_df[shuttle_df['frame'] == f]
+                    if len(s_row) > 0:
+                        frame_data['shuttle_x'] = float(s_row.iloc[0]['x']) / vid_w
+                        frame_data['shuttle_y'] = float(s_row.iloc[0]['y']) / vid_h
+                    else:
+                        frame_data['shuttle_x'] = 0.0
+                        frame_data['shuttle_y'] = 0.0
+                else:
+                    frame_data['shuttle_x'] = 0.0
+                    frame_data['shuttle_y'] = 0.0
+                
+                # Pose
+                frame_data['pose'] = pose_by_frame.get(f, {})
+                
+                clip_frames.append(frame_data)
+            
+            # Pad/truncate to seq_len
+            while len(clip_frames) < seq_len:
+                clip_frames.append({'shuttle_x': 0.0, 'shuttle_y': 0.0, 'pose': {}})
+            clip_frames = clip_frames[:seq_len]
+            
+            # Prepare BST input
+            JnB, shuttle_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
+            
+            # Convert to tensors
+            JnB_t = torch.from_numpy(JnB).float().unsqueeze(0).to(device)
+            shuttle_t = torch.from_numpy(shuttle_arr).float().unsqueeze(0).to(device)
+            video_len_t = torch.tensor([v_len], dtype=torch.long).to(device)
+            
+            # Inference
+            with torch.no_grad():
+                logits = model(JnB_t, shuttle_t, video_len_t)
+                probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+            
+            pred_idx = int(np.argmax(probs))
+            confidence = float(probs[pred_idx])
+            
+            # Map to simplified class
+            if pred_idx == 0:
+                stroke_type = "unknown"
+            elif 1 <= pred_idx <= 12:
+                stroke_type = BST_CLASSES[pred_idx - 1] if pred_idx - 1 < len(BST_CLASSES) else "clear"
+            elif 13 <= pred_idx <= 24:
+                stroke_type = BST_CLASSES[pred_idx - 13] if pred_idx - 13 < len(BST_CLASSES) else "clear"
+            else:
+                stroke_type = "clear"
+            
+            shots.append({
+                "frame": hit_frame,
+                "hit_confidence": hit['confidence'],
+                "stroke_type": stroke_type,
+                "stroke_confidence": confidence,
+            })
+    else:
+        # Rule-based fallback when model not available
+        for hit in hits_data:
+            frame = hit['frame']
+            
+            # Use shuttle trajectory for classification
+            stroke_type = "clear"
+            confidence = 0.4
+            
+            if len(shuttle_df) > 0:
+                window = shuttle_df[(shuttle_df['frame'] >= frame - 5) & (shuttle_df['frame'] <= frame + 5)]
+                if len(window) >= 2:
+                    y_vals = window['y'].values / vid_h
+                    dy = np.diff(y_vals)
+                    speed = np.mean(np.abs(dy))
+                    
+                    if speed > 0.1 and np.mean(dy) > 0.05:
+                        stroke_type = "smash"
+                        confidence = 0.5
+                    elif speed < 0.03:
+                        stroke_type = "net_shot"
+                        confidence = 0.45
+                    elif np.mean(dy) < -0.03:
+                        stroke_type = "clear"
+                        confidence = 0.5
+                    elif speed > 0.05:
+                        stroke_type = "drive"
+                        confidence = 0.45
+            
+            shots.append({
+                "frame": frame,
+                "hit_confidence": hit['confidence'],
+                "stroke_type": stroke_type,
+                "stroke_confidence": confidence,
+            })
     
     return shots
 

@@ -18,7 +18,7 @@ class StrokeClassificationStage:
         pose_df = artifacts.get_parquet("pose")
         court = artifacts.get("court") or {}
 
-        from app.models.bst import BSTClassifier, STROKE_CLASSES
+        from app.models.bst import BSTClassifier, COACH_STROKE_CLASSES
         from app.models.bst_features import BSTFeatureExtractor
         from app.config.settings import settings
 
@@ -40,6 +40,7 @@ class StrokeClassificationStage:
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
             
+            # Extract 144-dim features for rule-based fallback
             features = extractor.extract(
                 shuttle_df=shuttle_df,
                 pose_df=pose_df,
@@ -48,7 +49,22 @@ class StrokeClassificationStage:
                 previous_shots=previous_shots,
             )
             
-            stroke_type, confidence = classifier.predict(features)
+            # Create a clip for BST prediction
+            clip = {
+                'JnB': np.zeros((30, 2, 72), dtype=np.float32),
+                'shuttle': np.zeros((30, 2), dtype=np.float32),
+                'pos': np.zeros((30, 2, 2), dtype=np.float32),
+                'video_len': 30,
+            }
+            
+            # Fill shuttle from features
+            if shuttle_df is not None and len(shuttle_df) > 0:
+                shuttle_row = shuttle_df[shuttle_df['frame'] == frame]
+                if len(shuttle_row) > 0:
+                    clip['shuttle'][0] = [float(shuttle_row.iloc[0]['x']) / frame_width,
+                                          float(shuttle_row.iloc[0]['y']) / frame_height]
+            
+            stroke_type, confidence = classifier.predict_single(clip)
             
             shot = {
                 "frame": frame,

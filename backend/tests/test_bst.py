@@ -2,15 +2,21 @@ import numpy as np
 
 
 def test_bst_predict_returns_class():
-    from app.models.bst import BSTClassifier, STROKE_CLASSES
+    from app.models.bst import BSTClassifier, COACH_STROKE_CLASSES
 
     classifier = BSTClassifier()
 
-    features = np.random.rand(144).astype(np.float32)
+    # Test rule-based fallback (no model loaded)
+    clip = {
+        'JnB': np.random.rand(30, 2, 72).astype(np.float32),
+        'shuttle': np.random.rand(30, 2).astype(np.float32),
+        'pos': np.random.rand(30, 2, 2).astype(np.float32),
+        'video_len': 30,
+    }
+    
+    stroke_type, confidence = classifier.predict_single(clip)
 
-    stroke_type, confidence = classifier.predict(features)
-
-    assert stroke_type in STROKE_CLASSES
+    assert stroke_type in COACH_STROKE_CLASSES or stroke_type == "unknown"
     assert 0 <= confidence <= 1
 
 
