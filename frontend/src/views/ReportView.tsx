@@ -4,6 +4,8 @@ import { VideoPlayer } from '../components/VideoPlayer';
 import { ShotChart } from '../components/ShotChart';
 import { CoachPanel } from '../components/CoachPanel';
 import { CourtHeatmap } from '../components/CourtHeatmap';
+import { FatigueTrendChart } from '../components/FatigueTrendChart';
+import { FitnessStats } from '../components/FitnessStats';
 
 interface ReportViewProps {
   jobId: string;
@@ -284,14 +286,30 @@ export function ReportView({ jobId, onBack }: ReportViewProps) {
         )}
 
         {activeTab === 'fitness' && (
-          <div className="animate-entrance">
+          <div className="space-y-6 animate-entrance">
+            {/* Fitness Stats */}
             <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
               <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                 <h2 className="font-display text-lg text-text-primary tracking-wide">FITNESS & FOOTWORK</h2>
                 <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
               </div>
               <div className="p-6">
-                <p className="font-mono text-xs text-text-muted">Coming soon — fatigue trend chart and court coverage stats</p>
+                <FitnessStats
+                  fitness={report.fitness?.[selectedPlayer] || {}}
+                  footwork={report.footwork?.[selectedPlayer] || {}}
+                />
+              </div>
+            </div>
+
+            {/* Fatigue Trend Chart */}
+            <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
+              <div className="px-5 py-3 border-b border-court-line/10">
+                <h2 className="font-display text-lg text-text-primary tracking-wide">FATIGUE TREND</h2>
+              </div>
+              <div className="p-6">
+                <FatigueTrendChart
+                  rallyIntensities={report.fitness?.[selectedPlayer]?.rally_intensities || []}
+                />
               </div>
             </div>
           </div>
