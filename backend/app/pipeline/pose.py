@@ -9,10 +9,64 @@ class PoseEstimationStage:
     input_keys = ["players"]
     output_keys = ["pose"]
 
-    def run(self, artifacts: ArtifactStore, config: StageConfig, pose_data: list[dict] | None = None) -> StageResult:
-        if not pose_data:
-            return StageResult.from_error("No pose data provided")
+    def run(
+        self,
+        artifacts: ArtifactStore,
+        config: StageConfig,
+        frames: list[np.ndarray] | None = None,
+        pose_data: list[dict] | None = None
+    ) -> StageResult:
+        """Run pose estimation.
 
+        If frames provided, runs RTMPose inference.
+        If pose_data provided, uses pre-computed data.
+        """
+        if pose_data:
+            return self._store_data(artifacts, pose_data)
+
+        if frames:
+            pose_data = self._run_rtmpose(frames, artifacts)
+            return self._store_data(artifacts, pose_data)
+
+        return StageResult.from_error("No frames or pose data provided")
+
+    def _run_rtmpose(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
+        """Run RTMPose on video frames using player detections."""
+        from app.models.rtmpose import RTMPoseEstimator
+        from app.config.settings import settings
+
+        model_path = str(settings.rtmpose_model_path) if settings.rtmpose_model_path else None
+        estimator = RTMPoseEstimator(model_path, device="cuda" if settings.gpu_enabled else "cpu")
+
+        players = artifacts.get("players")
+        if not players:
+            return []
+
+        player_list = players.get("players", [])
+        if not player_list:
+            return []
+
+        pose_data = []
+        for frame_idx, frame in enumerate(frames):
+            for player in player_list:
+                player_id = player["id"]
+
+                # Get detection for this frame (simplified - use first detection)
+                det = player.get("detections", [{}])[0] if player.get("detections") else {}
+                bbox = det.get("bbox", (100, 100, 300, 400))
+
+                keypoints = estimator.estimate(frame, bbox)
+
+                pose_data.append({
+                    "frame": frame_idx,
+                    "player_id": player_id,
+                    "keypoints": keypoints.tolist(),
+                })
+
+        return pose_data
+
+    def _store_data(self, artifacts: ArtifactStore, pose_data: list[dict]) -> StageResult:
+        """Store pose estimation data."""
         records = []
         for entry in pose_data:
             records.append({
