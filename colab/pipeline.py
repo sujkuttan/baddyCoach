@@ -215,14 +215,23 @@ class YOLOv8Tracker:
     def track_batch(self, frames, global_frame_offsets):
         all_det = {}
         for local_idx, frame in enumerate(frames):
+            h, w = frame.shape[:2]
             results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
             global_idx = global_frame_offsets + local_idx
             dets = []
             for r in results:
                 if r.boxes is not None and r.boxes.id is not None:
                     for box in r.boxes:
-                        dets.append({"frame": global_idx, "bbox": box.xyxy[0].tolist(),
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        bw, bh = x2 - x1, y2 - y1
+                        bbox_area = bw * bh
+                        frame_area = w * h
+                        if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
+                            continue
+                        dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
                                    "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
+            dets.sort(key=lambda d: d["confidence"], reverse=True)
+            dets = dets[:2]
             all_det[global_idx] = dets
         return all_det
 
@@ -522,7 +531,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
     # Initialize ML models
     print("\n  Loading ML models...")
-    tracker = YOLOv8Tracker(conf_threshold=0.5, device=device)
+    tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
     pose_estimator = RTMPoseEstimator(str(RTMOPOSE_PATH), device=device)
     print("  Models loaded")
