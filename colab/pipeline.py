@@ -280,10 +280,11 @@ class RTMPoseEstimator:
 
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
-def extract_frames(video_path, max_frames=10000, target_fps=5):
+def extract_frames(video_path, max_frames=50000, target_fps=10):
     """Extract frames sampled across entire video duration.
 
-    For a 30-min playing-time video at 5fps: 9000 frames.
+    For a 30-min playing-time video at 10fps: 18,000 frames.
+    High sampling rate for accurate shot identification and classification.
     """
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -593,9 +594,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
     setup_models(device)
 
-    # 1. Extract frames (5fps across entire video)
+    # 1. Extract frames (10fps across entire video for accurate shot detection)
     print("[1/14] Extracting frames...")
-    frames = extract_frames(video_path, max_frames=10000, target_fps=5)
+    frames = extract_frames(video_path, max_frames=50000, target_fps=10)
     print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
 
     # 2. Court detection
