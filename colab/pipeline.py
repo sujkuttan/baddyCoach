@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
+from tqdm import tqdm
 
 # ─── Configuration ───────────────────────────────────────────────────────────
 
@@ -209,6 +210,7 @@ class TrackNetV3:
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
         results = []
+        pbar = tqdm(total=len(frames) - 2, desc="  TrackNet tracking", unit="frame", ncols=80)
         for i in range(2, len(frames)):
             window = frames[max(0, i-8):i+1]
             while len(window) < 9:
@@ -227,6 +229,8 @@ class TrackNetV3:
             results.append({"x": float(x_idx * ow / self.input_width),
                           "y": float(y_idx * oh / self.input_height),
                           "confidence": float(heatmap.max())})
+            pbar.update(1)
+        pbar.close()
         return results
 
 
@@ -239,7 +243,7 @@ class YOLOv8Tracker:
 
     def track_frames(self, frames):
         all_det = {}
-        for fi, frame in enumerate(frames):
+        for fi, frame in enumerate(tqdm(frames, desc="  YOLOv8 tracking", unit="frame", ncols=80)):
             results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
             dets = []
             for r in results:
@@ -281,7 +285,7 @@ class RTMPoseEstimator:
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def extract_frames(video_path, max_frames=50000, target_fps=10):
-    """Extract frames by sequential read + subsample."""
+    """Extract frames by sequential read + subsample with progress bar."""
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -295,14 +299,18 @@ def extract_frames(video_path, max_frames=50000, target_fps=10):
 
     frames = []
     frame_count = 0
+    pbar = tqdm(total=num_samples, desc="  Extracting", unit="frame", ncols=80)
     while len(frames) < num_samples:
         ret, frame = cap.read()
         if not ret:
             break
         if frame_count % sample_interval == 0:
             frames.append(frame)
+            pbar.update(1)
         frame_count += 1
+    pbar.close()
     cap.release()
+    print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
     return frames
 
 
@@ -366,12 +374,15 @@ def stage_shuttle_tracking(frames, device="cuda"):
 def stage_pose_estimation(frames, players_data, device="cuda"):
     estimator = RTMPoseEstimator(str(RTMOPOSE_PATH), device=device)
     pose_data = []
+    pbar = tqdm(total=len(frames), desc="  RTMPose estimation", unit="frame", ncols=80)
     for fi, frame in enumerate(frames):
         for p in players_data.get("players", []):
             dets = [d for d in (players_data.get("_detections", []) or []) if d["frame"] == fi and d.get("track_id") == int(p["id"].split("_")[1])]
             bbox = tuple(dets[0]["bbox"]) if dets else (100, 100, 300, 400)
             kps = estimator.estimate(frame, bbox)
             pose_data.append({"frame": fi, "player_id": p["id"], "keypoints": kps.tolist()})
+        pbar.update(1)
+    pbar.close()
     return pose_data
 
 
@@ -593,75 +604,74 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     setup_models(device)
 
     # 1. Extract frames (10fps across entire video for accurate shot detection)
-    print("[1/14] Extracting frames...")
+    print("\n[1/14] Extracting frames...")
     frames = extract_frames(video_path, max_frames=50000, target_fps=10)
-    print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
 
     # 2. Court detection
-    print("[2/14] Court detection...")
+    print("\n[2/14] Court detection...")
     corners = [(100, 500), (1820, 500), (100, 100), (1820, 100)]
     court = stage_court_detection(corners)
     print("  Done")
 
     # 3. Player tracking
-    print("[3/14] Player tracking (YOLOv8s)...")
+    print("\n[3/14] Player tracking (YOLOv8s)...")
     players = stage_player_tracking(frames, device)
     print(f"  Found {len(players.get('players', []))} players")
 
     # 4. Shuttle tracking
-    print("[4/14] Shuttle tracking (TrackNetV3)...")
+    print("\n[4/14] Shuttle tracking (TrackNetV3)...")
     shuttle = stage_shuttle_tracking(frames, device)
     avg_conf = np.mean([s["confidence"] for s in shuttle]) if shuttle else 0
     print(f"  Tracked {len(shuttle)} frames (avg conf: {avg_conf:.3f})")
 
     # 5. Pose estimation
-    print("[5/14] Pose estimation (RTMPose)...")
+    print("\n[5/14] Pose estimation (RTMPose)...")
     pose = stage_pose_estimation(frames, players, device)
     print(f"  Estimated {len(pose)} pose frames")
 
     # 6. Hit detection
-    print("[6/14] Hit frame localization...")
+    print("\n[6/14] Hit frame localization...")
     hits = stage_hits(shuttle, pose)
     print(f"  Found {len(hits)} hits")
 
     # 7. Stroke classification
-    print("[7/14] Stroke classification...")
+    print("\n[7/14] Stroke classification...")
     shots = stage_strokes(hits, shuttle, pose)
     shots = stage_attribution(shots, shuttle, players)
     print(f"  Classified {len(shots)} shots")
 
     # 8. Rally segmentation
-    print("[8/14] Rally segmentation...")
+    print("\n[8/14] Rally segmentation...")
     rallies = stage_rallies(shots)
     print(f"  Segmented {len(rallies)} rallies")
 
     # 9. Court position
-    print("[9/14] Court position analytics...")
+    print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(shuttle, shots)
     print(f"  {len(court_analytics['zone_transitions'])} zone transitions")
 
     # 10. Footwork
-    print("[10/14] Footwork analytics...")
+    print("\n[10/14] Footwork analytics...")
     footwork = stage_footwork(pose, shots)
     print("  Done")
 
     # 11. Fitness
-    print("[11/14] Fitness analytics...")
+    print("\n[11/14] Fitness analytics...")
     fitness = stage_fitness(footwork, rallies, shots)
     print("  Done")
 
     # 12. Tactical
-    print("[12/14] Tactical analytics...")
+    print("\n[12/14] Tactical analytics...")
     tactical = stage_tactical(shots)
     print("  Done")
 
     # 13. Technical
-    print("[13/14] Technical analytics...")
+    print("\n[13/14] Technical analytics...")
     technical = stage_technical(shots)
     print("  Done")
 
     # 14. Coach recommendations
-    print("[14/14] Coach recommendations...")
+    print("\n[14/14] Coach recommendations...")
     coach = stage_coach(tactical, fitness, footwork)
     print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
 
