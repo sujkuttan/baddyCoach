@@ -533,15 +533,18 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     all_pose = []
     all_player_detections = []
     sample_idx = 0
+    batch_count = 0
 
     # Process video in batches
     cap = cv2.VideoCapture(video_path)
     total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    pbar = tqdm(total=total_video_frames, desc="  [1/14] Processing video", unit="frame", ncols=80)
+    total_batches = (num_samples + BATCH_SIZE - 1) // BATCH_SIZE
+    print(f"\n[1-5/14] Running ML stages on {num_samples} sampled frames ({total_batches} batches)...")
 
     batch_frames = []
     batch_global_indices = []
     frame_idx = 0
+    batch_pbar = tqdm(total=total_video_frames, desc="  Video frames", unit="frame", ncols=80)
 
     while True:
         ret, frame = cap.read()
@@ -553,28 +556,41 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
             sample_idx += 1
 
             if len(batch_frames) >= BATCH_SIZE:
+                batch_count += 1
                 _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                                tracker, tracknet, pose_estimator, device,
                                all_shuttle, all_det, all_pose, all_player_detections)
+                tqdm.write(f"  Batch {batch_count}/{total_batches} done | "
+                          f"Shuttle: {len(all_shuttle)} | "
+                          f"Players: {len(all_player_detections)} | "
+                          f"Pose: {len(all_pose)}")
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
         frame_idx += 1
-        pbar.update(1)
-    pbar.close()
+        batch_pbar.update(1)
+    batch_pbar.close()
 
     # Process remaining frames
     if batch_frames:
+        batch_count += 1
         _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                        tracker, tracknet, pose_estimator, device,
                        all_shuttle, all_det, all_pose, all_player_detections)
+        tqdm.write(f"  Batch {batch_count}/{total_batches} done | "
+                  f"Shuttle: {len(all_shuttle)} | "
+                  f"Players: {len(all_player_detections)} | "
+                  f"Pose: {len(all_pose)}")
         batch_frames = []
         batch_global_indices = []
         gc.collect()
 
     cap.release()
 
-    print(f"\n  Collected: {len(all_shuttle)} shuttle, {len(all_det)} player dets, {len(all_pose)} pose")
+    print(f"\n  ML stages complete. Data collected:")
+    print(f"    Shuttle positions: {len(all_shuttle)} frames")
+    print(f"    Player detections: {len(all_player_detections)} total")
+    print(f"    Pose keypoints:    {len(all_pose)} frames")
 
     # Build player summary
     tid_counts = Counter(d.get("track_id", 0) for d in all_player_detections)
@@ -596,7 +612,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
             players[pid] = {"id": pid, "side": side, "track_id": tid, "detections": [d]}
 
     players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])} for p in players.values()]}
-    print(f"  Players: {len(players_data.get('players', []))}")
 
     # Free ML models from GPU
     del tracker, tracknet, pose_estimator
@@ -657,14 +672,37 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"  COMPLETE in {elapsed:.1f}s")
     print(f"  Report saved to: {output}")
     print(f"{'=' * 60}")
-    print(f"\n  Summary:")
-    print(f"  - Rallies: {len(rallies)}")
-    print(f"  - Shots: {len(shots)}")
-    print(f"  - Players: {len(players_data.get('players', []))}")
+
+    print(f"\n  Pipeline Summary:")
+    print(f"    [1/5] Court detection       OK")
+    print(f"    [2/5] Player tracking       {len(players_data.get('players', []))} players, {len(all_player_detections)} detections")
+    print(f"    [3/5] Shuttle tracking      {len(all_shuttle)} frames tracked (avg conf: {np.mean([s['confidence'] for s in all_shuttle]):.3f})")
+    print(f"    [4/5] Pose estimation       {len(all_pose)} frames estimated")
+    print(f"    [5/5] Hit detection         {len(hits)} hits found")
+
+    print(f"\n  Analysis:")
+    print(f"    Shots:     {len(shots)}")
+    print(f"    Rallies:   {len(rallies)}")
+    print(f"    Zones:     {len(court_analytics['zone_transitions'])} transitions")
+
+    sd = report.get("shot_distribution", {})
+    if sd:
+        top3 = sorted(sd.items(), key=lambda x: -x[1])[:3]
+        print(f"    Top shots: {', '.join(f'{s} ({p*100:.0f}%)' for s, p in top3)}")
+
     if coach["strengths"]:
-        print(f"  - Strengths: {coach['strengths'][0][:60]}...")
+        print(f"\n  Strengths:")
+        for s in coach["strengths"][:3]:
+            print(f"    + {s[:70]}")
     if coach["weaknesses"]:
-        print(f"  - Areas to improve: {coach['weaknesses'][0][:60]}...")
+        print(f"\n  Areas to improve:")
+        for w in coach["weaknesses"][:3]:
+            print(f"    ! {w[:70]}")
+    if coach["recommended_drills"]:
+        print(f"\n  Suggested drills:")
+        for d in coach["recommended_drills"][:3]:
+            print(f"    > {d[:70]}")
+
     print(f"\n  Open the local UI and click 'Load Report' to view the full dashboard.")
 
     return report
