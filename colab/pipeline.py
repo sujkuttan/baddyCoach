@@ -83,6 +83,10 @@ def setup_models(device: str):
             import gdown
             print("  Downloading TrackNetV3 weights...")
             gdown.download(id="1CfzE87a0f6LhBp0kniSl1-89zaLCZ8cA", output=str(TRACKNET_PATH), quiet=False)
+            # Verify it's a valid file (not HTML redirect)
+            if TRACKNET_PATH.stat().st_size < 1000:
+                TRACKNET_PATH.unlink()
+                print("  TrackNet download failed (invalid file)")
         except Exception as e:
             print(f"  TrackNet download failed: {e}")
             print("  Shuttle tracking will use fallback")
@@ -185,12 +189,16 @@ class TrackNetV3:
 
                 return self.pred(u3)
 
-        checkpoint = torch.load(model_path, map_location=device)
-        state_dict = checkpoint.get('model', checkpoint.get('state_dict', checkpoint))
-        if isinstance(state_dict, dict) and not callable(state_dict):
-            self.model = TrackNetV3Model()
-            self.model.load_state_dict(state_dict)
-            self.model.to(device).eval()
+        try:
+            checkpoint = torch.load(model_path, map_location=device)
+            state_dict = checkpoint.get('model', checkpoint.get('state_dict', checkpoint))
+            if isinstance(state_dict, dict) and not callable(state_dict):
+                self.model = TrackNetV3Model()
+                self.model.load_state_dict(state_dict)
+                self.model.to(device).eval()
+        except Exception as e:
+            print(f"  TrackNet load failed: {e}")
+            self.model = None
 
     def predict_batch(self, frames, original_size=None):
         import torch
@@ -292,16 +300,24 @@ def stage_court_detection(corners):
 
 
 def stage_player_tracking(frames, device="cuda"):
-    tracker = YOLOv8Tracker(conf_threshold=0.3, device=device)
+    tracker = YOLOv8Tracker(conf_threshold=0.5, device=device)
     results = tracker.track_frames(frames)
     h, w = frames[0].shape[:2] if frames else (720, 1280)
     court_mid_y = (500 + 100) / 2
 
+    # Collect all detections, keep only top 2 by track_id frequency
     all_det = []
     for fi, dets in results.items():
         for d in dets:
             d["side"] = "near" if d["bbox"][1] > court_mid_y else "far"
             all_det.append(d)
+
+    # Limit to 2 players by most frequent track_id
+    if all_det:
+        from collections import Counter
+        tid_counts = Counter(d.get("track_id", 0) for d in all_det)
+        top2 = [tid for tid, _ in tid_counts.most_common(2)]
+        all_det = [d for d in all_det if d.get("track_id", 0) in top2]
 
     if not all_det:
         for i in range(0, len(frames), 5):
