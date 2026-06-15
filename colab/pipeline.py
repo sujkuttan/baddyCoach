@@ -7,10 +7,11 @@ Usage:
     python pipeline.py video.mp4 --output report.json --device cuda
 
 Requirements:
-    pip install torch torchvision ultralytics onnxruntime opencv-python-headless scipy numpy pyyaml gdown
+    pip install torch torchvision ultralytics onnxruntime opencv-python-headless scipy numpy pyyaml gdown tqdm
 """
 
 import argparse
+import gc
 import json
 import os
 import sys
@@ -24,8 +25,6 @@ import numpy as np
 import pandas as pd
 from scipy.signal import find_peaks
 from tqdm import tqdm
-
-# ─── Configuration ───────────────────────────────────────────────────────────
 
 CKPT_DIR = Path("ckpts")
 CKPT_DIR.mkdir(exist_ok=True)
@@ -66,19 +65,8 @@ RULES = [
 ]
 
 
-# ─── Model Download ──────────────────────────────────────────────────────────
-
-def download_file(url: str, path: Path):
-    if path.exists():
-        return
-    path.parent.mkdir(parents=True, exist_ok=True)
-    print(f"  Downloading {path.name}...")
-    urllib.request.urlretrieve(url, str(path))
-
-
 def setup_models(device: str):
     print("Setting up models...")
-    # TrackNetV3
     if not TRACKNET_PATH.exists():
         try:
             import gdown
@@ -89,7 +77,6 @@ def setup_models(device: str):
             with zipfile.ZipFile(zip_path, 'r') as z:
                 z.extractall(str(CKPT_DIR))
             os.remove(zip_path)
-            # Find the extracted .pt file
             for f in CKPT_DIR.rglob("*.pt"):
                 if "TrackNet" in f.name:
                     f.rename(TRACKNET_PATH)
@@ -98,11 +85,9 @@ def setup_models(device: str):
             print(f"  TrackNet download failed: {e}")
             print("  Shuttle tracking will use fallback")
 
-    # YOLOv8s - auto-downloaded by ultralytics
     from ultralytics import YOLO
-    YOLO(YOLOV8_MODEL)  # triggers download
+    YOLO(YOLOV8_MODEL)
 
-    # RTMPose
     rtmpose_dir = CKPT_DIR / "rtmpose"
     rtmpose_dir.mkdir(parents=True, exist_ok=True)
     if not RTMOPOSE_PATH.exists():
@@ -118,7 +103,6 @@ def setup_models(device: str):
         except Exception as e:
             print(f"  RTMPose download failed: {e}")
 
-    # BST
     bst_dir = CKPT_DIR / "bst"
     bst_dir.mkdir(parents=True, exist_ok=True)
     if not BST_PATH.exists():
@@ -131,8 +115,6 @@ def setup_models(device: str):
 
     print("Models ready.\n")
 
-
-# ─── Model Wrappers ──────────────────────────────────────────────────────────
 
 class TrackNetV3:
     def __init__(self, model_path: str, device: str = "cuda"):
@@ -147,7 +129,6 @@ class TrackNetV3:
         if not Path(model_path).exists():
             return
 
-        # Build model architecture inline
         class SingleConv(nn.Module):
             def __init__(self, in_ch, out_ch):
                 super().__init__()
@@ -171,24 +152,17 @@ class TrackNetV3:
             def forward(self, x):
                 d1 = self.down_block_1['conv_2'](self.down_block_1['conv_1'](x))
                 d1_pool = nn.functional.max_pool2d(d1, 2)
-
                 d2 = self.down_block_2['conv_2'](self.down_block_2['conv_1'](d1_pool))
                 d2_pool = nn.functional.max_pool2d(d2, 2)
-
                 d3 = self.down_block_3['conv_3'](self.down_block_3['conv_2'](self.down_block_3['conv_1'](d2_pool)))
                 d3_pool = nn.functional.max_pool2d(d3, 2)
-
                 b = self.bottleneck['conv_3'](self.bottleneck['conv_2'](self.bottleneck['conv_1'](d3_pool)))
-
                 b_up = nn.functional.interpolate(b, size=d3.shape[2:], mode='bilinear', align_corners=True)
                 u1 = self.up_block_1['conv_3'](self.up_block_1['conv_2'](self.up_block_1['conv_1'](torch.cat([b_up, d3], dim=1))))
-
                 u1_up = nn.functional.interpolate(u1, size=d2.shape[2:], mode='bilinear', align_corners=True)
                 u2 = self.up_block_2['conv_2'](self.up_block_2['conv_1'](torch.cat([u1_up, d2], dim=1)))
-
                 u2_up = nn.functional.interpolate(u2, size=d1.shape[2:], mode='bilinear', align_corners=True)
                 u3 = self.up_block_3['conv_2'](self.up_block_3['conv_1'](torch.cat([u2_up, d1], dim=1)))
-
                 return self.predictor(u3)
 
         try:
@@ -205,16 +179,15 @@ class TrackNetV3:
     def predict_batch(self, frames, original_size=None):
         import torch
         if self.model is None or len(frames) < 3:
-            return [{"x": 0, "y": 0, "confidence": 0}] * max(len(frames) - 2, 0)
+            return [{"x": 0, "y": 0, "confidence": 0}] * len(frames)
 
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
         results = []
-        pbar = tqdm(total=len(frames) - 2, desc="  TrackNet tracking", unit="frame", ncols=80)
-        for i in range(2, len(frames)):
+        for i in range(len(frames)):
             window = frames[max(0, i-8):i+1]
             while len(window) < 9:
-                window.append(window[-1])
+                window.insert(0, window[0])
             processed = []
             for f in window[-9:]:
                 r = cv2.resize(f, (self.input_width, self.input_height))
@@ -229,8 +202,6 @@ class TrackNetV3:
             results.append({"x": float(x_idx * ow / self.input_width),
                           "y": float(y_idx * oh / self.input_height),
                           "confidence": float(heatmap.max())})
-            pbar.update(1)
-        pbar.close()
         return results
 
 
@@ -241,17 +212,18 @@ class YOLOv8Tracker:
         self.conf = conf_threshold
         self.device = device
 
-    def track_frames(self, frames):
+    def track_batch(self, frames, global_frame_offsets):
         all_det = {}
-        for fi, frame in enumerate(tqdm(frames, desc="  YOLOv8 tracking", unit="frame", ncols=80)):
+        for local_idx, frame in enumerate(frames):
             results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
+            global_idx = global_frame_offsets + local_idx
             dets = []
             for r in results:
                 if r.boxes is not None and r.boxes.id is not None:
                     for box in r.boxes:
-                        dets.append({"frame": fi, "bbox": box.xyxy[0].tolist(),
+                        dets.append({"frame": global_idx, "bbox": box.xyxy[0].tolist(),
                                    "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
-            all_det[fi] = dets
+            all_det[global_idx] = dets
         return all_det
 
 
@@ -282,41 +254,34 @@ class RTMPoseEstimator:
         return kps
 
 
-# ─── Pipeline Stages ─────────────────────────────────────────────────────────
+# ─── Video Reader (memory-efficient) ────────────────────────────────────────
 
-def extract_frames(video_path, max_frames=50000, target_fps=10, max_width=1280):
-    """Extract frames by sequential read + subsample with progress bar."""
+def get_video_info(video_path):
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
     duration = total_frames / video_fps
+    return total_frames, video_fps, width, height, duration
 
-    sample_interval = max(1, int(video_fps / target_fps))
-    num_samples = min(total_frames // sample_interval, max_frames)
 
-    print(f"  Video: {duration:.0f}s, {total_frames} frames @ {video_fps:.0f}fps")
-    print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames ({target_fps}fps)")
-
-    frames = []
-    frame_count = 0
-    pbar = tqdm(total=num_samples, desc="  Extracting", unit="frame", ncols=80)
-    while len(frames) < num_samples:
+def frame_generator(video_path, sample_interval=3, target_fps=10):
+    """Yield one frame at a time — never holds more than 1 frame in memory."""
+    cap = cv2.VideoCapture(video_path)
+    frame_idx = 0
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
-        if frame_count % sample_interval == 0:
-            h, w = frame.shape[:2]
-            if w > max_width:
-                scale = max_width / w
-                frame = cv2.resize(frame, (max_width, int(h * scale)))
-            frames.append(frame)
-            pbar.update(1)
-        frame_count += 1
-    pbar.close()
+        if frame_idx % sample_interval == 0:
+            yield frame_idx, frame
+        frame_idx += 1
     cap.release()
-    print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
-    return frames
 
+
+# ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def stage_court_detection(corners):
     src = np.array(corners, dtype=np.float32)
@@ -326,71 +291,7 @@ def stage_court_detection(corners):
             "court_length": COURT_LENGTH, "court_width": COURT_WIDTH, "net_height": NET_HEIGHT}
 
 
-def stage_player_tracking(frames, device="cuda"):
-    tracker = YOLOv8Tracker(conf_threshold=0.5, device=device)
-    results = tracker.track_frames(frames)
-    h, w = frames[0].shape[:2] if frames else (720, 1280)
-    court_mid_y = (500 + 100) / 2
-
-    # Collect all detections, keep only top 2 by track_id frequency
-    all_det = []
-    for fi, dets in results.items():
-        for d in dets:
-            d["side"] = "near" if d["bbox"][1] > court_mid_y else "far"
-            all_det.append(d)
-
-    # Limit to 2 players by most frequent track_id
-    if all_det:
-        from collections import Counter
-        tid_counts = Counter(d.get("track_id", 0) for d in all_det)
-        top2 = [tid for tid, _ in tid_counts.most_common(2)]
-        all_det = [d for d in all_det if d.get("track_id", 0) in top2]
-
-    if not all_det:
-        for i in range(0, len(frames), 5):
-            all_det.append({"frame": i, "bbox": [int(w*0.3), int(court_mid_y+20), int(w*0.3+100), int(court_mid_y+180)], "confidence": 0.5, "track_id": 1, "side": "near"})
-            all_det.append({"frame": i, "bbox": [int(w*0.6), int(court_mid_y-180), int(w*0.6+100), int(court_mid_y-20)], "confidence": 0.5, "track_id": 2, "side": "far"})
-
-    players = {}
-    for d in all_det:
-        tid = d.get("track_id", 0)
-        side = d.get("side", "near")
-        matched = False
-        for pid, p in players.items():
-            if p.get("track_id") == tid:
-                p["detections"].append(d)
-                matched = True
-                break
-        if not matched:
-            pid = f"player_{len(players)+1}"
-            players[pid] = {"id": pid, "side": side, "track_id": tid, "detections": [d]}
-
-    return {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])} for p in players.values()]}
-
-
-def stage_shuttle_tracking(frames, device="cuda"):
-    model = TrackNetV3(str(TRACKNET_PATH), device=device)
-    ow, oh = frames[0].shape[1], frames[0].shape[0]
-    preds = model.predict_batch(frames, original_size=(ow, oh))
-    return [{"frame": i, **p} for i, p in enumerate(preds)]
-
-
-def stage_pose_estimation(frames, players_data, device="cuda"):
-    estimator = RTMPoseEstimator(str(RTMOPOSE_PATH), device=device)
-    pose_data = []
-    pbar = tqdm(total=len(frames), desc="  RTMPose estimation", unit="frame", ncols=80)
-    for fi, frame in enumerate(frames):
-        for p in players_data.get("players", []):
-            dets = [d for d in (players_data.get("_detections", []) or []) if d["frame"] == fi and d.get("track_id") == int(p["id"].split("_")[1])]
-            bbox = tuple(dets[0]["bbox"]) if dets else (100, 100, 300, 400)
-            kps = estimator.estimate(frame, bbox)
-            pose_data.append({"frame": fi, "player_id": p["id"], "keypoints": kps.tolist()})
-        pbar.update(1)
-    pbar.close()
-    return pose_data
-
-
-def stage_hits(shuttle_data, pose_data):
+def stage_hits(shuttle_data):
     shuttle_df = pd.DataFrame(shuttle_data)
     if len(shuttle_df) == 0:
         return []
@@ -403,15 +304,13 @@ def stage_hits(shuttle_data, pose_data):
     peaks, _ = find_peaks(speed, distance=3)
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
-
     combined = 0.5 * (traj_score / (traj_score.max() + 1e-6)) + 0.5 * (speed_score / (speed_score.max() + 1e-6))
-    # Use 70th percentile to detect more hits
     threshold = np.percentile(combined, 70)
     hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in np.where(combined > threshold)[0]]
     return hits
 
 
-def stage_strokes(hits_data, shuttle_data, pose_data):
+def stage_strokes(hits_data, shuttle_data):
     if not hits_data:
         return []
     shuttle_df = pd.DataFrame(shuttle_data)
@@ -419,7 +318,6 @@ def stage_strokes(hits_data, shuttle_data, pose_data):
     for hit in hits_data:
         frame = hit["frame"]
         shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
-        # Vary stroke type based on position and speed
         if len(shuttle_row) > 0:
             sy = float(shuttle_row.iloc[0]["y"])
             if sy < 200:
@@ -435,8 +333,8 @@ def stage_strokes(hits_data, shuttle_data, pose_data):
     return shots
 
 
-def stage_attribution(shots_data, shuttle_data, players_data):
-    if not shots_data or not players_data:
+def stage_attribution(shots_data, shuttle_data):
+    if not shots_data:
         return shots_data
     shuttle_df = pd.DataFrame(shuttle_data)
     for shot in shots_data:
@@ -534,7 +432,7 @@ def stage_tactical(shots_data):
         total = tactical[pid]["total_shots"]
         tactical[pid]["shot_distribution"] = {k: v/total for k, v in tactical[pid]["shot_distribution"].items()}
         seq = [s["stroke_type"] for s in shots_data if s.get("player_id") == pid]
-        tactical[pid]["common_patterns"] = [{"pattern": " → ".join(seq[i:i+3]), "count": 1} for i in range(min(len(seq)-2, 5))]
+        tactical[pid]["common_patterns"] = [{"pattern": " -> ".join(seq[i:i+3]), "count": 1} for i in range(min(len(seq)-2, 5))]
         tactical[pid]["unique_strokes"] = list(tactical[pid]["shot_distribution"].keys())
     return tactical
 
@@ -594,7 +492,9 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
     }
 
 
-# ─── Main Pipeline ───────────────────────────────────────────────────────────
+# ─── Main Pipeline (streaming/batched) ──────────────────────────────────────
+
+BATCH_SIZE = 500
 
 def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     start_time = time.time()
@@ -607,88 +507,152 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
     setup_models(device)
 
-    # 1. Extract frames (10fps across entire video for accurate shot detection)
-    print("\n[1/14] Extracting frames...")
-    frames = extract_frames(video_path, max_frames=50000, target_fps=10)
+    total_frames, video_fps, vid_w, vid_h, duration = get_video_info(video_path)
+    sample_interval = max(1, int(video_fps / 10))
+    num_samples = total_frames // sample_interval
+    print(f"  Video: {duration:.0f}s, {total_frames} frames @ {video_fps:.0f}fps ({vid_w}x{vid_h})")
+    print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames (10fps)")
+    print(f"  Batch size: {BATCH_SIZE} frames")
 
-    # 2. Court detection
+    # Court detection (no frames needed)
     print("\n[2/14] Court detection...")
     corners = [(100, 500), (1820, 500), (100, 100), (1820, 100)]
     court = stage_court_detection(corners)
     print("  Done")
 
-    # 3. Player tracking
-    print("\n[3/14] Player tracking (YOLOv8s)...")
-    players = stage_player_tracking(frames, device)
-    print(f"  Found {len(players.get('players', []))} players")
+    # Initialize ML models
+    print("\n  Loading ML models...")
+    tracker = YOLOv8Tracker(conf_threshold=0.5, device=device)
+    tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
+    pose_estimator = RTMPoseEstimator(str(RTMOPOSE_PATH), device=device)
+    print("  Models loaded")
 
-    # 4. Shuttle tracking
-    print("\n[4/14] Shuttle tracking (TrackNetV3)...")
-    shuttle = stage_shuttle_tracking(frames, device)
-    avg_conf = np.mean([s["confidence"] for s in shuttle]) if shuttle else 0
-    print(f"  Tracked {len(shuttle)} frames (avg conf: {avg_conf:.3f})")
+    # Accumulators for results across batches
+    all_shuttle = []
+    all_det = {}
+    all_pose = []
+    all_player_detections = []
+    sample_idx = 0
 
-    # 5. Pose estimation
-    print("\n[5/14] Pose estimation (RTMPose)...")
-    pose = stage_pose_estimation(frames, players, device)
-    print(f"  Estimated {len(pose)} pose frames")
+    # Process video in batches
+    cap = cv2.VideoCapture(video_path)
+    total_video_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    pbar = tqdm(total=total_video_frames, desc="  [1/14] Processing video", unit="frame", ncols=80)
 
-    # 6. Hit detection
+    batch_frames = []
+    batch_global_indices = []
+    frame_idx = 0
+
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_idx % sample_interval == 0:
+            batch_frames.append(frame)
+            batch_global_indices.append(sample_idx)
+            sample_idx += 1
+
+            if len(batch_frames) >= BATCH_SIZE:
+                _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
+                               tracker, tracknet, pose_estimator, device,
+                               all_shuttle, all_det, all_pose, all_player_detections)
+                batch_frames = []
+                batch_global_indices = []
+                gc.collect()
+        frame_idx += 1
+        pbar.update(1)
+    pbar.close()
+
+    # Process remaining frames
+    if batch_frames:
+        _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
+                       tracker, tracknet, pose_estimator, device,
+                       all_shuttle, all_det, all_pose, all_player_detections)
+        batch_frames = []
+        batch_global_indices = []
+        gc.collect()
+
+    cap.release()
+
+    print(f"\n  Collected: {len(all_shuttle)} shuttle, {len(all_det)} player dets, {len(all_pose)} pose")
+
+    # Build player summary
+    tid_counts = Counter(d.get("track_id", 0) for d in all_player_detections)
+    top2 = [tid for tid, _ in tid_counts.most_common(2)]
+    filtered_dets = [d for d in all_player_detections if d.get("track_id", 0) in top2]
+
+    players = {}
+    for d in filtered_dets:
+        tid = d.get("track_id", 0)
+        side = d.get("side", "near")
+        matched = False
+        for pid, p in players.items():
+            if p.get("track_id") == tid:
+                p["detections"].append(d)
+                matched = True
+                break
+        if not matched:
+            pid = f"player_{len(players)+1}"
+            players[pid] = {"id": pid, "side": side, "track_id": tid, "detections": [d]}
+
+    players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])} for p in players.values()]}
+    print(f"  Players: {len(players_data.get('players', []))}")
+
+    # Free ML models from GPU
+    del tracker, tracknet, pose_estimator
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+    # Analytics stages (CPU only, lightweight)
     print("\n[6/14] Hit frame localization...")
-    hits = stage_hits(shuttle, pose)
+    hits = stage_hits(all_shuttle)
     print(f"  Found {len(hits)} hits")
 
-    # 7. Stroke classification
     print("\n[7/14] Stroke classification...")
-    shots = stage_strokes(hits, shuttle, pose)
-    shots = stage_attribution(shots, shuttle, players)
+    shots = stage_strokes(hits, all_shuttle)
+    shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
 
-    # 8. Rally segmentation
     print("\n[8/14] Rally segmentation...")
     rallies = stage_rallies(shots)
     print(f"  Segmented {len(rallies)} rallies")
 
-    # 9. Court position
     print("\n[9/14] Court position analytics...")
-    court_analytics = stage_court_position(shuttle, shots)
+    court_analytics = stage_court_position(all_shuttle, shots)
     print(f"  {len(court_analytics['zone_transitions'])} zone transitions")
 
-    # 10. Footwork
     print("\n[10/14] Footwork analytics...")
-    footwork = stage_footwork(pose, shots)
+    footwork = stage_footwork(all_pose, shots)
     print("  Done")
 
-    # 11. Fitness
     print("\n[11/14] Fitness analytics...")
     fitness = stage_fitness(footwork, rallies, shots)
     print("  Done")
 
-    # 12. Tactical
     print("\n[12/14] Tactical analytics...")
     tactical = stage_tactical(shots)
     print("  Done")
 
-    # 13. Technical
     print("\n[13/14] Technical analytics...")
     technical = stage_technical(shots)
     print("  Done")
 
-    # 14. Coach recommendations
     print("\n[14/14] Coach recommendations...")
     coach = stage_coach(tactical, fitness, footwork)
     print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
 
-    # Generate report
-    report = generate_report(court, players, shuttle, pose, hits, shots, rallies,
+    report = generate_report(court, players_data, all_shuttle, all_pose, hits, shots, rallies,
                             court_analytics, footwork, fitness, tactical, technical, coach)
 
-    # Save
     output = Path(output_path)
     output.write_text(json.dumps(report, indent=2, default=str))
     elapsed = time.time() - start_time
 
-    # Summary
     print(f"\n{'=' * 60}")
     print(f"  COMPLETE in {elapsed:.1f}s")
     print(f"  Report saved to: {output}")
@@ -696,7 +660,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"\n  Summary:")
     print(f"  - Rallies: {len(rallies)}")
     print(f"  - Shots: {len(shots)}")
-    print(f"  - Players: {len(players.get('players', []))}")
+    print(f"  - Players: {len(players_data.get('players', []))}")
     if coach["strengths"]:
         print(f"  - Strengths: {coach['strengths'][0][:60]}...")
     if coach["weaknesses"]:
@@ -706,7 +670,48 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     return report
 
 
-# ─── CLI ─────────────────────────────────────────────────────────────────────
+def _process_batch(frames, global_indices, batch_start_offset,
+                   tracker, tracknet, pose_estimator, device,
+                   all_shuttle, all_det, all_pose, all_player_detections):
+    """Run ML stages on one batch of frames, append results to accumulators."""
+    if not frames:
+        return
+
+    # 1. Player tracking
+    batch_det = tracker.track_batch(frames, 0)
+    h, w = frames[0].shape[:2]
+    court_mid_y = h * 0.5
+    for local_idx, global_idx in enumerate(global_indices):
+        for d in batch_det.get(local_idx, []):
+            d["frame"] = global_idx
+            d["side"] = "near" if d["bbox"][1] > court_mid_y else "far"
+            all_player_detections.append(d)
+            all_det[global_idx] = all_det.get(global_idx, [])
+            all_det[global_idx].append(d)
+
+    # 2. Shuttle tracking
+    ow, oh = frames[0].shape[1], frames[0].shape[0]
+    shuttle_preds = tracknet.predict_batch(frames, original_size=(ow, oh))
+    for local_idx, global_idx in enumerate(global_indices):
+        if local_idx < len(shuttle_preds):
+            all_shuttle.append({"frame": global_idx, **shuttle_preds[local_idx]})
+
+    # 3. Pose estimation (only for frames with detections)
+    for local_idx, global_idx in enumerate(global_indices):
+        frame = frames[local_idx]
+        dets_for_frame = all_det.get(global_idx, [])
+        if not dets_for_frame:
+            continue
+        tid_to_pid = {}
+        for d in dets_for_frame:
+            tid = d.get("track_id", 0)
+            if tid not in tid_to_pid:
+                tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
+        for d in dets_for_frame[:2]:
+            pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
+            kps = pose_estimator.estimate(frame, d["bbox"])
+            all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BMCA - Badminton Match Coaching Assistant")
