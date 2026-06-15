@@ -79,9 +79,13 @@ def setup_models(device: str):
     print("Setting up models...")
     # TrackNetV3
     if not TRACKNET_PATH.exists():
-        # Try to find TrackNet weights - user must provide or we skip
-        print(f"  TrackNet weights not found at {TRACKNET_PATH}")
-        print("  Shuttle tracking will use model predictions if available")
+        try:
+            import gdown
+            print("  Downloading TrackNetV3 weights...")
+            gdown.download(id="1CfzE87a0f6LhBp0kniSl1-89zaLCZ8cA", output=str(TRACKNET_PATH), quiet=False)
+        except Exception as e:
+            print(f"  TrackNet download failed: {e}")
+            print("  Shuttle tracking will use fallback")
 
     # YOLOv8s - auto-downloaded by ultralytics
     from ultralytics import YOLO
