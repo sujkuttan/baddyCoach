@@ -21,7 +21,7 @@ class StrokeClassificationStage:
         from app.config.settings import settings
 
         model_path = str(settings.bst_model_path) if settings.bst_model_path else None
-        classifier = BSTClassifier(model_path, device="cuda" if settings.gpu_enabled else "cpu")
+        classifier = BSTClassifier(model_path, device=settings.device)
 
         shots = []
         for _, hit in hits_df.iterrows():

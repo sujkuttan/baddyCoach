@@ -37,7 +37,7 @@ class ShuttleTrackingStage:
         from app.config.settings import settings
 
         model_path = str(settings.tracknet_model_path)
-        device = "cuda" if settings.gpu_enabled else "cpu"
+        device = settings.device
 
         model = TrackNetV3(model_path, device=device)
 

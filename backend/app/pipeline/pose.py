@@ -36,7 +36,7 @@ class PoseEstimationStage:
         from app.config.settings import settings
 
         model_path = str(settings.rtmpose_model_path) if settings.rtmpose_model_path else None
-        estimator = RTMPoseEstimator(model_path, device="cuda" if settings.gpu_enabled else "cpu")
+        estimator = RTMPoseEstimator(model_path, device=settings.device)
 
         players = artifacts.get("players")
         if not players:

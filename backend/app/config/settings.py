@@ -7,7 +7,7 @@ class Settings(BaseModel):
     jobs_dir: Path = Path("data/jobs")
     max_video_length_seconds: int = 3600
     supported_formats: list[str] = ["mp4", "mov", "avi"]
-    gpu_enabled: bool = True
+    gpu_enabled: bool = False
     processing_fps: int = 30
     court_detection_fps: int = 1
 
@@ -22,6 +22,17 @@ class Settings(BaseModel):
         path = self.jobs_dir / job_id
         path.mkdir(parents=True, exist_ok=True)
         return path
+
+    @property
+    def device(self) -> str:
+        if self.gpu_enabled:
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    return "cuda"
+            except ImportError:
+                pass
+        return "cpu"
 
 
 settings = Settings()
