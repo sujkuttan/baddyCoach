@@ -280,16 +280,23 @@ class RTMPoseEstimator:
 
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
-def extract_frames(video_path, max_frames=500, target_fps=1):
-    """Extract frames sampled across entire video duration."""
+def extract_frames(video_path, max_frames=2000, target_fps=5):
+    """Extract frames sampled across entire video duration.
+
+    For a 30-min match at 5fps: 9000 frames → sampled to 2000.
+    At 30fps video, this means 1 frame every 6 original frames.
+    """
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     duration = total_frames / fps
 
-    # Sample at target_fps (default 1 frame per second)
+    # Sample at target_fps
     sample_interval = max(1, int(fps / target_fps))
     num_samples = min(total_frames // sample_interval, max_frames)
+
+    print(f"  Video: {duration:.0f}s, {total_frames} frames @ {fps:.0f}fps")
+    print(f"  Sampling: {num_samples} frames ({target_fps}fps, every {sample_interval} frames)")
 
     frames = []
     for i in range(num_samples):
@@ -588,9 +595,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
     setup_models(device)
 
-    # 1. Extract frames (1 per second across entire video)
+    # 1. Extract frames (5fps across entire video)
     print("[1/14] Extracting frames...")
-    frames = extract_frames(video_path, max_frames=500, target_fps=1)
+    frames = extract_frames(video_path, max_frames=2000, target_fps=5)
     print(f"  Extracted {len(frames)} frames ({frames[0].shape[1]}x{frames[0].shape[0]})")
 
     # 2. Court detection
