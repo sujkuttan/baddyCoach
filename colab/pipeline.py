@@ -314,7 +314,7 @@ def stage_hits(shuttle_data):
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
     combined = 0.5 * (traj_score / (traj_score.max() + 1e-6)) + 0.5 * (speed_score / (speed_score.max() + 1e-6))
-    threshold = np.percentile(combined, 70)
+    threshold = np.percentile(combined, 90)
     hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in np.where(combined > threshold)[0]]
     return hits
 
@@ -357,7 +357,7 @@ def stage_attribution(shots_data, shuttle_data):
     return shots_data
 
 
-def stage_rallies(shots_data, gap_threshold=60):
+def stage_rallies(shots_data, gap_threshold=30):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])
@@ -379,7 +379,7 @@ def stage_rallies(shots_data, gap_threshold=60):
     return rallies
 
 
-def stage_court_position(shuttle_data, shots_data):
+def stage_court_position(shuttle_data, shots_data, frame_width=1280, frame_height=720):
     zone_names = ["front_left", "front_center", "front_right", "mid_left", "mid_center", "mid_right", "rear_left", "rear_center", "rear_right"]
     shuttle_df = pd.DataFrame(shuttle_data)
     transitions = []
@@ -387,8 +387,10 @@ def stage_court_position(shuttle_data, shots_data):
         row = shuttle_df[shuttle_df["frame"] == shot["frame"]]
         if len(row) > 0:
             x, y = float(row.iloc[0]["x"]), float(row.iloc[0]["y"])
-            col = min(int(x / (COURT_WIDTH / 3)), 2)
-            row_idx = min(int(y / (COURT_LENGTH / 3)), 2)
+            nx = x / frame_width
+            ny = y / frame_height
+            col = min(int(nx * 3), 2)
+            row_idx = min(int(ny * 3), 2)
             transitions.append({"frame": shot["frame"], "zone": zone_names[row_idx * 3 + col],
                               "player_id": shot.get("player_id", "unknown")})
     return {"zone_transitions": transitions, "court_dimensions": {"length": COURT_LENGTH, "width": COURT_WIDTH}}
@@ -641,7 +643,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"  Segmented {len(rallies)} rallies")
 
     print("\n[9/14] Court position analytics...")
-    court_analytics = stage_court_position(all_shuttle, shots)
+    court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)
     print(f"  {len(court_analytics['zone_transitions'])} zone transitions")
 
     print("\n[10/14] Footwork analytics...")
