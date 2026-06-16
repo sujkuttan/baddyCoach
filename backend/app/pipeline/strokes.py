@@ -14,7 +14,7 @@ BONE_PAIRS = [
 SEQ_LEN = 30
 
 
-def _normalize_joints_bstdiag(coords: np.ndarray) -> np.ndarray:
+def _normalize_joints_bstdiag(coords: np.ndarray, det_bbox: tuple | None = None) -> np.ndarray:
     """Normalize joints using bbox diagonal with center_align.
 
     Matches the official BST ``normalize_joints`` preprocessing:
@@ -23,13 +23,20 @@ def _normalize_joints_bstdiag(coords: np.ndarray) -> np.ndarray:
     - center_align=True shifts origin to bbox center
 
     Args:
-        coords: (17, 2) keypoints in pixel coords (or [0,1] RTMPose coords)
+        coords: (17, 2) keypoints in pixel coords
+        det_bbox: optional (x1, y1, x2, y2) detection bbox for stable normalization.
+                  If None, falls back to keypoint bbox (less stable).
 
     Returns:
         (17, 2) normalized joints, range roughly [-0.X, 0.X]
     """
-    bbox_min = coords.min(axis=0)
-    bbox_max = coords.max(axis=0)
+    if det_bbox is not None:
+        bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
+        bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
+    else:
+        bbox_min = coords.min(axis=0)
+        bbox_max = coords.max(axis=0)
+
     diag = np.linalg.norm(bbox_max - bbox_min)
     if diag < 1e-6:
         diag = 1.0
@@ -73,6 +80,8 @@ def _build_clip(
     court_length: float,
     court_width: float,
     seq_len: int = SEQ_LEN,
+    player_sides: dict | None = None,
+    player_detections: dict | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -81,11 +90,32 @@ def _build_clip(
     2. Bones computed as endpoint differences
     3. Shuttle normalized by video resolution (range [0, 1])
     4. Position = feet midpoint in court-normalized coords (range [0, 1])
+
+    Player ordering: p_idx=0 is ALWAYS the "far" player, p_idx=1 is "near".
     """
     n_frames = len(frames)
     joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
     shuttle = np.zeros((seq_len, 2), dtype=np.float32)
     pos = np.zeros((seq_len, 2, 2), dtype=np.float32)
+
+    # Determine player ordering: p0=far, p1=near
+    far_pid, near_pid = 'player_1', 'player_2'
+    if player_sides:
+        for pid, side in player_sides.items():
+            if side == 'far':
+                far_pid = pid
+            elif side == 'near':
+                near_pid = pid
+    player_order = [far_pid, near_pid]
+
+    # Build detection bbox lookup: {pid: {frame: bbox}}
+    det_bbox_lookup = {}
+    if player_detections:
+        for p in player_detections:
+            pid = p.get("id", "")
+            det_bbox_lookup[pid] = {}
+            for d in p.get("detections", []):
+                det_bbox_lookup[pid][d["frame"]] = d["bbox"]
 
     for t, frame in enumerate(frames[:seq_len]):
         if shuttle_df is not None:
@@ -94,11 +124,13 @@ def _build_clip(
                 shuttle[t, 0] = float(s_row.iloc[0]['x']) / vid_w
                 shuttle[t, 1] = float(s_row.iloc[0]['y']) / vid_h
 
-        for p_idx, pid in enumerate(['player_1', 'player_2']):
+        for p_idx, pid in enumerate(player_order):
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
             if kps is not None:
                 coords = kps[:, :2]
-                joints[t, p_idx] = _normalize_joints_bstdiag(coords)
+                # Use detection bbox for stable normalization (issue 3 fix)
+                det_bbox = det_bbox_lookup.get(pid, {}).get(frame)
+                joints[t, p_idx] = _normalize_joints_bstdiag(coords, det_bbox=det_bbox)
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
                 feet_y = max(coords[15, 1], coords[16, 1])
@@ -152,15 +184,24 @@ class StrokeClassificationStage:
 
         hit_frames = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
+        # Get player side info for consistent ordering (p0=Far, p1=Near)
+        players_data = artifacts.get("players") or {}
+        player_sides = {}
+        for p in players_data.get("players", []):
+            player_sides[p["id"]] = p.get("side", "near")
+
+        # Get player detection data for bbox normalization
+        player_list = players_data.get("players", [])
+
         shots = []
         previous_shots = []
 
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
-            hit_pos = hit_frames.index(frame) if frame in hit_frames else 0
 
-            start_frame = hit_frames[hit_pos - 1] if hit_pos > 0 else max(0, frame - SEQ_LEN // 2)
-            end_frame = hit_frames[hit_pos + 1] + 2 if hit_pos < len(hit_frames) - 1 else frame + SEQ_LEN // 2 + 1
+            # Center clip around the actual hit frame
+            start_frame = max(0, frame - SEQ_LEN // 2)
+            end_frame = frame + SEQ_LEN // 2
 
             clip_frames = list(range(start_frame, end_frame))
             while len(clip_frames) < SEQ_LEN:
@@ -170,6 +211,7 @@ class StrokeClassificationStage:
             clip = _build_clip(
                 clip_frames, shuttle_df, pose_df,
                 vid_w, vid_h, court_length, court_width,
+                player_sides=player_sides, player_detections=player_list,
             )
 
             stroke_type, confidence = classifier.predict_single(clip)

@@ -377,16 +377,18 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             bones.append(bone)
         return np.stack(bones, axis=-2)
     
-    def normalize_joints_bstdiag(coords):
+    def normalize_joints_bstdiag(coords, det_bbox=None):
         """Normalize joints using bbox diagonal with center_align.
 
-        Matches the official BST normalize_joints preprocessing:
-        - Origin = top-left of the player bounding box
-        - Scale = diagonal distance of the bounding box
-        - center_align=True shifts origin to bbox center
+        Uses detection bbox for stable normalization when available.
+        Falls back to keypoint bbox (less stable).
         """
-        bbox_min = coords.min(axis=0)
-        bbox_max = coords.max(axis=0)
+        if det_bbox is not None:
+            bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
+            bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
+        else:
+            bbox_min = coords.min(axis=0)
+            bbox_max = coords.max(axis=0)
         diag = np.linalg.norm(bbox_max - bbox_min)
         if diag < 1e-6:
             diag = 1.0
@@ -414,12 +416,14 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             if 'shuttle_x' in frame and 'shuttle_y' in frame:
                 shuttle[t] = [frame['shuttle_x'], frame['shuttle_y']]
 
+            det_bboxes = frame.get('det_bboxes', {})
             for p_idx, pid in enumerate(['player_1', 'player_2']):
                 if pid in frame.get('pose', {}):
                     kps = frame['pose'][pid]
                     if kps is not None and kps.shape == (17, 3):
                         coords = kps[:, :2]
-                        joints[t, p_idx] = normalize_joints_bstdiag(coords)
+                        det_bbox = det_bboxes.get(pid)
+                        joints[t, p_idx] = normalize_joints_bstdiag(coords, det_bbox=det_bbox)
                         feet_y = max(coords[15, 1], coords[16, 1])
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
                         pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
@@ -709,8 +713,51 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                     pd_dict[row['player_id']] = kps
             pose_by_frame[f_idx] = pd_dict
     
-    # Get all hit frames for smart clipping
+    # Get all hit frames for centering clips
     hit_frames = sorted([h['frame'] for h in hits_data])
+    
+    # Build player side lookup for consistent ordering (p0=far, p1=near)
+    player_sides = {}
+    for pid_key in ['player_1', 'player_2']:
+        player_sides[pid_key] = 'near'  # default
+    # Use YOLO side assignments from player_detections
+    if all_player_detections:
+        tid_sides = {}
+        for d in all_player_detections:
+            tid = d.get("track_id", 0)
+            if tid not in tid_sides:
+                tid_sides[tid] = d.get("side", "near")
+        # Top 2 track IDs by count
+        tid_counts_local = Counter(d.get("track_id", 0) for d in all_player_detections)
+        top2_tids = [tid for tid, _ in tid_counts_local.most_common(2)]
+        for i, tid in enumerate(top2_tids):
+            pid = f"player_{i+1}"
+            player_sides[pid] = tid_sides.get(tid, "near")
+    
+    far_pid = 'player_1'
+    near_pid = 'player_2'
+    for pid, side in player_sides.items():
+        if side == 'far':
+            far_pid = pid
+        elif side == 'near':
+            near_pid = pid
+    player_order = [far_pid, near_pid]
+    
+    # Build detection bbox lookup: {pid: {frame: bbox}}
+    det_bbox_lookup = {}
+    if all_player_detections:
+        # Rebuild player detection mapping
+        tid_to_pid = {}
+        tid_counts_local2 = Counter(d.get("track_id", 0) for d in all_player_detections)
+        top2_tids2 = [tid for tid, _ in tid_counts_local2.most_common(2)]
+        for i, tid in enumerate(top2_tids2):
+            tid_to_pid[tid] = f"player_{i+1}"
+        for d in all_player_detections:
+            pid = tid_to_pid.get(d.get("track_id", 0))
+            if pid:
+                if pid not in det_bbox_lookup:
+                    det_bbox_lookup[pid] = {}
+                det_bbox_lookup[pid][d['frame']] = d['bbox']
     
     # Process each hit
     shots = []
@@ -720,11 +767,10 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
         
         for hit in hits_data:
             hit_frame = hit['frame']
-            hit_pos = hit_frames.index(hit_frame)
             
-            # Smart clipping: from previous hit to next hit
-            start_frame = hit_frames[hit_pos - 1] if hit_pos > 0 else max(0, hit_frame - seq_len // 2)
-            end_frame = hit_frames[hit_pos + 1] + 2 if hit_pos < len(hit_frames) - 1 else hit_frame + seq_len // 2 + 1
+            # CENTER clip around the actual hit frame
+            start_frame = max(0, hit_frame - seq_len // 2)
+            end_frame = hit_frame + seq_len // 2
             
             # Extract clip frames
             clip_frames = []
@@ -744,8 +790,14 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                     frame_data['shuttle_x'] = 0.0
                     frame_data['shuttle_y'] = 0.0
                 
-                # Pose
-                frame_data['pose'] = pose_by_frame.get(f, {})
+                # Pose (with proper player ordering)
+                raw_pose = pose_by_frame.get(f, {})
+                frame_data['pose'] = {}
+                for p_idx, pid in enumerate(player_order):
+                    if pid in raw_pose:
+                        frame_data['pose'][f'player_{p_idx+1}'] = raw_pose[pid]
+                frame_data['det_bboxes'] = {f'player_{p_idx+1}': det_bbox_lookup.get(pid, {}).get(f)
+                                              for p_idx, pid in enumerate(player_order)}
                 
                 clip_frames.append(frame_data)
             
