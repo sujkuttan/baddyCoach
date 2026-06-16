@@ -716,48 +716,33 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     # Get all hit frames for centering clips
     hit_frames = sorted([h['frame'] for h in hits_data])
     
-    # Build player side lookup for consistent ordering (p0=far, p1=near)
-    player_sides = {}
-    for pid_key in ['player_1', 'player_2']:
-        player_sides[pid_key] = 'near'  # default
-    # Use YOLO side assignments from player_detections
+    # Build per-frame player lookup: {frame: {side: pid}}
+    # Handles YOLO tracking ID switches
+    frame_player_map = {}
+    det_bbox_lookup = {}
     if all_player_detections:
-        tid_sides = {}
-        for d in all_player_detections:
-            tid = d.get("track_id", 0)
-            if tid not in tid_sides:
-                tid_sides[tid] = d.get("side", "near")
-        # Top 2 track IDs by count
+        tid_to_pid = {}
         tid_counts_local = Counter(d.get("track_id", 0) for d in all_player_detections)
         top2_tids = [tid for tid, _ in tid_counts_local.most_common(2)]
         for i, tid in enumerate(top2_tids):
-            pid = f"player_{i+1}"
-            player_sides[pid] = tid_sides.get(tid, "near")
-    
-    far_pid = 'player_1'
-    near_pid = 'player_2'
-    for pid, side in player_sides.items():
-        if side == 'far':
-            far_pid = pid
-        elif side == 'near':
-            near_pid = pid
-    player_order = [far_pid, near_pid]
-    
-    # Build detection bbox lookup: {pid: {frame: bbox}}
-    det_bbox_lookup = {}
-    if all_player_detections:
-        # Rebuild player detection mapping
-        tid_to_pid = {}
-        tid_counts_local2 = Counter(d.get("track_id", 0) for d in all_player_detections)
-        top2_tids2 = [tid for tid, _ in tid_counts_local2.most_common(2)]
-        for i, tid in enumerate(top2_tids2):
             tid_to_pid[tid] = f"player_{i+1}"
+        
         for d in all_player_detections:
             pid = tid_to_pid.get(d.get("track_id", 0))
-            if pid:
-                if pid not in det_bbox_lookup:
-                    det_bbox_lookup[pid] = {}
-                det_bbox_lookup[pid][d['frame']] = d['bbox']
+            if not pid:
+                continue
+            side = d.get("side", "near")
+            frame = d["frame"]
+            
+            # Per-frame side resolution
+            if frame not in frame_player_map:
+                frame_player_map[frame] = {}
+            frame_player_map[frame][side] = pid
+            
+            # Detection bbox lookup
+            if pid not in det_bbox_lookup:
+                det_bbox_lookup[pid] = {}
+            det_bbox_lookup[pid][frame] = d["bbox"]
     
     # Process each hit
     shots = []
@@ -790,14 +775,19 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                     frame_data['shuttle_x'] = 0.0
                     frame_data['shuttle_y'] = 0.0
                 
-                # Pose (with proper player ordering)
+                # Pose (with per-frame player resolution)
                 raw_pose = pose_by_frame.get(f, {})
-                frame_data['pose'] = {}
-                for p_idx, pid in enumerate(player_order):
-                    if pid in raw_pose:
-                        frame_data['pose'][f'player_{p_idx+1}'] = raw_pose[pid]
-                frame_data['det_bboxes'] = {f'player_{p_idx+1}': det_bbox_lookup.get(pid, {}).get(f)
-                                              for p_idx, pid in enumerate(player_order)}
+                frame_players = frame_player_map.get(f, {})
+                far_pid = frame_players.get('far', 'player_1')
+                near_pid = frame_players.get('near', 'player_2')
+                frame_data['pose'] = {
+                    'player_1': raw_pose.get(far_pid),
+                    'player_2': raw_pose.get(near_pid),
+                }
+                frame_data['det_bboxes'] = {
+                    'player_1': det_bbox_lookup.get(far_pid, {}).get(f),
+                    'player_2': det_bbox_lookup.get(near_pid, {}).get(f),
+                }
                 
                 clip_frames.append(frame_data)
             

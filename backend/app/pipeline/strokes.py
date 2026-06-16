@@ -98,15 +98,18 @@ def _build_clip(
     shuttle = np.zeros((seq_len, 2), dtype=np.float32)
     pos = np.zeros((seq_len, 2, 2), dtype=np.float32)
 
-    # Determine player ordering: p0=far, p1=near
-    far_pid, near_pid = 'player_1', 'player_2'
-    if player_sides:
-        for pid, side in player_sides.items():
-            if side == 'far':
-                far_pid = pid
-            elif side == 'near':
-                near_pid = pid
-    player_order = [far_pid, near_pid]
+    # Build per-frame player lookup: {frame: {side: pid}}
+    # Handles YOLO tracking ID switches (player_1 might become player_3 mid-clip)
+    frame_player_map = {}
+    if player_detections:
+        for p in player_detections:
+            pid = p.get("id", "")
+            side = p.get("side", "near")
+            for d in p.get("detections", []):
+                f = d["frame"]
+                if f not in frame_player_map:
+                    frame_player_map[f] = {}
+                frame_player_map[f][side] = pid
 
     # Build detection bbox lookup: {pid: {frame: bbox}}
     det_bbox_lookup = {}
@@ -123,6 +126,12 @@ def _build_clip(
             if len(s_row) > 0:
                 shuttle[t, 0] = float(s_row.iloc[0]['x']) / vid_w
                 shuttle[t, 1] = float(s_row.iloc[0]['y']) / vid_h
+
+        # Resolve active players for THIS frame
+        frame_players = frame_player_map.get(frame, {})
+        far_pid = frame_players.get('far', 'player_1')
+        near_pid = frame_players.get('near', 'player_2')
+        player_order = [far_pid, near_pid]
 
         for p_idx, pid in enumerate(player_order):
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
