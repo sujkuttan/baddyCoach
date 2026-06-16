@@ -165,6 +165,12 @@ class BSTClassifier:
         if len(shuttle) < 2:
             return "clear"
 
+        # Filter out zero coordinates (missing shuttle data)
+        valid = (shuttle[:, 0] != 0) | (shuttle[:, 1] != 0)
+        if valid.sum() < 2:
+            return "clear"
+        shuttle = shuttle[valid]
+
         dy = np.diff(shuttle[:, 1])
         dx = np.diff(shuttle[:, 0])
         speed = np.sqrt(dx**2 + dy**2)
