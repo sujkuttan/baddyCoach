@@ -260,7 +260,7 @@ class RTMPoseEstimator:
         if Path(model_path).exists():
             try:
                 import onnxruntime as ort
-                providers = ['CUDAExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
+                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
                 self.model = ort.InferenceSession(model_path, providers=providers)
                 print(f"  RTMPose loaded from {Path(model_path).name}")
             except Exception as e:
