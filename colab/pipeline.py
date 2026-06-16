@@ -107,6 +107,13 @@ def setup_models(device: str):
             with zipfile.ZipFile(zip_path, 'r') as z:
                 z.extractall(str(rtmpose_dir))
             os.remove(zip_path)
+            # Flatten: move any nested .onnx to top-level
+            for onnx in rtmpose_dir.rglob("*.onnx"):
+                dest = rtmpose_dir / "rtmpose.onnx"
+                if onnx != dest:
+                    import shutil
+                    shutil.move(str(onnx), str(dest))
+                    print(f"  Moved {onnx.name} -> {dest}")
         except Exception as e:
             print(f"  RTMPose download failed: {e}")
 
@@ -1185,14 +1192,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print("\n  Loading ML models...")
     tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
-    # Find RTMPose model - check known paths, then any .onnx in directory
+    # Find RTMPose model - check known paths, then any .onnx in directory (including nested)
     rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
     if not Path(rtmpose_path).exists():
         rtmpose_dir = CKPT_DIR / "rtmpose"
-        onnx_files = list(rtmpose_dir.glob("*.onnx"))
+        onnx_files = list(rtmpose_dir.rglob("*.onnx"))
         if onnx_files:
             rtmpose_path = str(onnx_files[0])
-            print(f"  Found RTMPose at: {onnx_files[0].name}")
+            print(f"  Found RTMPose at: {onnx_files[0]}")
         else:
             print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
     pose_estimator = RTMPoseEstimator(rtmpose_path, device=device)
