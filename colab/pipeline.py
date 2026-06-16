@@ -1188,6 +1188,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     # Find RTMPose model - check known paths, then any .onnx in directory
     rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
     if not Path(rtmpose_path).exists():
+        rtmpose_dir = CKPT_DIR / "rtmpose"
         onnx_files = list(rtmpose_dir.glob("*.onnx"))
         if onnx_files:
             rtmpose_path = str(onnx_files[0])
