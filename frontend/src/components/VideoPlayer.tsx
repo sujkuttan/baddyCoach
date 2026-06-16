@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import videojs from 'video.js';
 import 'video.js/dist/video-js.css';
 import { StrokeTimeline } from './StrokeTimeline';
@@ -31,7 +31,11 @@ const RALLY_COLORS = [
   '#ff5252', '#69f0ae', '#ffd740', '#ea80fc', '#82b1ff',
 ];
 
-export function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }: VideoPlayerProps) {
+export type VideoPlayerHandle = {
+  seekTo: (time: number) => void;
+};
+
+export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }, ref) {
   const videoRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const [duration, setDuration] = useState(0);
@@ -70,6 +74,13 @@ export function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }: Vid
       player.dispose();
     };
   }, [jobId]);
+
+  useImperativeHandle(ref, () => ({
+    seekTo: (time: number) => {
+      const player = playerRef.current;
+      if (player) player.currentTime(time);
+    },
+  }), []);
 
   const seekToFrame = useCallback((frame: number) => {
     const player = playerRef.current;
@@ -172,4 +183,4 @@ export function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }: Vid
       )}
     </div>
   );
-}
+});

@@ -1,6 +1,7 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo, useRef } from 'react';
 import { getReport } from '../utils/api';
 import { VideoPlayer } from '../components/VideoPlayer';
+import type { VideoPlayerHandle } from '../components/VideoPlayer';
 import { ShotChart } from '../components/ShotChart';
 import { CoachPanel } from '../components/CoachPanel';
 import { CourtHeatmap } from '../components/CourtHeatmap';
@@ -35,6 +36,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical' | 'fitness'>('overview');
   const [selectedPlayer, setSelectedPlayer] = useState<string>('');
+  const videoRef = useRef<VideoPlayerHandle>(null);
 
   useEffect(() => {
     if (reportData) {
@@ -186,7 +188,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                 </div>
                 <div className="p-4">
                   {jobId ? (
-                    <VideoPlayer jobId={jobId} rallies={rallies} strokes={shots} fps={30} />
+                    <VideoPlayer ref={videoRef} jobId={jobId} rallies={rallies} strokes={shots} fps={30} />
                   ) : (
                     <div className="flex items-center justify-center h-48 rounded-xl bg-court-dark/40 border border-court-line/10">
                       <div className="text-center">
@@ -210,7 +212,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                   <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
                 </div>
                 <div style={{ maxHeight: 500, overflow: 'auto' }}>
-                  <StrokeListPanel strokes={shots} rallies={rallies} fps={30} onSeek={(time) => {}} />
+                  <StrokeListPanel strokes={shots} rallies={rallies} fps={30} onSeek={(time) => videoRef.current?.seekTo(time)} />
                 </div>
               </div>
             </div>
