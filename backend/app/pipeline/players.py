@@ -122,7 +122,9 @@ class PlayerTrackingStage:
 
         players_data = {
             "players": [
-                {"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])}
+                {"id": p["id"], "side": p["side"], "detection_count": len(p["detections"]),
+                 "detections": [{"frame": d["frame"], "bbox": d["bbox"], "confidence": d["confidence"]}
+                                for d in p["detections"]]}
                 for p in players.values()
             ],
             "total_frames": max(d["frame"] for d in detections) + 1,

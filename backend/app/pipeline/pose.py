@@ -51,9 +51,20 @@ class PoseEstimationStage:
             for player in player_list:
                 player_id = player["id"]
 
-                # Get detection for this frame (simplified - use first detection)
-                det = player.get("detections", [{}])[0] if player.get("detections") else {}
-                bbox = det.get("bbox", (100, 100, 300, 400))
+                # Find detection for this specific frame
+                bbox = None
+                for det in player.get("detections", []):
+                    if det.get("frame") == frame_idx:
+                        bbox = det.get("bbox")
+                        break
+                if bbox is None:
+                    # Fallback: use closest detection in time
+                    dets = player.get("detections", [])
+                    if dets:
+                        closest = min(dets, key=lambda d: abs(d.get("frame", 0) - frame_idx))
+                        bbox = closest.get("bbox", (100, 100, 300, 400))
+                    else:
+                        bbox = (100, 100, 300, 400)
 
                 keypoints = estimator.estimate(frame, bbox)
 

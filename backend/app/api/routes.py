@@ -41,15 +41,14 @@ def run_pipeline(job_id: str):
     def emit_progress(event):
         ws_manager.broadcast_sync(job_id, event)
 
-    # Extract frames from video for real inference
+    # Get video resolution and extract frames
     video_path = job.get("video_path", "")
-    frames = _extract_frames(video_path, max_frames=200) if video_path else []
-
-    if frames:
-        store.set("video_resolution", {
-            "width": int(frames[0].shape[1]),
-            "height": int(frames[0].shape[0]),
-        })
+    if video_path and Path(video_path).exists():
+        vid_w, vid_h = _get_video_resolution(video_path)
+        store.set("video_resolution", {"width": vid_w, "height": vid_h})
+        frames = _extract_frames(video_path)
+    else:
+        frames = []
 
     stages = [
         ("court_detection", lambda: CourtDetectionStage().run(store, config, corners=[
@@ -100,14 +99,28 @@ def run_pipeline(job_id: str):
     emit_progress({"stage": "coach_recommendations", "status": "complete", "metadata": report})
 
 
-def _extract_frames(video_path: str, max_frames: int = 200) -> list[np.ndarray]:
+def _get_video_resolution(video_path: str) -> tuple[int, int]:
     cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    return width, height
+
+
+def _extract_frames(video_path: str, sample_interval: int = 3) -> list[np.ndarray]:
+    """Extract all frames from video, sampling every Nth frame."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return []
     frames = []
-    while len(frames) < max_frames:
+    frame_idx = 0
+    while True:
         ret, frame = cap.read()
         if not ret:
             break
-        frames.append(frame)
+        if frame_idx % sample_interval == 0:
+            frames.append(frame)
+        frame_idx += 1
     cap.release()
     return frames
 
