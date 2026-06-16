@@ -127,6 +127,16 @@ def _build_clip(
                 shuttle[t, 0] = float(s_row.iloc[0]['x']) / vid_w
                 shuttle[t, 1] = float(s_row.iloc[0]['y']) / vid_h
 
+    # Interpolate missing shuttle coordinates (0.0 = missing)
+    for dim in range(2):
+        shuttle_series = pd.Series(shuttle[:, dim])
+        mask = shuttle_series == 0.0
+        if mask.any() and (~mask).any():
+            shuttle_series = shuttle_series.replace(0, np.nan)
+            shuttle_series = shuttle_series.interpolate(method='linear').bfill().ffill()
+            shuttle[:, dim] = shuttle_series.values
+
+    for t, frame in enumerate(frames[:seq_len]):
         # Resolve active players for THIS frame
         frame_players = frame_player_map.get(frame, {})
         far_pid = frame_players.get('far', 'player_1')

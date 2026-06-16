@@ -889,6 +889,13 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 window = shuttle_df[(shuttle_df['frame'] >= frame - 5) & (shuttle_df['frame'] <= frame + 5)]
                 if len(window) >= 2:
                     y_vals = window['y'].values / vid_h
+                    x_vals = window['x'].values / vid_w
+                    # Filter out zero coordinates (missing shuttle data)
+                    valid = (x_vals != 0) | (y_vals != 0)
+                    if valid.sum() < 2:
+                        shots.append({"frame": frame, "hit_confidence": hit['confidence'], "stroke_type": "clear", "stroke_confidence": 0.4})
+                        continue
+                    y_vals = y_vals[valid]
                     dy = np.diff(y_vals)
                     speed = np.mean(np.abs(dy))
                     
@@ -1519,6 +1526,20 @@ def _process_batch(frames, global_indices, batch_start_offset,
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
         if not dets_for_frame:
+            for pid in tid_to_pid.values():
+                best_det = None
+                best_dist = float('inf')
+                for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
+                    other_global = global_indices[other_idx]
+                    for d in all_det.get(other_global, []):
+                        if tid_to_pid.get(d.get("track_id", 0)) == pid:
+                            dist = abs(other_idx - local_idx)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_det = d
+                if best_det:
+                    kps = pose_estimator.estimate(frame, best_det["bbox"])
+                    all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
             continue
         for d in dets_for_frame[:2]:
             pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
