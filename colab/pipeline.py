@@ -369,38 +369,35 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     
     def prepare_bst_clip(clip_frames, seq_len):
         """Prepare BST input from a clip of frames.
-        Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), video_len
+        Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), pos (seq_len, 2, 2), video_len
         """
         n_frames = len(clip_frames)
-        
-        # Initialize arrays
+
         joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
         shuttle = np.zeros((seq_len, 2), dtype=np.float32)
-        
+        pos = np.zeros((seq_len, 2, 2), dtype=np.float32)
+
         for t, frame in enumerate(clip_frames[:seq_len]):
-            # Shuttle position (normalized by video dims)
             if 'shuttle_x' in frame and 'shuttle_y' in frame:
                 shuttle[t] = [frame['shuttle_x'], frame['shuttle_y']]
-            
-            # Pose for both players
+
             for p_idx, pid in enumerate(['player_1', 'player_2']):
                 if pid in frame.get('pose', {}):
                     kps = frame['pose'][pid]
                     if kps is not None and len(kps) == 17:
-                        # Normalize by bounding box
                         coords = kps[:, :2] if kps.shape[1] >= 2 else kps
                         bbox_min = coords.min(axis=0)
                         bbox_max = coords.max(axis=0)
                         diag = max(np.linalg.norm(bbox_max - bbox_min), 1.0)
                         joints[t, p_idx] = (coords - bbox_min) / diag
-        
-        # Create bones
+                        feet_y = max(coords[15, 1], coords[16, 1])
+                        feet_x = (coords[15, 0] + coords[16, 0]) / 2
+                        pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
+
         bones = create_bones(joints)
-        
-        # Concatenate: (seq_len, 2, 17+19, 2) -> (seq_len, 2, 72)
         JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)
-        
-        return JnB, shuttle, min(n_frames, seq_len)
+
+        return JnB, shuttle, pos, min(n_frames, seq_len)
     
     # Load BST model
     bst_path = str(BST_PATH) if BST_PATH.exists() else None
@@ -426,7 +423,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 for k, v in state_dict.items():
                     if 'tcn_pose.net.0.weight' in k:
                         in_dim = v.shape[1]
-                    if 'mlp_head.net.4.weight' in k:
+                    if 'mlp_head.mlp.mlp.3.weight' in k:
                         n_classes = v.shape[0]
                     if 'embedding_tem' in k:
                         detected_seq_len = v.shape[1] - 1
@@ -434,73 +431,97 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 seq_len = detected_seq_len
                 
                 # Create BST_CG model (inline for self-contained pipeline)
+                # Based on: https://github.com/Va6lue/BST-Badminton-Stroke-type-Transformer
                 import torch.nn as nn
-                
+                import math
+
                 class TCN(nn.Module):
-                    def __init__(self, in_ch, channels, kernel_size, drop_p=0.3):
+                    def __init__(self, in_channel, channels, kernel_size=5, drop_p=0.3):
                         super().__init__()
                         layers = []
-                        prev = in_ch
-                        for ch in channels:
-                            layers.extend([
-                                nn.Conv1d(prev, ch, kernel_size, padding=kernel_size//2),
-                                nn.BatchNorm1d(ch), nn.ReLU(), nn.Dropout(drop_p)
-                            ])
-                            prev = ch
+                        for i in range(len(channels)):
+                            in_ch = in_channel if i == 0 else channels[i-1]
+                            out_ch = channels[i]
+                            dilation = i * 2 + 1
+                            padding = (kernel_size - 1) * dilation // 2
+                            layers += [
+                                nn.Conv1d(in_ch, out_ch, kernel_size, padding=padding, dilation=dilation),
+                                nn.BatchNorm1d(out_ch), nn.GELU(), nn.Dropout(drop_p, inplace=True)
+                            ]
                         self.net = nn.Sequential(*layers)
                     def forward(self, x):
                         return self.net(x)
-                
-                class FeedForward(nn.Module):
-                    def __init__(self, in_d, out_d, hd, drop_p=0.3):
-                        super().__init__()
-                        self.net = nn.Sequential(
-                            nn.Linear(in_d, hd), nn.GELU(), nn.Dropout(drop_p),
-                            nn.Linear(hd, out_d), nn.Dropout(drop_p)
-                        )
-                    def forward(self, x):
-                        return self.net(x)
-                
+
                 class MLP(nn.Module):
-                    def __init__(self, in_d, out_d=None, hd=None, drop_p=0.3):
+                    def __init__(self, in_dim, out_dim, hd_dim, drop_p=0.0):
                         super().__init__()
-                        if out_d is None: out_d = in_d
-                        if hd is None: hd = in_d * 2
-                        self.net = nn.Sequential(
-                            nn.Linear(in_d, hd), nn.GELU(), nn.Dropout(drop_p),
-                            nn.Linear(hd, out_d), nn.Dropout(drop_p)
+                        self.mlp = nn.Sequential(
+                            nn.Linear(in_dim, hd_dim), nn.GELU(), nn.Dropout(drop_p, inplace=True),
+                            nn.Linear(hd_dim, out_dim)
                         )
                     def forward(self, x):
-                        return self.net(x)
-                
-                class TransformerEncoderLayer(nn.Module):
-                    def __init__(self, d_model, d_head, n_head, hd_ff, drop_p=0.3):
+                        return self.mlp(x)
+
+                class MLP_Head(nn.Module):
+                    def __init__(self, in_dim, out_dim, hd_dim, drop_p=0.0):
                         super().__init__()
-                        self.norm1 = nn.LayerNorm(d_model)
-                        self.attn = nn.MultiheadAttention(d_model, n_head, dropout=drop_p, batch_first=True)
-                        self.norm2 = nn.LayerNorm(d_model)
-                        self.ff = FeedForward(d_model, d_model, hd_ff, drop_p)
+                        self.layer_norm = nn.LayerNorm(in_dim)
+                        self.mlp = MLP(in_dim, out_dim, hd_dim, drop_p)
+                    def forward(self, x):
+                        return self.mlp(self.layer_norm(x))
+
+                class FeedForward(nn.Module):
+                    def __init__(self, in_dim, out_dim, hd_dim, drop_p=0.0):
+                        super().__init__()
+                        self.mlp = MLP(in_dim, out_dim, hd_dim, drop_p)
+                        self.dropout = nn.Dropout(drop_p, inplace=True)
+                    def forward(self, x):
+                        return self.dropout(self.mlp(x))
+
+                class MultiHeadAttention(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, drop_p):
+                        super().__init__()
+                        d_cat = d_head * n_head
+                        self.h = n_head
+                        self.to_qkv = nn.Linear(d_model, d_cat * 3, bias=False)
+                        self.scale = d_head ** -0.5
+                        self.attend = nn.Sequential(nn.Softmax(dim=-1), nn.Dropout(drop_p))
+                        self.tail = nn.Sequential(nn.Linear(d_cat, d_model), nn.Dropout(drop_p, inplace=True)) if n_head != 1 or d_cat != d_model else nn.Identity()
                     def forward(self, x, mask=None):
-                        h = self.norm1(x)
-                        h, _ = self.attn(h, h, h, key_padding_mask=mask)
-                        x = x + h
-                        x = x + self.ff(self.norm2(x))
-                        return x
-                
-                class TransformerEncoder(nn.Module):
-                    def __init__(self, d_model, d_head, n_head, depth, hd_ff, drop_p=0.3):
+                        bn, t, _ = x.shape
+                        qkv = self.to_qkv(x).view(bn, t, self.h, -1).chunk(3, dim=-1)
+                        q, k, v = map(lambda ts: ts.transpose(1, 2), qkv)
+                        dots = (q.contiguous() @ k.transpose(-1, -2).contiguous()) * self.scale
+                        if mask is not None:
+                            dots = dots.masked_fill(mask.view(bn, 1, 1, t) == 0, -torch.inf)
+                        att = self.attend(dots) @ v.contiguous()
+                        return self.tail(att.transpose(1, 2).reshape(bn, t, -1))
+
+                class TransformerLayer(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, hd_mlp, drop_p):
                         super().__init__()
-                        self.layers = nn.ModuleList([
-                            TransformerEncoderLayer(d_model, d_head, n_head, hd_ff, drop_p)
-                            for _ in range(depth)
-                        ])
+                        self.layer_norm1 = nn.LayerNorm(d_model)
+                        self.attn = MultiHeadAttention(d_model, d_head, n_head, drop_p)
+                        self.layer_norm2 = nn.LayerNorm(d_model)
+                        self.ff = FeedForward(d_model, d_model, hd_mlp, drop_p)
+                    def forward(self, x, mask=None):
+                        z = self.layer_norm1(x)
+                        x = self.attn(z, mask) + x
+                        z = self.layer_norm2(x)
+                        x = self.ff(z) + x
+                        return x
+
+                class TransformerEncoder(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, depth, hd_mlp, drop_p):
+                        super().__init__()
+                        self.layers = nn.ModuleList([TransformerLayer(d_model, d_head, n_head, hd_mlp, drop_p) for _ in range(depth)])
                     def forward(self, x, mask=None):
                         for layer in self.layers:
                             x = layer(x, mask)
                         return x
-                
-                class CrossAttention(nn.Module):
-                    def __init__(self, d_model, d_head, n_head, drop_p=0.3):
+
+                class MultiHeadCrossAttention(nn.Module):
+                    def __init__(self, d_model, d_head, n_head, drop_p):
                         super().__init__()
                         d_cat = d_head * n_head
                         self.h = n_head
@@ -508,74 +529,133 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                         self.to_kv = nn.Linear(d_model, d_cat * 2, bias=False)
                         self.scale = d_head ** -0.5
                         self.attend = nn.Sequential(nn.Softmax(dim=-1), nn.Dropout(drop_p))
-                        self.tail = nn.Linear(d_cat, d_model) if n_head != 1 or d_cat != d_model else nn.Identity()
+                        self.tail = nn.Sequential(nn.Linear(d_cat, d_model), nn.Dropout(drop_p, inplace=True)) if n_head != 1 or d_cat != d_model else nn.Identity()
                     def forward(self, x1, x2, mask=None):
-                        q = self.to_q(x1).view(x1.size(0), x1.size(1), self.h, -1).transpose(1, 2)
-                        kv = self.to_kv(x2).view(x2.size(0), x2.size(1), self.h, -1).chunk(2, dim=-1)
-                        k, v = kv[0].transpose(1, 2), kv[1].transpose(1, 2)
-                        dots = (q @ k.transpose(-1, -2)) * self.scale
+                        q = self.to_q(x1)
+                        kv = self.to_kv(x2)
+                        b, t, _ = q.shape
+                        q = q.view(b, t, self.h, -1).transpose(1, 2)
+                        kv = kv.view(b, t, self.h, -1).chunk(2, dim=-1)
+                        k, v = map(lambda ts: ts.transpose(1, 2), kv)
+                        dots = (q.contiguous() @ k.transpose(-1, -2).contiguous()) * self.scale
                         if mask is not None:
-                            dots = dots.masked_fill(mask.view(mask.size(0), 1, 1, -1) == 0, -torch.inf)
-                        att = self.attend(dots) @ v
-                        return self.tail(att.transpose(1, 2).reshape(x1.size(0), x1.size(1), -1))
-                
+                            dots = dots.masked_fill(mask.view(b, 1, 1, t) == 0, -torch.inf)
+                        att = self.attend(dots) @ v.contiguous()
+                        return self.tail(att.transpose(1, 2).reshape(b, t, -1))
+
                 class CrossTransformerLayer(nn.Module):
-                    def __init__(self, d_model, d_head, n_head, hd_ff, drop_p=0.3):
+                    def __init__(self, d_model, d_head, n_head, hd_mlp, drop_p):
                         super().__init__()
-                        self.norm1 = nn.LayerNorm(d_model)
-                        self.norm2 = nn.LayerNorm(d_model)
-                        self.cross_attn = CrossAttention(d_model, d_head, n_head, drop_p)
-                        self.ff = FeedForward(d_model, d_model, hd_ff, drop_p)
+                        self.layer_norm1_x1 = nn.LayerNorm(d_model)
+                        self.layer_norm1_x2 = nn.LayerNorm(d_model)
+                        self.cross_attn = MultiHeadCrossAttention(d_model, d_head, n_head, drop_p)
+                        self.layer_norm2 = nn.LayerNorm(d_model)
+                        self.ff = FeedForward(d_model, d_model, hd_mlp, drop_p)
                     def forward(self, x1, x2, mask=None):
-                        x = self.cross_attn(self.norm1(x1), self.norm1(x2), mask)
-                        return x + self.ff(self.norm2(x))
-                
-                class BST_CG(nn.Module):
-                    def __init__(self, in_dim, seq_len, n_classes, d_model=100, d_head=128, n_head=6,
-                                 depth_tem=2, depth_inter=1, drop_p=0.3, mlp_scale=4):
+                        x1 = self.layer_norm1_x1(x1)
+                        x2 = self.layer_norm1_x2(x2)
+                        x = self.cross_attn(x1, x2, mask)
+                        return self.ff(self.layer_norm2(x)) + x
+
+                class PositionalEncoding1D(nn.Module):
+                    def __init__(self, d_model):
                         super().__init__()
-                        d_ff = d_model * mlp_scale
-                        self.tcn_pose = TCN(in_dim, [d_model, d_model], 5, drop_p)
-                        self.tcn_shuttle = TCN(2, [d_model//2, d_model], 5, drop_p)
-                        self.token_tem = nn.Parameter(torch.randn(1, 1, d_model))
-                        self.embed_tem = nn.Parameter(torch.randn(1, 1+seq_len, d_model))
-                        self.drop = nn.Dropout(drop_p, inplace=True)
-                        self.enc_tem = TransformerEncoder(d_model, d_head, n_head, depth_tem, d_ff, drop_p)
-                        self.embed_cross = nn.Parameter(torch.randn(1, seq_len, d_model))
-                        self.cross_trans = CrossTransformerLayer(d_model, d_head, n_head, d_ff, drop_p)
-                        self.token_inter = nn.Parameter(torch.randn(1, 1, d_model))
-                        self.embed_inter = nn.Parameter(torch.randn(1, 1+seq_len, d_model))
-                        self.enc_inter = TransformerEncoder(d_model, d_head, n_head, depth_inter, d_ff, drop_p)
+                        self.d_model = d_model
+                    def forward(self, x):
+                        if x.dim() == 2:
+                            l, d = x.shape
+                            pe = torch.zeros(l, d, device=x.device, dtype=x.dtype)
+                            position = torch.arange(0, l, device=x.device, dtype=x.dtype).unsqueeze(1)
+                            div_term = torch.exp(torch.arange(0, d, 2, device=x.device, dtype=x.dtype) * (-math.log(10000.0) / d))
+                            pe[:, 0::2] = torch.sin(position * div_term)
+                            pe[:, 1::2] = torch.cos(position * div_term)
+                            return x + pe
+                        b, l, d = x.shape
+                        pe = torch.zeros(l, d, device=x.device, dtype=x.dtype)
+                        position = torch.arange(0, l, device=x.device, dtype=x.dtype).unsqueeze(1)
+                        div_term = torch.exp(torch.arange(0, d, 2, device=x.device, dtype=x.dtype) * (-math.log(10000.0) / d))
+                        pe[:, 0::2] = torch.sin(position * div_term)
+                        pe[:, 1::2] = torch.cos(position * div_term)
+                        return x + pe.unsqueeze(0)
+
+                class BST_CG(nn.Module):
+                    def __init__(self, in_dim, seq_len, n_class=25, n_people=2,
+                                 d_model=100, d_head=128, n_head=6, depth_tem=2, depth_inter=1,
+                                 drop_p=0.3, mlp_d_scale=4, tcn_kernel_size=5):
+                        super().__init__()
+                        self.mlp_positions = MLP(2, out_dim=in_dim, hd_dim=256, drop_p=drop_p)
+                        self.tcn_pose = TCN(in_dim, [d_model, d_model], tcn_kernel_size, drop_p)
+                        self.tcn_shuttle = TCN(2, [d_model // 2, d_model], tcn_kernel_size, drop_p)
+                        self.learned_token_tem = nn.Parameter(torch.randn(1, d_model))
+                        self.embedding_tem = nn.Parameter(torch.empty(1, 1 + seq_len, d_model))
+                        self.pre_dropout = nn.Dropout(drop_p, inplace=True)
+                        self.encoder_tem = TransformerEncoder(d_model, d_head, n_head, depth_tem, d_model * mlp_d_scale, drop_p)
+                        self.embedding_cross = nn.Parameter(torch.empty(1, seq_len, d_model))
+                        self.cross_trans = CrossTransformerLayer(d_model, d_head, n_head, d_model * mlp_d_scale, drop_p)
+                        self.learned_token_inter = nn.Parameter(torch.randn(1, d_model))
+                        self.embedding_inter = nn.Parameter(torch.empty(1, 1 + seq_len, d_model))
+                        self.encoder_inter = TransformerEncoder(d_model, d_head, n_head, depth_inter, d_model * mlp_d_scale, drop_p)
                         self.mlp_clean = MLP(d_model, d_model, d_model, drop_p)
-                        self.head = nn.Sequential(
-                            nn.Linear(d_model*3, d_ff), nn.GELU(), nn.Dropout(drop_p), nn.Linear(d_ff, n_classes)
-                        )
-                    def forward(self, JnB, shuttle, video_len):
-                        b, t, n, dim = JnB.shape
-                        x = JnB.permute(0,2,3,1).reshape(b*n, dim, t)
-                        x = self.tcn_pose(x).view(b, n, -1, t).transpose(-2, -1)
-                        s = shuttle.transpose(1,2)
-                        s = self.tcn_shuttle(s).unsqueeze(1).transpose(-2, -1)
-                        x = torch.cat([x, s], dim=1)
-                        ct = self.token_tem.expand(b*n, -1, -1)
-                        x = torch.cat([ct, x.view(b*n, t, -1)], dim=1) + self.embed_tem
-                        mask = torch.arange(0, 1+t, device=x.device).unsqueeze(0) < (1 + video_len.unsqueeze(-1))
+                        self.mlp_head = MLP_Head(d_model * 3, n_class, d_model * mlp_d_scale, drop_p)
+                        self.d_model = d_model
+                        self._init_weights()
+
+                    @torch.no_grad()
+                    def _init_weights(self):
+                        p_enc = PositionalEncoding1D(self.d_model)
+                        self.embedding_tem.copy_(p_enc(self.embedding_tem.squeeze(0)).unsqueeze(0))
+                        self.embedding_cross.copy_(p_enc(self.embedding_cross))
+                        self.embedding_inter.copy_(p_enc(self.embedding_inter.squeeze(0)).unsqueeze(0))
+                        nn.init.normal_(self.learned_token_tem, std=0.02)
+                        nn.init.normal_(self.learned_token_inter, std=0.02)
+                        self.apply(self._init_w)
+
+                    def _init_w(self, m):
+                        if isinstance(m, nn.Linear):
+                            nn.init.xavier_uniform_(m.weight)
+                            if m.bias is not None: nn.init.constant_(m.bias, 0)
+                        elif isinstance(m, nn.Conv1d):
+                            nn.init.xavier_normal_(m.weight)
+
+                    def forward(self, JnB, shuttle, pos, video_len):
+                        b, t, n, in_dim = JnB.shape
+                        JnB = JnB.permute(0, 2, 3, 1).reshape(b * n, in_dim, t)
+                        pos = self.mlp_positions(pos)
+                        pos_impact = pos.permute(0, 2, 3, 1).reshape(b * n, in_dim, t)
+                        JnB = JnB * pos_impact + JnB
+                        JnB = self.tcn_pose(JnB).view(b, n, -1, t).transpose(-2, -1)
+                        shuttle = shuttle.transpose(1, 2).contiguous()
+                        shuttle = self.tcn_shuttle(shuttle).unsqueeze(1).transpose(-2, -1)
+                        x = torch.cat((JnB, shuttle), dim=1)
+                        _, n, _, d = x.shape
+                        ct = self.learned_token_tem.view(1, 1, -1).expand(b * n, -1, -1)
+                        x = x.view(b * n, t, d)
+                        x = torch.cat((ct, x), dim=1) + self.embedding_tem
+                        range_t = torch.arange(0, 1 + t, device=x.device).unsqueeze(0).expand(b, -1)
+                        mask = range_t < (1 + video_len.unsqueeze(-1))
                         mask_n = mask.repeat_interleave(n, dim=0)
-                        x = self.drop(x)
-                        x = self.enc_tem(x, mask_n).view(b, n, 1+t, -1)
-                        p1, p2, sh = x[:,0], x[:,1], x[:,2]
-                        p1c, p2c, shc = p1[:,0], p2[:,0], sh[:,0]
-                        p1 = self.cross_trans(p1[:,1:]+self.embed_cross, sh[:,1:]+self.embed_cross, mask[:,1:])
-                        p2 = self.cross_trans(p2[:,1:]+self.embed_cross, sh[:,1:]+self.embed_cross, mask[:,1:])
-                        ci = self.token_inter.expand(b, -1, -1)
-                        p1 = self.enc_inter(torch.cat([ci, p1], dim=1)+self.embed_inter, mask)
-                        p2 = self.enc_inter(torch.cat([ci, p2], dim=1)+self.embed_inter, mask)
-                        dirt = self.mlp_clean(torch.minimum(p1[:,0], p2[:,0]))
-                        shc = shc - dirt
-                        out = torch.cat([p1c+p1[:,0], p2c+p2[:,0], shc], dim=1)
-                        return self.head(out)
-                
-                model = BST_CG(in_dim, seq_len, n_classes)
+                        x = self.pre_dropout(x)
+                        x = self.encoder_tem(x, mask_n).view(b, n, 1 + t, d)
+                        p1, p2, shuttle = map(lambda ts: ts.squeeze(1), x.chunk(3, dim=1))
+                        p1_cls, p2_cls, shuttle_cls = p1[:, 0].contiguous(), p2[:, 0].contiguous(), shuttle[:, 0].contiguous()
+                        p1 = p1[:, 1:].contiguous() + self.embedding_cross
+                        p2 = p2[:, 1:].contiguous() + self.embedding_cross
+                        shuttle = shuttle[:, 1:].contiguous() + self.embedding_cross
+                        cross_mask = mask[:, 1:].contiguous()
+                        p1_shuttle = self.cross_trans(p1, shuttle, cross_mask)
+                        p2_shuttle = self.cross_trans(p2, shuttle, cross_mask)
+                        ci = self.learned_token_inter.view(1, 1, -1).expand(b, -1, -1)
+                        p1_shuttle = self.encoder_inter(torch.cat((ci, p1_shuttle), dim=1) + self.embedding_inter, mask)
+                        p2_shuttle = self.encoder_inter(torch.cat((ci, p2_shuttle), dim=1) + self.embedding_inter, mask)
+                        p1_shuttle_cls = p1_shuttle[:, 0, :].contiguous()
+                        p2_shuttle_cls = p2_shuttle[:, 0, :].contiguous()
+                        info_need_clean = torch.minimum(p1_shuttle_cls, p2_shuttle_cls)
+                        dirt = self.mlp_clean(info_need_clean)
+                        shuttle_cls = shuttle_cls - dirt
+                        x = torch.cat((p1_cls + p1_shuttle_cls, p2_cls + p2_shuttle_cls, shuttle_cls), dim=1)
+                        return self.mlp_head(x)
+
+                model = BST_CG(in_dim, seq_len, n_class=n_classes)
                 model.load_state_dict(state_dict)
                 model.to(device).eval()
                 print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
@@ -648,16 +728,17 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             clip_frames = clip_frames[:seq_len]
             
             # Prepare BST input
-            JnB, shuttle_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
+            JnB, shuttle_arr, pos_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
             
             # Convert to tensors
             JnB_t = torch.from_numpy(JnB).float().unsqueeze(0).to(device)
             shuttle_t = torch.from_numpy(shuttle_arr).float().unsqueeze(0).to(device)
+            pos_t = torch.from_numpy(pos_arr).float().unsqueeze(0).to(device)
             video_len_t = torch.tensor([v_len], dtype=torch.long).to(device)
             
             # Inference
             with torch.no_grad():
-                logits = model(JnB_t, shuttle_t, video_len_t)
+                logits = model(JnB_t, shuttle_t, pos_t, video_len_t)
                 probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
             
             pred_idx = int(np.argmax(probs))
