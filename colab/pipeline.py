@@ -381,8 +381,8 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
         if diag < 1e-6:
             diag = 1.0
         normalized = (coords - bbox_min) / diag
-        center = (bbox_min + bbox_max) / (2 * diag)
-        normalized -= center
+        center = (bbox_min + bbox_max) / 2.0
+        normalized -= (center - bbox_min) / diag
         return normalized.astype(np.float32)
 
     def prepare_bst_clip(clip_frames, seq_len):

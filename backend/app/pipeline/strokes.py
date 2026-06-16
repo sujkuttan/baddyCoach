@@ -35,8 +35,8 @@ def _normalize_joints_bstdiag(coords: np.ndarray) -> np.ndarray:
         diag = 1.0
 
     normalized = (coords - bbox_min) / diag
-    center = (bbox_min + bbox_max) / (2 * diag)
-    normalized -= center
+    center = (bbox_min + bbox_max) / 2.0
+    normalized -= (center - bbox_min) / diag
     return normalized.astype(np.float32)
 
 
@@ -48,14 +48,6 @@ def _create_bones(joints: np.ndarray) -> np.ndarray:
         bones.append(ej - sj if np.any(sj != 0) and np.any(ej != 0) else np.zeros(2, dtype=np.float32))
     return np.array(bones, dtype=np.float32)
 
-
-def _normalize_position(feet_coords: np.ndarray, court_length: float, court_width: float) -> np.ndarray:
-    """Convert pixel feet position to court coordinates [0, 1].
-
-    Uses homography-style mapping: pixel y maps to court length, pixel x maps to court width.
-    For a standard badminton broadcast view, feet_y maps to court纵向 and feet_x to court横向.
-    """
-    return feet_coords.astype(np.float32)
 
 
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
