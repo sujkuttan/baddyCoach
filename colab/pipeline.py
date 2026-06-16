@@ -371,10 +371,9 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
         """Prepare BST input from a clip of frames.
         Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), pos (seq_len, 2, 2), video_len
 
-        Follows official BST preprocessing:
-        - Joints normalized by bbox diagonal with center_align=True
-        - Shuttle normalized by video resolution [0,1]
-        - pos normalized by court boundary (approximated by video resolution)
+        RTMPose outputs keypoints already normalized to [0,1] frame coords.
+        We center them to [-0.5, 0.5] to match the training distribution
+        (official uses bbox-normalized + center_align which gives similar range).
         """
         n_frames = len(clip_frames)
 
@@ -389,28 +388,14 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             for p_idx, pid in enumerate(['player_1', 'player_2']):
                 if pid in frame.get('pose', {}):
                     kps = frame['pose'][pid]
-                    if kps is not None and len(kps) == 17:
-                        coords = kps[:, :2] if kps.shape[1] >= 2 else kps
-                        bbox_min = coords.min(axis=0)
-                        bbox_max = coords.max(axis=0)
-                        bbox = np.array([[bbox_min[0], bbox_min[1], bbox_max[0], bbox_max[1]]])
-                        diag = max(np.linalg.norm(bbox_max - bbox_min), 1.0)
-
-                        arr_x = coords[:, 0]
-                        arr_y = coords[:, 1]
-                        x_norm = np.where(arr_x != 0.0, (arr_x - bbox[0, 0]) / diag, 0.0)
-                        y_norm = np.where(arr_y != 0.0, (arr_y - bbox[0, 1]) / diag, 0.0)
-
-                        center = (bbox[0, :2] + bbox[0, 2:]) / 2
-                        c_norm = (center - bbox[0, :2]) / diag
-                        x_norm -= c_norm[0]
-                        y_norm -= c_norm[1]
-
-                        joints[t, p_idx] = np.stack((x_norm, y_norm), axis=-1)
-
+                    if kps is not None and kps.shape == (17, 3):
+                        coords = kps[:, :2]
+                        # RTMPose outputs [0,1] normalized coords
+                        # Center to [-0.5, 0.5] to match bbox-normalized + center_align distribution
+                        joints[t, p_idx] = coords - 0.5
                         feet_y = max(coords[15, 1], coords[16, 1])
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
-                        pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
+                        pos[t, p_idx] = [feet_x, feet_y]
 
         bones = create_bones(joints)
         JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)

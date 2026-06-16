@@ -34,6 +34,12 @@ class StrokeClassificationStage:
             court_width=court.get("court_width", 5.18),
         )
 
+        BONE_PAIRS = [
+            (0,1),(0,2),(1,2),(1,3),(2,4),(3,5),(4,6),
+            (5,7),(7,9),(6,8),(8,10),(5,6),(5,11),(6,12),(11,12),
+            (11,13),(13,15),(12,14),(14,16)
+        ]
+
         shots = []
         previous_shots = []
 
@@ -69,9 +75,17 @@ class StrokeClassificationStage:
                         if len(p_data) > 0 and 'keypoints' in p_data.columns:
                             kps = np.array(p_data.iloc[0]['keypoints'])
                             if kps.ndim == 2 and kps.shape[1] >= 2:
-                                feet_x = (kps[15, 0] + kps[16, 0]) / 2
-                                feet_y = max(kps[15, 1], kps[16, 1])
-                                clip['pos'][0, pid_idx] = [feet_x / frame_width, feet_y / frame_height]
+                                coords = kps[:, :2]
+                                joints = (coords - 0.5).astype(np.float32)
+                                bones = []
+                                for s, e in BONE_PAIRS:
+                                    sj, ej = joints[s], joints[e]
+                                    bones.append(ej - sj if np.any(sj != 0) and np.any(ej != 0) else np.zeros(2, dtype=np.float32))
+                                bones = np.array(bones)
+                                clip['JnB'][0, pid_idx] = np.concatenate([joints, bones]).reshape(-1)
+                                feet_x = (coords[15, 0] + coords[16, 0]) / 2
+                                feet_y = max(coords[15, 1], coords[16, 1])
+                                clip['pos'][0, pid_idx] = [feet_x, feet_y]
 
             stroke_type, confidence = classifier.predict_single(clip)
             
