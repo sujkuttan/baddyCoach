@@ -1195,6 +1195,20 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"    Player detections: {len(all_player_detections)} total")
     print(f"    Pose keypoints:    {len(all_pose)} frames")
 
+    # Export stage outputs for debugging
+    debug_dir = Path(output_path).parent / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n  Exporting stage outputs to {debug_dir}/")
+
+    pd.DataFrame(all_shuttle).to_parquet(debug_dir / "shuttle.parquet", index=False)
+    print(f"    shuttle.parquet ({len(all_shuttle)} rows)")
+
+    pd.DataFrame(all_pose).to_parquet(debug_dir / "pose.parquet", index=False)
+    print(f"    pose.parquet ({len(all_pose)} rows)")
+
+    pd.DataFrame(all_player_detections).to_parquet(debug_dir / "player_detections.parquet", index=False)
+    print(f"    player_detections.parquet ({len(all_player_detections)} rows)")
+
     # Build player summary
     tid_counts = Counter(d.get("track_id", 0) for d in all_player_detections)
     top2 = [tid for tid, _ in tid_counts.most_common(2)]
@@ -1230,15 +1244,21 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print("\n[6/14] Hit frame localization...")
     hits = stage_hits(all_shuttle)
     print(f"  Found {len(hits)} hits")
+    pd.DataFrame(hits).to_parquet(debug_dir / "hits.parquet", index=False)
+    print(f"    hits.parquet ({len(hits)} rows)")
 
     print("\n[7/14] Stroke classification...")
     shots = stage_strokes(hits, all_shuttle, all_pose, court, device, vid_w=vid_w, vid_h=vid_h)
     shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
+    pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
+    print(f"    shots.parquet ({len(shots)} rows)")
 
     print("\n[8/14] Rally segmentation...")
     rallies = stage_rallies(shots)
     print(f"  Segmented {len(rallies)} rallies")
+    pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
+    print(f"    rallies.parquet ({len(rallies)} rows)")
 
     print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)
