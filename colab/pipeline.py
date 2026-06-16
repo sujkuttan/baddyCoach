@@ -457,6 +457,15 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
                         pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
 
+        # Interpolate missing shuttle coordinates (0.0 = missing)
+        for dim in range(2):
+            shuttle_series = pd.Series(shuttle[:, dim])
+            mask = shuttle_series == 0.0
+            if mask.any() and (~mask).any():
+                shuttle_series = shuttle_series.replace(0, np.nan)
+                shuttle_series = shuttle_series.interpolate(method='linear').bfill().ffill()
+                shuttle[:, dim] = shuttle_series.values
+
         bones = create_bones(joints)
         JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)
 
@@ -1499,16 +1508,18 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 3. Pose estimation (RTMPose)
     pose_count = sum(1 for gi in global_indices if all_det.get(gi))
     tqdm.write(f"{tag} | RTMPose pose estimation ({pose_count} frames)...")
+    all_tids = set()
+    for local_idx in range(len(frames)):
+        global_idx = global_indices[local_idx]
+        for d in all_det.get(global_idx, []):
+            all_tids.add(d.get("track_id", 0))
+    sorted_tids = sorted(all_tids)
+    tid_to_pid = {tid: f"player_{i+1}" for i, tid in enumerate(sorted_tids[:2])}
     for local_idx, global_idx in enumerate(global_indices):
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
         if not dets_for_frame:
             continue
-        tid_to_pid = {}
-        for d in dets_for_frame:
-            tid = d.get("track_id", 0)
-            if tid not in tid_to_pid:
-                tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
         for d in dets_for_frame[:2]:
             pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
             kps = pose_estimator.estimate(frame, d["bbox"])
