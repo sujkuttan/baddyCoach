@@ -6,8 +6,8 @@ class RTMPoseEstimator:
     def __init__(self, model_path: str | None = None, device: str = "cuda"):
         self.device = device
         self.model = None
-        self.input_height = 192
-        self.input_width = 256
+        self.input_height = 256
+        self.input_width = 192
 
         if model_path and Path(model_path).exists():
             import onnxruntime as ort

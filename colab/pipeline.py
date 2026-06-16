@@ -256,7 +256,7 @@ class YOLOv8Tracker:
 class RTMPoseEstimator:
     def __init__(self, model_path: str, device: str = "cuda"):
         self.model = None
-        self.h, self.w = 192, 256
+        self.h, self.w = 256, 192
         if Path(model_path).exists():
             try:
                 import onnxruntime as ort
