@@ -279,10 +279,32 @@ class RTMPoseEstimator:
         r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         r = (r - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
         tensor = r.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
-        out = self.model.run(None, {"input": tensor})[0]
-        kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
-        kps[:, 0] = x1 + kps[:, 0] * (x2 - x1)
-        kps[:, 1] = y1 + kps[:, 1] * (y2 - y1)
+        outputs = self.model.run(None, {"input": tensor})
+        
+        # RTMPose simcc model returns [simcc_x, simcc_y]
+        if len(outputs) == 2:
+            simcc_x = outputs[0][0]  # (17, W*2)
+            simcc_y = outputs[1][0]  # (17, H*2)
+            # Argmax to get peak positions, divide by 2 for sub-pixel
+            x_coords = np.argmax(simcc_x, axis=1) / 2.0  # (17,)
+            y_coords = np.argmax(simcc_y, axis=1) / 2.0  # (17,)
+            # Confidence from peak values
+            x_conf = np.max(simcc_x, axis=1)
+            y_conf = np.max(simcc_y, axis=1)
+            conf = (x_conf + y_conf) / 2.0
+            # Scale from model input size to crop size
+            crop_w = x2 - x1
+            crop_h = y2 - y1
+            kps = np.zeros((17, 3), dtype=np.float32)
+            kps[:, 0] = x1 + x_coords * (crop_w / self.w)
+            kps[:, 1] = y1 + y_coords * (crop_h / self.h)
+            kps[:, 2] = 1.0 / (1.0 + np.exp(-conf))  # sigmoid
+        else:
+            out = outputs[0]
+            kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
+            kps[:, 0] = x1 + kps[:, 0] * (x2 - x1)
+            kps[:, 1] = y1 + kps[:, 1] * (y2 - y1)
+        
         return kps
 
 
