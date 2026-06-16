@@ -16,7 +16,7 @@ class Settings(BaseModel):
     inpaintnet_model_path: Path = Path("ckpts/InpaintNet_best.pt")
     yolov8_model_path: Path | None = None
     rtmpose_model_path: Path | None = None
-    bst_model_path: Path | None = None
+    bst_model_path: Path | None = Path("BST/weight/bst_CG_JnB_bone_merged.pt")
 
     def job_dir(self, job_id: str) -> Path:
         path = self.jobs_dir / job_id

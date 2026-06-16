@@ -36,11 +36,10 @@ class StrokeClassificationStage:
 
         shots = []
         previous_shots = []
-        
+
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
-            
-            # Extract 144-dim features for rule-based fallback
+
             features = extractor.extract(
                 shuttle_df=shuttle_df,
                 pose_df=pose_df,
@@ -48,22 +47,32 @@ class StrokeClassificationStage:
                 player_id="player_1",
                 previous_shots=previous_shots,
             )
-            
-            # Create a clip for BST prediction
+
             clip = {
                 'JnB': np.zeros((30, 2, 72), dtype=np.float32),
                 'shuttle': np.zeros((30, 2), dtype=np.float32),
                 'pos': np.zeros((30, 2, 2), dtype=np.float32),
                 'video_len': 30,
             }
-            
-            # Fill shuttle from features
+
             if shuttle_df is not None and len(shuttle_df) > 0:
                 shuttle_row = shuttle_df[shuttle_df['frame'] == frame]
                 if len(shuttle_row) > 0:
                     clip['shuttle'][0] = [float(shuttle_row.iloc[0]['x']) / frame_width,
                                           float(shuttle_row.iloc[0]['y']) / frame_height]
-            
+
+            if pose_df is not None and len(pose_df) > 0:
+                pose_row = pose_df[pose_df['frame'] == frame]
+                if len(pose_row) > 0:
+                    for pid_idx, pid in enumerate(['player_1', 'player_2']):
+                        p_data = pose_row[pose_row['player_id'] == pid] if 'player_id' in pose_row.columns else pose_row
+                        if len(p_data) > 0 and 'keypoints' in p_data.columns:
+                            kps = np.array(p_data.iloc[0]['keypoints'])
+                            if kps.ndim == 2 and kps.shape[1] >= 2:
+                                feet_x = (kps[15, 0] + kps[16, 0]) / 2
+                                feet_y = max(kps[15, 1], kps[16, 1])
+                                clip['pos'][0, pid_idx] = [feet_x / frame_width, feet_y / frame_height]
+
             stroke_type, confidence = classifier.predict_single(clip)
             
             shot = {

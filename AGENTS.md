@@ -52,6 +52,9 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | `backend/app/pipeline/*.py` | Pipeline stages |
 | `backend/app/pipeline/analytics/*.py` | Analytics sub-stages |
 | `backend/app/models/*.py` | ML model wrappers |
+| `backend/app/models/bst_model.py` | BST-CG architecture (TCN + Transformer + Cross Attention + Clean Gate) |
+| `backend/app/models/bst_preprocessing.py` | BST normalization, bone creation, sequence extraction |
+| `backend/app/models/bst.py` | BSTClassifier with model loading and rule-based fallback |
 | `backend/app/coach/engine.py` | Rule-based coach engine |
 | `backend/app/config/settings.py` | Config + model paths |
 | `frontend/src/views/ReportView.tsx` | Main report dashboard |
@@ -65,8 +68,16 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 - Parquet keypoint data: always reshape with `np.array(kps.tolist())` — pyarrow flattens nested lists
 - Pipeline stages accept optional kwargs beyond `(artifacts, config)` for testing
 
+### BST Integration
+- BST_CG inputs: `JnB` (batch, seq_len, 2 players, 72), `shuttle` (batch, seq_len, 2), `video_len` (batch,)
+- Clipping: Extract from previous opponent's hit to next opponent's hit (not fixed-width windows)
+- Class mapping: 25 ShuttleSet → 12 coaching classes (net_shot, block, smash, lift, clear, drive, drop, push, rush, cross_court, short_serve, long_serve)
+- Joints normalized by bbox diagonal, shuttle by video resolution [0,1]
+- Bones: 19 COCO pairs from 17 keypoints
+
 ### Frontend
 - No router — state machine in App.tsx (`upload | processing | report`)
+- Components: `CourtHeatmap`, `FatigueTrendChart`, `FitnessStats`, `CoachPanel`, `ShotChart`, `VideoPlayer`
 - Dark theme: `court-dark` (#0f1419), `shuttle-lime` (#c8ff00), `feather-green` (#00e676)
 - Fonts: Bebas Neue (display), DM Sans (body), JetBrains Mono (mono)
 - All charts use Recharts. Video uses Video.js.
@@ -83,7 +94,8 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | TrackNetV3 | `ckpts/TrackNet_best.pt` | Shuttle tracking |
 | YOLOv8s | auto-download | Player detection |
 | RTMPose | `ckpts/rtmpose/*.onnx` | Pose estimation |
-| BST-CG-AP | `ckpts/bst/bst_CG_AP.pt` | Stroke classification |
+| BST-CG-AP | `ckpts/bst/bst_CG_AP.pt` | Stroke classification (old path) |
+| BST-CG (best) | `BST/weight/bst_CG_JnB_bone_merged.pt` | Stroke classification (ShuttleSet merged 25 classes) |
 
 **Known limitations:**
 - YOLOv8n/s fails on wide-angle broadcast footage (players too small). Synthetic fallback used.
@@ -92,7 +104,7 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 
 ## Testing
 
-50 tests in `backend/tests/`. Run full suite before commits:
+68 tests in `backend/tests/`. Run full suite before commits:
 ```bash
 .venv/bin/pytest backend/tests/ -v
 ```
@@ -100,7 +112,7 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 ## Dependencies
 
 ### Backend (pip)
-`torch`, `ultralytics`, `onnxruntime`, `opencv-python`, `scipy`, `numpy`, `pandas`, `pyarrow`, `fastapi`, `uvicorn`, `websockets`, `pyyaml`, `gdown`
+`torch`, `ultralytics`, `onnxruntime`, `opencv-python-headless`, `scipy`, `numpy`, `pandas`, `pyarrow`, `fastapi`, `uvicorn`, `websockets`, `pyyaml`, `gdown` (optional, for model downloads)
 
 ### Frontend (npm)
 `react`, `react-dom`, `recharts`, `video.js`, `vite`, `tailwindcss`, `typescript`

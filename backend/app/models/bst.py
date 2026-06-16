@@ -1,6 +1,7 @@
 """BST classifier for stroke classification.
 
-Integrates the BST_CG model with proper preprocessing.
+Integrates the official BST_CG model from:
+https://github.com/Va6lue/BST-Badminton-Stroke-type-Transformer
 """
 
 import numpy as np
@@ -8,13 +9,11 @@ from pathlib import Path
 from typing import Optional
 
 
-# Stroke classes for coaching (simplified from 25 ShuttleSet classes)
 COACH_STROKE_CLASSES = [
     "net_shot", "block", "smash", "lift", "clear", "drive",
     "drop", "push", "rush", "cross_court", "short_serve", "long_serve"
 ]
 
-# Full ShuttleSet merged classes
 SHUTTLESET_CLASSES = [
     'unknown', 'Top_net_shot', 'Top_block', 'Top_smash', 'Top_lift',
     'Top_clear', 'Top_drive', 'Top_drop', 'Top_push', 'Top_rush',
@@ -37,157 +36,134 @@ def map_to_coach_class(shuttleset_class_id: int) -> str:
 
 
 class BSTClassifier:
-    """BST classifier with proper model loading and inference.
-    
-    Supports:
-    - BST_CG model with sequence inputs
-    - Automatic weight loading
-    - Fallback to rule-based classification
+    """BST classifier using the official BST_CG model.
+
+    Supports loading from the official weight files and inference
+    with proper preprocessing.
     """
-    
+
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
         self.device = device
         self.model = None
         self.seq_len = 30
         self.classes = COACH_STROKE_CLASSES
-        
+
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
-    
+
     def _load_model(self, path: str):
         """Load BST_CG model from checkpoint."""
         try:
             import torch
             from app.models.bst_model import BST_CG
-            
+
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-            
-            # Extract model parameters from checkpoint
-            if isinstance(checkpoint, dict):
-                # Try to detect model architecture from state_dict
-                state_dict = checkpoint
-                if 'model' in checkpoint:
-                    if callable(checkpoint['model']):
-                        self.model = checkpoint['model']
-                        self.model.to(self.device).eval()
-                        print(f"BST loaded from checkpoint['model']")
-                        return
-                    state_dict = checkpoint['model']
-                
-                # Detect dimensions from state_dict
-                in_dim = None
-                seq_len = self.seq_len
-                n_classes = 25  # ShuttleSet merged default
-                
-                for k, v in state_dict.items():
-                    if 'tcn_pose.net.0.weight' in k:
-                        in_dim = v.shape[1]
-                    if 'mlp_head.net.4.weight' in k:
-                        n_classes = v.shape[0]
-                    if 'embedding_tem' in k:
-                        seq_len = v.shape[1] - 1
-                
-                if in_dim is None:
-                    in_dim = 72  # Default for JnB_bone
-                
-                # Create model
+
+            if not isinstance(checkpoint, dict):
+                print(f"BST checkpoint format not recognized: {type(checkpoint)}")
+                return
+
+            state_dict = checkpoint
+
+            # Detect dimensions from state_dict
+            in_dim = 72
+            seq_len = self.seq_len
+            n_classes = 25
+
+            for k, v in state_dict.items():
+                if 'tcn_pose.net.0.weight' in k:
+                    in_dim = v.shape[1]
+                if 'mlp_head.mlp.mlp.3.weight' in k:
+                    n_classes = v.shape[0]
+                if 'embedding_tem' in k:
+                    seq_len = v.shape[1] - 1
+
+            has_positions = any('mlp_positions' in k for k in state_dict)
+
+            if has_positions:
                 model = BST_CG(
                     in_dim=in_dim,
                     seq_len=seq_len,
-                    n_classes=n_classes,
+                    n_class=n_classes,
                     d_model=100,
                     d_head=128,
                     n_head=6,
                     depth_tem=2,
                     depth_inter=1,
                 )
-                
-                # Load weights
-                model.load_state_dict(state_dict)
-                model.to(self.device).eval()
-                
-                self.model = model
-                self.seq_len = seq_len
-                print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
             else:
-                print(f"BST checkpoint format not recognized: {type(checkpoint)}")
+                print(f"BST checkpoint missing mlp_positions, cannot load")
+                return
+
+            model.load_state_dict(state_dict)
+            model.to(self.device).eval()
+
+            self.model = model
+            self.seq_len = seq_len
+            print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
         except Exception as e:
             print(f"BST load error: {e}")
             import traceback
             traceback.print_exc()
-    
+
     def predict_from_clips(self, clips: list) -> list:
         """Predict stroke types from prepared BST clips.
-        
+
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
-        
+
         Returns:
             List of (stroke_type, confidence) tuples
         """
         if self.model is None:
             return [(self._rule_based_predict(clip), 0.5) for clip in clips]
-        
+
         import torch
-        
+
         results = []
-        
+
         for clip in clips:
             try:
-                # Convert to tensors
                 JnB = torch.from_numpy(clip['JnB']).float().unsqueeze(0).to(self.device)
                 shuttle = torch.from_numpy(clip['shuttle']).float().unsqueeze(0).to(self.device)
+                pos = torch.from_numpy(clip['pos']).float().unsqueeze(0).to(self.device)
                 video_len = torch.tensor([clip['video_len']], dtype=torch.long).to(self.device)
-                
-                # Reshape JnB: (1, seq_len, 2, 72) -> (1, 2, 72, seq_len) for TCN
-                # Actually BST expects (batch, seq_len, n_people, in_dim)
-                
+
                 with torch.no_grad():
-                    logits = self.model(JnB, shuttle, video_len)
+                    logits = self.model(JnB, shuttle, pos, video_len)
                     probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
-                
+
                 pred_idx = int(np.argmax(probs))
                 confidence = float(probs[pred_idx])
-                
-                # Map to coaching class
+
                 stroke_type = map_to_coach_class(pred_idx)
-                
                 results.append((stroke_type, confidence))
             except Exception as e:
                 print(f"BST inference error: {e}")
                 results.append((self._rule_based_predict(clip), 0.5))
-        
+
         return results
-    
+
     def predict_single(self, clip: dict) -> tuple:
-        """Predict stroke type for a single clip.
-        
-        Args:
-            clip: Dict with keys: JnB, shuttle, pos, video_len
-        
-        Returns:
-            (stroke_type, confidence) tuple
-        """
+        """Predict stroke type for a single clip."""
         results = self.predict_from_clips([clip])
         return results[0] if results else ("unknown", 0.0)
-    
+
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory."""
         shuttle = clip.get('shuttle', np.zeros((30, 2)))
-        
+
         if len(shuttle) < 2:
             return "clear"
-        
-        # Compute shuttle velocity
+
         dy = np.diff(shuttle[:, 1])
         dx = np.diff(shuttle[:, 0])
         speed = np.sqrt(dx**2 + dy**2)
-        
+
         mean_speed = np.mean(speed)
         max_speed = np.max(speed)
         mean_dy = np.mean(dy)
-        
-        # Simple heuristics
+
         if max_speed > 0.15 and mean_dy > 0.05:
             return "smash"
         elif mean_speed < 0.03:
@@ -213,16 +189,16 @@ def normalize_joints(
     """Normalize joints by bounding box diagonal distance."""
     diag = np.linalg.norm(bbox[:, 2:] - bbox[:, :2], axis=-1, keepdims=True)
     diag = np.where(diag == 0, 1, diag)
-    
+
     arr_x = arr[:, :, 0]
     arr_y = arr[:, :, 1]
     x_normalized = np.where(arr_x != 0.0, (arr_x - bbox[:, None, 0]) / diag, 0.0)
     y_normalized = np.where(arr_y != 0.0, (arr_y - bbox[:, None, 1]) / diag, 0.0)
-    
+
     if center_align:
         center = (bbox[:, :2] + bbox[:, 2:]) / 2
         c_normalized = (center - bbox[:, :2]) / diag
         x_normalized -= c_normalized[:, None, 0]
         y_normalized -= c_normalized[:, None, 1]
-    
+
     return np.stack((x_normalized, y_normalized), axis=-1)
