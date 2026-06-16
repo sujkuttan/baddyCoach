@@ -367,13 +367,32 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             bones.append(bone)
         return np.stack(bones, axis=-2)
     
+    def normalize_joints_bstdiag(coords):
+        """Normalize joints using bbox diagonal with center_align.
+
+        Matches the official BST normalize_joints preprocessing:
+        - Origin = top-left of the player bounding box
+        - Scale = diagonal distance of the bounding box
+        - center_align=True shifts origin to bbox center
+        """
+        bbox_min = coords.min(axis=0)
+        bbox_max = coords.max(axis=0)
+        diag = np.linalg.norm(bbox_max - bbox_min)
+        if diag < 1e-6:
+            diag = 1.0
+        normalized = (coords - bbox_min) / diag
+        center = (bbox_min + bbox_max) / (2 * diag)
+        normalized -= center
+        return normalized.astype(np.float32)
+
     def prepare_bst_clip(clip_frames, seq_len):
         """Prepare BST input from a clip of frames.
         Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), pos (seq_len, 2, 2), video_len
 
-        RTMPose outputs keypoints already normalized to [0,1] frame coords.
-        We center them to [-0.5, 0.5] to match the training distribution
-        (official uses bbox-normalized + center_align which gives similar range).
+        Preprocessing matches official BST pipeline:
+        - Joints: bbox-diagonal normalization with center_align (range [-0.X, 0.X])
+        - Shuttle: normalized by video resolution (range [0, 1])
+        - Position: feet midpoint normalized by video resolution (range [0, 1])
         """
         n_frames = len(clip_frames)
 
@@ -390,9 +409,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                     kps = frame['pose'][pid]
                     if kps is not None and kps.shape == (17, 3):
                         coords = kps[:, :2]
-                        # RTMPose outputs [0,1] normalized coords
-                        # Center to [-0.5, 0.5] to match bbox-normalized + center_align distribution
-                        joints[t, p_idx] = coords - 0.5
+                        joints[t, p_idx] = normalize_joints_bstdiag(coords)
                         feet_y = max(coords[15, 1], coords[16, 1])
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
                         pos[t, p_idx] = [feet_x, feet_y]
