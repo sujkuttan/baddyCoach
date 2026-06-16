@@ -1167,10 +1167,23 @@ def stage_coach(tactical, fitness, footwork):
 
 
 def generate_report(court, players, shuttle, pose, hits, shots, rallies,
-                    court_analytics, footwork, fitness, tactical, technical, coach):
+                    court_analytics, footwork, fitness, tactical, technical, coach, fps=30):
     shot_dist = {}
     for pid, data in tactical.items():
         shot_dist.update(data.get("shot_distribution", {}))
+
+    # Add timestamps to shots for UI
+    shots_with_ts = []
+    for s in shots:
+        shots_with_ts.append({
+            "frame": s["frame"],
+            "timestamp": round(s["frame"] / fps, 2),
+            "stroke_type": s["stroke_type"],
+            "confidence": round(s.get("stroke_confidence", 0.5), 3),
+            "player_id": s.get("player_id", "player_1"),
+            "rally_id": s.get("rally_id"),
+        })
+
     return {
         "court_analytics": court_analytics, "footwork": footwork, "fitness": fitness,
         "tactical": tactical, "technical": technical,
@@ -1179,6 +1192,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
         "top_3_improvements": coach["top_3_improvements"],
         "recommended_drills": coach["recommended_drills"], "evidence": coach["evidence"],
         "rallies": rallies, "shot_count": len(shots),
+        "shots": shots_with_ts,
     }
 
 
@@ -1351,6 +1365,15 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
     print(f"    rallies.parquet ({len(rallies)} rows)")
 
+    # Assign rally_id to each shot
+    for shot in shots:
+        shot_rally = None
+        for rally in rallies:
+            if rally["start_frame"] <= shot["frame"] <= rally["end_frame"]:
+                shot_rally = rally["rally_id"]
+                break
+        shot["rally_id"] = shot_rally
+
     print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)
     print(f"  {len(court_analytics['zone_transitions'])} zone transitions")
@@ -1376,10 +1399,30 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
 
     report = generate_report(court, players_data, all_shuttle, all_pose, hits, shots, rallies,
-                            court_analytics, footwork, fitness, tactical, technical, coach)
+                            court_analytics, footwork, fitness, tactical, technical, coach, fps=video_fps)
 
     output = Path(output_path)
     output.write_text(json.dumps(report, indent=2, default=str))
+
+    # Export stroke_map.json for UI timestamp display
+    stroke_map = {
+        "fps": video_fps,
+        "duration_seconds": duration,
+        "strokes": [
+            {
+                "frame": s["frame"],
+                "timestamp": round(s["frame"] / video_fps, 2),
+                "stroke_type": s["stroke_type"],
+                "confidence": round(s["stroke_confidence"], 3),
+                "player_id": s.get("player_id", "player_1"),
+                "rally_id": s.get("rally_id"),
+            }
+            for s in shots
+        ],
+    }
+    stroke_map_path = output.parent / "stroke_map.json"
+    stroke_map_path.write_text(json.dumps(stroke_map, indent=2))
+
     elapsed = time.time() - start_time
 
     print(f"\n{'=' * 60}")

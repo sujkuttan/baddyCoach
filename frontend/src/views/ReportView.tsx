@@ -6,6 +6,7 @@ import { CoachPanel } from '../components/CoachPanel';
 import { CourtHeatmap } from '../components/CourtHeatmap';
 import { FatigueTrendChart } from '../components/FatigueTrendChart';
 import { FitnessStats } from '../components/FitnessStats';
+import { StrokeListPanel } from '../components/StrokeListPanel';
 
 interface ReportViewProps {
   jobId: string | null;
@@ -84,6 +85,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   const commonPatterns = report.tactical?.[selectedPlayer]?.common_patterns || [];
   const technicalAssessments = report.technical?.[selectedPlayer] || null;
   const rallies = report.rallies || [];
+  const shots = report.shots || [];
 
   return (
     <div className="min-h-screen court-pattern">
@@ -171,20 +173,20 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
       <main className="max-w-7xl mx-auto px-6 py-8">
         {activeTab === 'overview' && (
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-entrance">
-            {/* Video Player - 8 cols */}
-            <div className="lg:col-span-8">
+            {/* Video Player + Stroke Timeline - 7 cols */}
+            <div className="lg:col-span-7">
               <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
                 <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                   <h2 className="font-display text-lg text-text-primary tracking-wide">MATCH FOOTAGE</h2>
                   {jobId ? (
-                    <span className="font-mono text-[10px] text-text-muted">{rallies.length} RALLIES</span>
+                    <span className="font-mono text-[10px] text-text-muted">{rallies.length} RALLIES · {shots.length} STROKES</span>
                   ) : (
                     <span className="font-mono text-[10px] text-shuttle-lime">IMPORTED REPORT</span>
                   )}
                 </div>
                 <div className="p-4">
                   {jobId ? (
-                    <VideoPlayer jobId={jobId} rallies={rallies} fps={30} />
+                    <VideoPlayer jobId={jobId} rallies={rallies} strokes={shots} fps={30} />
                   ) : (
                     <div className="flex items-center justify-center h-48 rounded-xl bg-court-dark/40 border border-court-line/10">
                       <div className="text-center">
@@ -200,9 +202,22 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
               </div>
             </div>
 
-            {/* Shot Distribution - 4 cols */}
-            <div className="lg:col-span-4">
-              <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden h-full">
+            {/* Stroke List Panel - 5 cols */}
+            <div className="lg:col-span-5">
+              <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden" style={{ height: '100%' }}>
+                <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
+                  <h2 className="font-display text-lg text-text-primary tracking-wide">STROKE MAP</h2>
+                  <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>
+                </div>
+                <div style={{ maxHeight: 500, overflow: 'auto' }}>
+                  <StrokeListPanel strokes={shots} rallies={rallies} fps={30} onSeek={(time) => {}} />
+                </div>
+              </div>
+            </div>
+
+            {/* Shot Distribution - full width */}
+            <div className="lg:col-span-12">
+              <div className="bg-court-mid/60 backdrop-blur-sm rounded-2xl border border-court-line/15 overflow-hidden">
                 <div className="px-5 py-3 border-b border-court-line/10 flex items-center justify-between">
                   <h2 className="font-display text-lg text-text-primary tracking-wide">SHOT DISTRIBUTION</h2>
                   <span className="font-mono text-[10px] text-shuttle-lime">{playerLabel(selectedPlayer)}</span>

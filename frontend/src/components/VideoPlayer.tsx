@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import videojs from 'video.js';
 import 'video.js/dist/video-js.css';
+import { StrokeTimeline } from './StrokeTimeline';
+
+interface Stroke {
+  frame: number;
+  timestamp: number;
+  stroke_type: string;
+  confidence: number;
+  player_id: string;
+  rally_id: number | null;
+}
 
 interface Rally {
   rally_id: number;
@@ -12,6 +22,7 @@ interface Rally {
 interface VideoPlayerProps {
   jobId: string;
   rallies?: Rally[];
+  strokes?: Stroke[];
   fps?: number;
 }
 
@@ -20,7 +31,7 @@ const RALLY_COLORS = [
   '#ff5252', '#69f0ae', '#ffd740', '#ea80fc', '#82b1ff',
 ];
 
-export function VideoPlayer({ jobId, rallies = [], fps = 30 }: VideoPlayerProps) {
+export function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const [duration, setDuration] = useState(0);
@@ -138,6 +149,27 @@ export function VideoPlayer({ jobId, rallies = [], fps = 30 }: VideoPlayerProps)
           )}
         </div>
       </div>
+
+      {/* Stroke Timeline */}
+      {strokes.length > 0 && duration > 0 && (
+        <div className="bg-court-dark/60 rounded-xl border border-court-line/15 p-3">
+          <div className="flex items-center justify-between mb-2">
+            <span className="font-mono text-[10px] text-text-muted tracking-widest">STROKE TIMELINE</span>
+            <span className="font-mono text-[10px] text-text-muted">{strokes.length} strokes</span>
+          </div>
+          <StrokeTimeline
+            strokes={strokes}
+            rallies={rallies}
+            fps={fps}
+            duration={duration}
+            currentTime={currentTime}
+            onSeek={(time) => {
+              const player = playerRef.current;
+              if (player) player.currentTime(time);
+            }}
+          />
+        </div>
+      )}
     </div>
   );
 }
