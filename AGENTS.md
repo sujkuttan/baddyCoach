@@ -49,8 +49,8 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 |------|---------|
 | `backend/app/api/routes.py` | API endpoints + pipeline runner |
 | `backend/app/api/websocket.py` | WebSocket broadcast manager |
-| `backend/app/pipeline/*.py` | Pipeline stages |
-| `backend/app/pipeline/analytics/*.py` | Analytics sub-stages |
+| `backend/app/pipeline/*.py` | Pipeline stages (court, players, shuttle, pose, hits, strokes, attribution, rallies) |
+| `backend/app/pipeline/analytics/*.py` | Analytics sub-stages (court_position, footwork, fitness, tactical, technical) |
 | `backend/app/models/*.py` | ML model wrappers |
 | `backend/app/models/bst_model.py` | BST-CG architecture (TCN + Transformer + Cross Attention + Clean Gate) |
 | `backend/app/models/bst_preprocessing.py` | BST normalization, bone creation, sequence extraction |
@@ -58,7 +58,15 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | `backend/app/coach/engine.py` | Rule-based coach engine |
 | `backend/app/config/settings.py` | Config + model paths |
 | `frontend/src/views/ReportView.tsx` | Main report dashboard |
-| `colab/pipeline.py` | Self-contained GPU pipeline |
+| `frontend/src/views/UploadView.tsx` | Video upload UI |
+| `frontend/src/views/ProcessingView.tsx` | Pipeline progress UI |
+| `frontend/src/components/VideoPlayer.tsx` | Video.js player with rally timeline + stroke timeline |
+| `frontend/src/components/StrokeTimeline.tsx` | Color-coded stroke markers on timeline bar |
+| `frontend/src/components/StrokeListPanel.tsx` | Filterable stroke list grouped by rally |
+| `frontend/src/components/StageProgress.tsx` | Pipeline stage progress display |
+| `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for job progress events |
+| `colab/pipeline.py` | Self-contained GPU pipeline (1500+ lines, all models inlined) |
+| `colab/BMCA_Colab.ipynb` | Colab notebook for running pipeline |
 
 ## Conventions
 
@@ -69,23 +77,28 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 - Pipeline stages accept optional kwargs beyond `(artifacts, config)` for testing
 
 ### BST Integration
-- BST_CG inputs: `JnB` (batch, seq_len, 2 players, 72), `shuttle` (batch, seq_len, 2), `video_len` (batch,)
-- Clipping: Extract from previous opponent's hit to next opponent's hit (not fixed-width windows)
+- BST_CG inputs: `JnB` (batch, seq_len, 2 players, 72), `shuttle` (batch, seq_len, 2), `pos` (batch, seq_len, 2, 2), `video_len` (batch,)
+- Backend clipping: Extract from previous opponent's hit to next opponent's hit
+- Colab clipping: Center-aligned windows (`hit_frame ± seq_len // 2`) — simpler but less accurate
+- Colab preprocessing includes: shuttle zero-interpolation (linear + bfill/ffill), center_align joint normalization, closest-in-time RTMPose fallback (±10 frames)
 - Class mapping: 25 ShuttleSet → 12 coaching classes (net_shot, block, smash, lift, clear, drive, drop, push, rush, cross_court, short_serve, long_serve)
-- Joints normalized by bbox diagonal, shuttle by video resolution [0,1]
+- Joints normalized by bbox diagonal with center_align, shuttle by video resolution [0,1]
 - Bones: 19 COCO pairs from 17 keypoints
+- **Known issue:** ~20-40% "unknown" predictions remain due to colab clipping/normalization differences from BST training data
 
 ### Frontend
 - No router — state machine in App.tsx (`upload | processing | report`)
-- Components: `CourtHeatmap`, `FatigueTrendChart`, `FitnessStats`, `CoachPanel`, `ShotChart`, `VideoPlayer`
+- Views: `UploadView`, `ProcessingView`, `ReportView`
+- Components: `CourtHeatmap`, `FatigueTrendChart`, `FitnessStats`, `CoachPanel`, `ShotChart`, `VideoPlayer`, `StrokeTimeline`, `StrokeListPanel`, `StageProgress`
+- `VideoPlayer` uses `forwardRef` + `useImperativeHandle` exposing `seekTo(time)` — `StrokeListPanel` click-to-seek wired via ref
 - Dark theme: `court-dark` (#0f1419), `shuttle-lime` (#c8ff00), `feather-green` (#00e676)
 - Fonts: Bebas Neue (display), DM Sans (body), JetBrains Mono (mono)
-- All charts use Recharts. Video uses Video.js.
-- `ReportView` accepts either `jobId` (fetches from API) or `reportData` (direct JSON)
+- All charts use Recharts. Video uses Video.js. WebSocket for progress events.
+- `ReportView` accepts either `jobId` (fetches from API) or `reportData` (direct JSON for Colab-imported reports)
 
 ### Git
 - Commit messages: `feat:`, `fix:`, `docs:` prefixes
-- Never commit `ckpts/`, `data/`, `.venv/`, `node_modules/`, `dist/`
+- Never commit `ckpts/`, `data/`, `.venv/`, `node_modules/`, `dist/`, `BST/`, `RTMPose/`, `results/`, `videos/`, `*.pt`
 
 ## Models
 
@@ -94,13 +107,13 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | TrackNetV3 | `ckpts/TrackNet_best.pt` | Shuttle tracking |
 | YOLOv8s | auto-download | Player detection |
 | RTMPose | `ckpts/rtmpose/*.onnx` | Pose estimation |
-| BST-CG-AP | `ckpts/bst/bst_CG_AP.pt` | Stroke classification (old path) |
 | BST-CG (best) | `BST/weight/bst_CG_JnB_bone_merged.pt` | Stroke classification (ShuttleSet merged 25 classes) |
 
 **Known limitations:**
 - YOLOv8n/s fails on wide-angle broadcast footage (players too small). Synthetic fallback used.
-- BST weights are raw state_dict (no bundled model class). Falls back to random classification.
+- BST weights are raw state_dict (no bundled model class). Falls back to rule-based classification using shuttle trajectory when model unavailable or produces class 0.
 - TrackNetV3 input: 27 channels (9 frames × 3 RGB). Sigmoid postprocessing required.
+- RTMPose uses `onnxruntime-gpu` for CUDA acceleration; falls back to CPU gracefully.
 
 ## Testing
 
@@ -112,7 +125,7 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 ## Dependencies
 
 ### Backend (pip)
-`torch`, `ultralytics`, `onnxruntime`, `opencv-python-headless`, `scipy`, `numpy`, `pandas`, `pyarrow`, `fastapi`, `uvicorn`, `websockets`, `pyyaml`, `gdown` (optional, for model downloads)
+`torch`, `ultralytics`, `onnxruntime-gpu`, `opencv-python-headless`, `scipy`, `numpy`, `pandas`, `pyarrow`, `fastapi`, `uvicorn`, `websockets`, `pyyaml`, `gdown` (optional, for model downloads)
 
 ### Frontend (npm)
 `react`, `react-dom`, `recharts`, `video.js`, `vite`, `tailwindcss`, `typescript`
