@@ -97,7 +97,7 @@ def setup_models(device: str):
 
     rtmpose_dir = CKPT_DIR / "rtmpose"
     rtmpose_dir.mkdir(parents=True, exist_ok=True)
-    if not RTMOPOSE_PATH.exists():
+    if not RTMOPOSE_PATH.exists() and not RTMOPOSE_PATH_ALT.exists():
         try:
             import gdown
             import zipfile
@@ -1195,7 +1195,16 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print("\n  Loading ML models...")
     tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
-    pose_estimator = RTMPoseEstimator(str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH), device=device)
+    # Find RTMPose model - check known paths, then any .onnx in directory
+    rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
+    if not Path(rtmpose_path).exists():
+        onnx_files = list(rtmpose_dir.glob("*.onnx"))
+        if onnx_files:
+            rtmpose_path = str(onnx_files[0])
+            print(f"  Found RTMPose at: {onnx_files[0].name}")
+        else:
+            print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
+    pose_estimator = RTMPoseEstimator(rtmpose_path, device=device)
     print("  Models loaded")
 
     # Accumulators for results across batches
