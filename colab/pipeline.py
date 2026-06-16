@@ -1262,7 +1262,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     all_det = {}
     all_pose = []
     all_player_detections = []
-    global_tid_to_pid = {}
     sample_idx = 0
     batch_count = 0
 
@@ -1291,7 +1290,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
                 _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                                tracker, tracknet, pose_estimator, device,
                                all_shuttle, all_det, all_pose, all_player_detections,
-                               global_tid_to_pid, batch_count, total_batches)
+                               batch_count, total_batches)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -1305,7 +1304,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
         _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                        tracker, tracknet, pose_estimator, device,
                        all_shuttle, all_det, all_pose, all_player_detections,
-                       global_tid_to_pid, batch_count, total_batches)
+                       batch_count, total_batches)
         batch_frames = []
         batch_global_indices = []
         gc.collect()
@@ -1484,8 +1483,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
 
 def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
-                   all_shuttle, all_det, all_pose, all_player_detections,
-                   global_tid_to_pid=None, batch_num=0, total_batches=0):
+                   all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
@@ -1517,22 +1515,13 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 3. Pose estimation (RTMPose)
     pose_count = sum(1 for gi in global_indices if all_det.get(gi))
     tqdm.write(f"{tag} | RTMPose pose estimation ({pose_count} frames)...")
-    if global_tid_to_pid is not None:
-        tid_to_pid = global_tid_to_pid
-        for local_idx in range(len(frames)):
-            global_idx = global_indices[local_idx]
-            for d in all_det.get(global_idx, []):
-                tid = d.get("track_id", 0)
-                if tid not in tid_to_pid and len(tid_to_pid) < 2:
-                    tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
-    else:
-        all_tids = set()
-        for local_idx in range(len(frames)):
-            global_idx = global_indices[local_idx]
-            for d in all_det.get(global_idx, []):
-                all_tids.add(d.get("track_id", 0))
-        sorted_tids = sorted(all_tids)
-        tid_to_pid = {tid: f"player_{i+1}" for i, tid in enumerate(sorted_tids[:2])}
+    all_tids = set()
+    for local_idx in range(len(frames)):
+        global_idx = global_indices[local_idx]
+        for d in all_det.get(global_idx, []):
+            all_tids.add(d.get("track_id", 0))
+    sorted_tids = sorted(all_tids)
+    tid_to_pid = {tid: f"player_{i+1}" for i, tid in enumerate(sorted_tids[:2])}
     for local_idx, global_idx in enumerate(global_indices):
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
