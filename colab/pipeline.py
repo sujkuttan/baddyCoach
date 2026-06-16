@@ -364,7 +364,7 @@ def stage_hits(shuttle_data):
     return hits
 
 
-def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda", vid_w=1280, vid_h=720):
+def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda", vid_w=1280, vid_h=720, player_detections=None):
     """Classify strokes using BST model with sequence inputs.
     
     This implementation follows the BST paper's approach:
@@ -749,14 +749,14 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     # Handles YOLO tracking ID switches
     frame_player_map = {}
     det_bbox_lookup = {}
-    if all_player_detections:
+    if player_detections:
         tid_to_pid = {}
-        tid_counts_local = Counter(d.get("track_id", 0) for d in all_player_detections)
+        tid_counts_local = Counter(d.get("track_id", 0) for d in player_detections)
         top2_tids = [tid for tid, _ in tid_counts_local.most_common(2)]
         for i, tid in enumerate(top2_tids):
             tid_to_pid[tid] = f"player_{i+1}"
         
-        for d in all_player_detections:
+        for d in player_detections:
             pid = tid_to_pid.get(d.get("track_id", 0))
             if not pid:
                 continue
@@ -1339,7 +1339,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"    hits.parquet ({len(hits)} rows)")
 
     print("\n[7/14] Stroke classification...")
-    shots = stage_strokes(hits, all_shuttle, all_pose, court, device, vid_w=vid_w, vid_h=vid_h)
+    shots = stage_strokes(hits, all_shuttle, all_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
     shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
