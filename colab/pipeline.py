@@ -370,6 +370,11 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     def prepare_bst_clip(clip_frames, seq_len):
         """Prepare BST input from a clip of frames.
         Returns: JnB (seq_len, 2, 72), shuttle (seq_len, 2), pos (seq_len, 2, 2), video_len
+
+        Follows official BST preprocessing:
+        - Joints normalized by bbox diagonal with center_align=True
+        - Shuttle normalized by video resolution [0,1]
+        - pos normalized by court boundary (approximated by video resolution)
         """
         n_frames = len(clip_frames)
 
@@ -388,8 +393,21 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                         coords = kps[:, :2] if kps.shape[1] >= 2 else kps
                         bbox_min = coords.min(axis=0)
                         bbox_max = coords.max(axis=0)
+                        bbox = np.array([[bbox_min[0], bbox_min[1], bbox_max[0], bbox_max[1]]])
                         diag = max(np.linalg.norm(bbox_max - bbox_min), 1.0)
-                        joints[t, p_idx] = (coords - bbox_min) / diag
+
+                        arr_x = coords[:, 0]
+                        arr_y = coords[:, 1]
+                        x_norm = np.where(arr_x != 0.0, (arr_x - bbox[0, 0]) / diag, 0.0)
+                        y_norm = np.where(arr_y != 0.0, (arr_y - bbox[0, 1]) / diag, 0.0)
+
+                        center = (bbox[0, :2] + bbox[0, 2:]) / 2
+                        c_norm = (center - bbox[0, :2]) / diag
+                        x_norm -= c_norm[0]
+                        y_norm -= c_norm[1]
+
+                        joints[t, p_idx] = np.stack((x_norm, y_norm), axis=-1)
+
                         feet_y = max(coords[15, 1], coords[16, 1])
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
                         pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
