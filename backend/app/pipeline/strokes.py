@@ -142,7 +142,11 @@ class StrokeClassificationStage:
         court_width = court.get("court_width", 5.18)
 
         vid_w, vid_h = 1280, 720
-        if shuttle_df is not None and len(shuttle_df) > 0:
+        video_res = artifacts.get("video_resolution")
+        if video_res:
+            vid_w = float(video_res.get("width", vid_w))
+            vid_h = float(video_res.get("height", vid_h))
+        elif shuttle_df is not None and len(shuttle_df) > 0:
             vid_w = max(float(shuttle_df["x"].max()), 640)
             vid_h = max(float(shuttle_df["y"].max()), 480)
 

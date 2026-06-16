@@ -27,6 +27,7 @@ class ShuttleTrackingStage:
 
         if frames:
             shuttle_data = self._run_tracknet(frames)
+            self._store_resolution(artifacts, frames)
             return self._store_data(artifacts, shuttle_data)
 
         return StageResult.from_error("No frames or shuttle data provided")
@@ -71,5 +72,14 @@ class ShuttleTrackingStage:
                 "total_frames": len(df),
                 "avg_confidence": float(avg_conf),
                 "frames_with_shuttle": int((df["confidence"] > 0.5).sum()),
-            }
+            },
         )
+
+    @staticmethod
+    def _store_resolution(artifacts: ArtifactStore, frames: list[np.ndarray]) -> None:
+        """Store video resolution from frame shapes."""
+        if frames:
+            artifacts.set("video_resolution", {
+                "width": int(frames[0].shape[1]),
+                "height": int(frames[0].shape[0]),
+            })

@@ -45,6 +45,12 @@ def run_pipeline(job_id: str):
     video_path = job.get("video_path", "")
     frames = _extract_frames(video_path, max_frames=200) if video_path else []
 
+    if frames:
+        store.set("video_resolution", {
+            "width": int(frames[0].shape[1]),
+            "height": int(frames[0].shape[0]),
+        })
+
     stages = [
         ("court_detection", lambda: CourtDetectionStage().run(store, config, corners=[
             (100, 500), (1820, 500), (100, 100), (1820, 100)
