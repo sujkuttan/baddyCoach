@@ -32,6 +32,7 @@ CKPT_DIR.mkdir(exist_ok=True)
 TRACKNET_PATH = CKPT_DIR / "TrackNet_best.pt"
 YOLOV8_MODEL = "yolov8s.pt"
 RTMOPOSE_PATH = CKPT_DIR / "rtmpose" / "rtmpose-m_8xb64-270e_coco-256x192.onnx"
+RTMOPOSE_PATH_ALT = CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
 BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
 
 COURT_LENGTH = 13.4
@@ -178,6 +179,9 @@ class TrackNetV3:
                 self.model = TrackNetV3Model()
                 self.model.load_state_dict(state_dict)
                 self.model.to(device).eval()
+                print(f"  TrackNet loaded from {Path(model_path).name}")
+            else:
+                print(f"  TrackNet state_dict not recognized")
         except Exception as e:
             print(f"  TrackNet load failed: {e}")
             self.model = None
@@ -247,9 +251,15 @@ class RTMPoseEstimator:
         self.model = None
         self.h, self.w = 192, 256
         if Path(model_path).exists():
-            import onnxruntime as ort
-            providers = ['CUDAExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
-            self.model = ort.InferenceSession(model_path, providers=providers)
+            try:
+                import onnxruntime as ort
+                providers = ['CUDAExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
+                self.model = ort.InferenceSession(model_path, providers=providers)
+                print(f"  RTMPose loaded from {Path(model_path).name}")
+            except Exception as e:
+                print(f"  RTMPose load error: {e}")
+        else:
+            print(f"  RTMPose model not found: {model_path}")
 
     def estimate(self, frame, bbox):
         if self.model is None:
@@ -1133,7 +1143,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print("\n  Loading ML models...")
     tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
-    pose_estimator = RTMPoseEstimator(str(RTMOPOSE_PATH), device=device)
+    pose_estimator = RTMPoseEstimator(str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH), device=device)
     print("  Models loaded")
 
     # Accumulators for results across batches

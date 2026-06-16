@@ -15,7 +15,7 @@ class Settings(BaseModel):
     tracknet_model_path: Path = Path("ckpts/TrackNet_best.pt")
     inpaintnet_model_path: Path = Path("ckpts/InpaintNet_best.pt")
     yolov8_model_path: Path | None = None
-    rtmpose_model_path: Path | None = None
+    rtmpose_model_path: Path | None = Path("ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx")
     bst_model_path: Path | None = Path("BST/weight/bst_CG_JnB_bone_merged.pt")
 
     def job_dir(self, job_id: str) -> Path:
