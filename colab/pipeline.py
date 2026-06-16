@@ -325,7 +325,7 @@ def stage_hits(shuttle_data):
     return hits
 
 
-def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda"):
+def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda", vid_w=1280, vid_h=720):
     """Classify strokes using BST model with sequence inputs.
     
     This implementation follows the BST paper's approach:
@@ -412,7 +412,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                         joints[t, p_idx] = normalize_joints_bstdiag(coords)
                         feet_y = max(coords[15, 1], coords[16, 1])
                         feet_x = (coords[15, 0] + coords[16, 0]) / 2
-                        pos[t, p_idx] = [feet_x, feet_y]
+                        pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
 
         bones = create_bones(joints)
         JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)
@@ -684,11 +684,8 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
         except Exception as e:
             print(f"BST load error: {e}")
     
-    # Get video dimensions for normalization
-    vid_w, vid_h = 1280, 720
-    if len(shuttle_df) > 0:
-        vid_w = max(shuttle_df["x"].max(), 640)
-        vid_h = max(shuttle_df["y"].max(), 480)
+    # Use actual video dimensions for normalization
+    # vid_w/vid_h are passed from the caller (actual video resolution)
     
     # Group pose by frame
     pose_by_frame = {}
@@ -1226,7 +1223,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print(f"  Found {len(hits)} hits")
 
     print("\n[7/14] Stroke classification...")
-    shots = stage_strokes(hits, all_shuttle, all_pose, court, device)
+    shots = stage_strokes(hits, all_shuttle, all_pose, court, device, vid_w=vid_w, vid_h=vid_h)
     shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
 
@@ -1332,8 +1329,9 @@ def _process_batch(frames, global_indices, batch_start_offset,
     ow, oh = frames[0].shape[1], frames[0].shape[0]
     shuttle_preds = tracknet.predict_batch(frames, original_size=(ow, oh))
     for local_idx, global_idx in enumerate(global_indices):
-        if local_idx < len(shuttle_preds):
-            all_shuttle.append({"frame": global_idx, **shuttle_preds[local_idx]})
+        pred_idx = local_idx - 2
+        if pred_idx >= 0 and pred_idx < len(shuttle_preds):
+            all_shuttle.append({"frame": global_idx, **shuttle_preds[pred_idx]})
 
     # 3. Pose estimation (RTMPose)
     pose_count = sum(1 for gi in global_indices if all_det.get(gi))
