@@ -57,7 +57,8 @@ def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) 
     row = pose_df[(pose_df['frame'] == frame) & (pose_df['player_id'] == player_id)]
     if len(row) == 0:
         return None
-    kps = np.array(row.iloc[0]['keypoints'])
+    raw = row.iloc[0]['keypoints']
+    kps = np.array(raw.tolist()) if hasattr(raw, 'tolist') else np.array(raw)
     if kps.ndim == 2 and kps.shape[1] >= 2 and kps.shape[0] >= 17:
         return kps
     return None
