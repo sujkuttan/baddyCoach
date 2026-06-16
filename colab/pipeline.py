@@ -761,6 +761,15 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             pred_idx = int(np.argmax(probs))
             confidence = float(probs[pred_idx])
             
+            # If top prediction is "unknown" but another class has reasonable
+            # confidence, use that instead — the model is uncertain but not clueless
+            if pred_idx == 0:
+                second_idx = int(np.argsort(probs)[-2])
+                second_conf = float(probs[second_idx])
+                if second_conf > 0.10:
+                    pred_idx = second_idx
+                    confidence = second_conf
+            
             # Map to simplified class
             if pred_idx == 0:
                 stroke_type = "unknown"
