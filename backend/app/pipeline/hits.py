@@ -25,7 +25,7 @@ class HitFrameLocalizationStage:
         trajectory_score = self._compute_trajectory_change(shuttle_df)
         speed_score = self._compute_speed_peaks(shuttle_df)
         proximity_score = self._compute_proximity(shuttle_df, pose_df) if pose_df is not None else np.zeros(len(shuttle_df))
-        swing_score = self._compute_swing_peaks(pose_df) if pose_df is not None else np.zeros(len(shuttle_df))
+        swing_score = self._compute_swing_peaks(pose_df, n_frames=len(shuttle_df)) if pose_df is not None else np.zeros(len(shuttle_df))
 
         combined = (
             self.TRAJECTORY_CHANGE_WEIGHT * trajectory_score +
@@ -93,9 +93,10 @@ class HitFrameLocalizationStage:
 
         return score / (score.max() + 1e-6)
 
-    def _compute_swing_peaks(self, pose_df: pd.DataFrame) -> np.ndarray:
-        max_frame = pose_df["frame"].max() + 1
-        score = np.zeros(max_frame)
+    def _compute_swing_peaks(self, pose_df: pd.DataFrame, n_frames: int = 0) -> np.ndarray:
+        if n_frames == 0:
+            n_frames = pose_df["frame"].max() + 1
+        score = np.zeros(n_frames)
 
         for player_id in pose_df["player_id"].unique():
             player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
@@ -103,12 +104,13 @@ class HitFrameLocalizationStage:
                 continue
             prev_kps = None
             for _, row in player_poses.iterrows():
-                kps = np.array(row["keypoints"])
+                kps = np.array(row['keypoints'])
                 if kps.ndim == 1:
                     kps = np.array(kps.tolist())
                 if prev_kps is not None and kps.shape == (17, 3) and prev_kps.shape == (17, 3):
                     arm_velocity = np.sqrt(np.sum((kps[9][:2] - prev_kps[9][:2])**2))
-                    score[row["frame"]] = arm_velocity
+                    if int(row["frame"]) < n_frames:
+                        score[int(row["frame"])] = arm_velocity
                 prev_kps = kps
 
         return score / (score.max() + 1e-6)
