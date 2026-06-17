@@ -109,7 +109,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
               <h1 className="font-display text-2xl text-text-primary tracking-wide">
                 MATCH <span className="text-shuttle-lime">REPORT</span>
               </h1>
-              <p className="font-mono text-[10px] text-text-muted tracking-widest">JOB {jobId.toUpperCase()}</p>
+              <p className="font-mono text-[10px] text-text-muted tracking-widest">{jobId ? `JOB ${jobId.toUpperCase()}` : 'IMPORTED REPORT'}</p>
             </div>
           </div>
 
