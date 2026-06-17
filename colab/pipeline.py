@@ -746,7 +746,10 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             frame_poses = pose_df[pose_df['frame'] == f_idx]
             pd_dict = {}
             for _, row in frame_poses.iterrows():
-                kps = np.array(row['keypoints'].tolist())
+                kps_raw = row['keypoints']
+                kps = np.array(kps_raw) if isinstance(kps_raw, np.ndarray) else np.array(kps_raw)
+                if kps.shape != (17, 3) and hasattr(kps_raw, 'tolist'):
+                    kps = np.array(kps_raw.tolist())
                 if kps.shape == (17, 3):
                     pd_dict[row['player_id']] = kps
             pose_by_frame[f_idx] = pd_dict
@@ -999,7 +1002,10 @@ def stage_footwork(pose_data, shots_data):
         player = pose_df[pose_df["player_id"] == pid].sort_values("frame")
         com_points = []
         for _, row in player.iterrows():
-            kps = np.array(row["keypoints"].tolist())
+            kps_raw = row["keypoints"]
+            kps = np.array(kps_raw) if isinstance(kps_raw, np.ndarray) else np.array(kps_raw)
+            if kps.shape != (17, 3) and hasattr(kps_raw, 'tolist'):
+                kps = np.array(kps_raw.tolist())
             if kps.shape == (17, 3):
                 com_points.append((kps[11][:2] + kps[12][:2]) / 2)
         dist = sum(np.sqrt(np.sum((np.array(com_points[i+1]) - np.array(com_points[i]))**2))
