@@ -14,6 +14,18 @@ STROKE_CLASSES = [
 ]
 
 
+def _load_keypoints(raw) -> np.ndarray:
+    """Load keypoints from parquet or in-memory format.
+
+    PyArrow flattens nested lists into object arrays, so np.array()
+    may return shape (17,) instead of (17,3). Use .tolist() to re-nest.
+    """
+    kps = np.array(raw)
+    if kps.shape != (17, 3) and hasattr(raw, 'tolist'):
+        kps = np.array(raw.tolist())
+    return kps
+
+
 class BSTFeatureExtractor:
     """Extracts 144-dim feature vectors for BST stroke classification.
     
@@ -159,9 +171,7 @@ class BSTFeatureExtractor:
                 return np.zeros(48)
             row = nearby.iloc[[-1]]
         
-        kps = np.array(row.iloc[0]["keypoints"])
-        if kps.shape != (17, 3):
-            kps = np.array(kps.tolist())
+        kps = _load_keypoints(row.iloc[0]["keypoints"])
         if kps.shape != (17, 3):
             return np.zeros(48)
         
@@ -199,8 +209,8 @@ class BSTFeatureExtractor:
         if len(curr_row) == 0 or len(prev_row) == 0:
             return np.zeros(12)
         
-        curr_kps = np.array(curr_row.iloc[0]["keypoints"])
-        prev_kps = np.array(prev_row.iloc[0]["keypoints"])
+        curr_kps = _load_keypoints(curr_row.iloc[0]["keypoints"])
+        prev_kps = _load_keypoints(prev_row.iloc[0]["keypoints"])
         
         if curr_kps.shape != (17, 3) or prev_kps.shape != (17, 3):
             return np.zeros(12)
@@ -228,9 +238,7 @@ class BSTFeatureExtractor:
         if len(row) == 0:
             return np.zeros(6)
         
-        kps = np.array(row.iloc[0]["keypoints"])
-        if kps.shape != (17, 3):
-            kps = np.array(kps.tolist())
+        kps = _load_keypoints(row.iloc[0]["keypoints"])
         if kps.shape != (17, 3):
             return np.zeros(6)
         

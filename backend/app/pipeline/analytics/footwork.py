@@ -50,7 +50,7 @@ class FootworkAnalyticsStage:
     def _extract_com(player_poses: pd.DataFrame) -> np.ndarray:
         com_points = []
         for _, row in player_poses.iterrows():
-            kps = np.array(row["keypoints"])
+            kps = np.array(row["keypoints"].tolist())
             if kps.shape != (17, 3):
                 kps = np.array(kps.tolist())
             if kps.shape == (17, 3):

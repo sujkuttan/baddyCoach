@@ -278,7 +278,7 @@ def prepare_stroke_clips_from_pipeline(
             pose_dict = {}
             for _, row in frame_poses.iterrows():
                 pid = row['player_id']
-                kps = np.array(row['keypoints'])
+                kps = np.array(row['keypoints'].tolist())
                 if kps.shape == (17, 3):
                     kps = kps[:, :2]  # Take x, y only
                 pose_dict[pid] = kps

@@ -82,7 +82,7 @@ class HitFrameLocalizationStage:
                 frame_idx = int(row["frame"])
                 if frame_idx >= len(score):
                     continue
-                kps = np.array(row["keypoints"])
+                kps = np.array(row["keypoints"].tolist())
                 if kps.ndim == 1:
                     kps = np.array(kps.tolist())
                 if kps.shape == (17, 3):
@@ -104,7 +104,7 @@ class HitFrameLocalizationStage:
                 continue
             prev_kps = None
             for _, row in player_poses.iterrows():
-                kps = np.array(row['keypoints'])
+                kps = np.array(row['keypoints'].tolist())
                 if kps.ndim == 1:
                     kps = np.array(kps.tolist())
                 if prev_kps is not None and kps.shape == (17, 3) and prev_kps.shape == (17, 3):

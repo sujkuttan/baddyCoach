@@ -50,9 +50,7 @@ class TechnicalAnalyticsStage:
 
     @staticmethod
     def _evaluate_shot(stroke_type: str, pose_row: pd.Series) -> float:
-        kps = np.array(pose_row["keypoints"])
-        if kps.shape != (17, 3):
-            kps = np.array(kps.tolist())
+        kps = np.array(pose_row["keypoints"].tolist())
         if kps.shape != (17, 3):
             return 0.5
 
