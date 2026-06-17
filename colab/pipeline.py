@@ -758,29 +758,19 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     hit_frames = sorted([h['frame'] for h in hits_data])
     
     # Build per-frame player lookup: {frame: {side: pid}}
-    # Handles YOLO tracking ID switches
+    # Uses side (near/far) to assign player IDs — consistent with _process_batch
     frame_player_map = {}
     det_bbox_lookup = {}
     if player_detections:
-        tid_to_pid = {}
-        tid_counts_local = Counter(d.get("track_id", 0) for d in player_detections)
-        top2_tids = [tid for tid, _ in tid_counts_local.most_common(2)]
-        for i, tid in enumerate(top2_tids):
-            tid_to_pid[tid] = f"player_{i+1}"
-        
         for d in player_detections:
-            pid = tid_to_pid.get(d.get("track_id", 0))
-            if not pid:
-                continue
             side = d.get("side", "near")
+            pid = "player_2" if side == "near" else "player_1"
             frame = d["frame"]
             
-            # Per-frame side resolution
             if frame not in frame_player_map:
                 frame_player_map[frame] = {}
             frame_player_map[frame][side] = pid
             
-            # Detection bbox lookup
             if pid not in det_bbox_lookup:
                 det_bbox_lookup[pid] = {}
             det_bbox_lookup[pid][frame] = d["bbox"]
@@ -1533,24 +1523,18 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 3. Pose estimation (RTMPose)
     pose_count = sum(1 for gi in global_indices if all_det.get(gi))
     tqdm.write(f"{tag} | RTMPose pose estimation ({pose_count} frames)...")
-    all_tids = set()
-    for local_idx in range(len(frames)):
-        global_idx = global_indices[local_idx]
-        for d in all_det.get(global_idx, []):
-            all_tids.add(d.get("track_id", 0))
-    sorted_tids = sorted(all_tids)
-    tid_to_pid = {tid: f"player_{i+1}" for i, tid in enumerate(sorted_tids[:2])}
     for local_idx, global_idx in enumerate(global_indices):
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
         if not dets_for_frame:
-            for pid in tid_to_pid.values():
+            # Closest-in-time fallback for missing detections
+            for pid in ["player_1", "player_2"]:
                 best_det = None
                 best_dist = float('inf')
                 for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
                     other_global = global_indices[other_idx]
                     for d in all_det.get(other_global, []):
-                        if tid_to_pid.get(d.get("track_id", 0)) == pid:
+                        if d.get("side") == ("near" if pid == "player_2" else "far"):
                             dist = abs(other_idx - local_idx)
                             if dist < best_dist:
                                 best_dist = dist
@@ -1560,7 +1544,7 @@ def _process_batch(frames, global_indices, batch_start_offset,
                     all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
             continue
         for d in dets_for_frame[:2]:
-            pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
+            pid = "player_2" if d.get("side") == "near" else "player_1"
             kps = pose_estimator.estimate(frame, d["bbox"])
             all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
 
