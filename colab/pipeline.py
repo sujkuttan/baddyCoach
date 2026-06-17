@@ -788,12 +788,24 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     if model is not None:
         import torch
         
+        # Sort hit frames for smart clipping (previous-hit to next-hit)
+        hit_frames_sorted = sorted([h['frame'] for h in hits_data])
+        
         for hit in hits_data:
             hit_frame = hit['frame']
             
-            # CENTER clip around the actual hit frame
-            start_frame = max(0, hit_frame - seq_len // 2)
-            end_frame = hit_frame + seq_len // 2
+            # Smart clipping: previous opponent's hit to next opponent's hit
+            hit_pos = hit_frames_sorted.index(hit_frame)
+            
+            if hit_pos > 0:
+                start_frame = hit_frames_sorted[hit_pos - 1]
+            else:
+                start_frame = max(0, hit_frame - seq_len // 2)
+            
+            if hit_pos < len(hit_frames_sorted) - 1:
+                end_frame = hit_frames_sorted[hit_pos + 1] + 2
+            else:
+                end_frame = hit_frame + seq_len // 2 + 1
             
             # Extract clip frames
             clip_frames = []
