@@ -757,23 +757,23 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     # Get all hit frames for centering clips
     hit_frames = sorted([h['frame'] for h in hits_data])
     
-    # Build per-frame player lookup: {frame: {side: pid}}
-    # Uses side (near/far) to assign player IDs — consistent with _process_batch
-    frame_player_map = {}
+    # Build detection bbox lookup per player
     det_bbox_lookup = {}
     if player_detections:
-        for d in player_detections:
-            side = d.get("side", "near")
-            pid = "player_2" if side == "near" else "player_1"
-            frame = d["frame"]
-            
-            if frame not in frame_player_map:
-                frame_player_map[frame] = {}
-            frame_player_map[frame][side] = pid
-            
-            if pid not in det_bbox_lookup:
-                det_bbox_lookup[pid] = {}
-            det_bbox_lookup[pid][frame] = d["bbox"]
+        # Use per-frame tid_to_pid to build consistent bbox lookup
+        for frame_idx in sorted(set(d["frame"] for d in player_detections)):
+            frame_dets = [d for d in player_detections if d["frame"] == frame_idx]
+            tid_to_pid = {}
+            for d in frame_dets:
+                tid = d.get("track_id", 0)
+                if tid not in tid_to_pid:
+                    tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
+            for d in frame_dets:
+                pid = tid_to_pid.get(d.get("track_id", 0))
+                if pid:
+                    if pid not in det_bbox_lookup:
+                        det_bbox_lookup[pid] = {}
+                    det_bbox_lookup[pid][frame_idx] = d["bbox"]
     
     # Process each hit
     shots = []
@@ -818,18 +818,15 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                     frame_data['shuttle_x'] = 0.0
                     frame_data['shuttle_y'] = 0.0
                 
-                # Pose (with per-frame player resolution)
+                # Pose: look up by player_1/player_2 directly (set by per-frame tid_to_pid)
                 raw_pose = pose_by_frame.get(f, {})
-                frame_players = frame_player_map.get(f, {})
-                far_pid = frame_players.get('far', 'player_1')
-                near_pid = frame_players.get('near', 'player_2')
                 frame_data['pose'] = {
-                    'player_1': raw_pose.get(far_pid),
-                    'player_2': raw_pose.get(near_pid),
+                    'player_1': raw_pose.get('player_1'),
+                    'player_2': raw_pose.get('player_2'),
                 }
                 frame_data['det_bboxes'] = {
-                    'player_1': det_bbox_lookup.get(far_pid, {}).get(f),
-                    'player_2': det_bbox_lookup.get(near_pid, {}).get(f),
+                    'player_1': det_bbox_lookup.get('player_1', {}).get(f),
+                    'player_2': det_bbox_lookup.get('player_2', {}).get(f),
                 }
                 
                 clip_frames.append(frame_data)
@@ -1542,17 +1539,22 @@ def _process_batch(frames, global_indices, batch_start_offset,
                 for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
                     other_global = global_indices[other_idx]
                     for d in all_det.get(other_global, []):
-                        if d.get("side") == ("near" if pid == "player_2" else "far"):
-                            dist = abs(other_idx - local_idx)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_det = d
+                        dist = abs(other_idx - local_idx)
+                        if dist < best_dist:
+                            best_dist = dist
+                            best_det = d
                 if best_det:
                     kps = pose_estimator.estimate(frame, best_det["bbox"])
                     all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
             continue
+        # Per-frame: map each detection to player_1/player_2 by order
+        tid_to_pid = {}
+        for d in dets_for_frame:
+            tid = d.get("track_id", 0)
+            if tid not in tid_to_pid:
+                tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
         for d in dets_for_frame[:2]:
-            pid = "player_2" if d.get("side") == "near" else "player_1"
+            pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
             kps = pose_estimator.estimate(frame, d["bbox"])
             all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
 
