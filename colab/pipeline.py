@@ -834,10 +834,18 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 
                 clip_frames.append(frame_data)
             
-            # Pad/truncate to seq_len
+            # Pad/truncate to seq_len, centering on the hit frame
+            if len(clip_frames) > seq_len:
+                hit_offset = hit_frame - start_frame
+                half = seq_len // 2
+                clip_start = max(0, hit_offset - half)
+                clip_end = clip_start + seq_len
+                if clip_end > len(clip_frames):
+                    clip_end = len(clip_frames)
+                    clip_start = max(0, clip_end - seq_len)
+                clip_frames = clip_frames[clip_start:clip_end]
             while len(clip_frames) < seq_len:
                 clip_frames.append({'shuttle_x': 0.0, 'shuttle_y': 0.0, 'pose': {}})
-            clip_frames = clip_frames[:seq_len]
             
             # Prepare BST input
             JnB, shuttle_arr, pos_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
