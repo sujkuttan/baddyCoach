@@ -136,14 +136,18 @@ class BSTClassifier:
                 pred_idx = int(np.argmax(probs))
                 confidence = float(probs[pred_idx])
 
-                # If top prediction is "unknown" but another class has reasonable
-                # confidence, use that instead — the model is uncertain but not clueless
+                # If top prediction is "unknown", try the second-best class
+                # or fall back to rule-based shuttle trajectory classification
                 if pred_idx == 0:
                     second_idx = int(np.argsort(probs)[-2])
                     second_conf = float(probs[second_idx])
                     if second_conf > 0.10:
                         pred_idx = second_idx
                         confidence = second_conf
+                    else:
+                        stroke_type = self._rule_based_predict(clip)
+                        results.append((stroke_type, confidence))
+                        continue
 
                 stroke_type = map_to_coach_class(pred_idx)
                 results.append((stroke_type, confidence))
@@ -165,7 +169,6 @@ class BSTClassifier:
         if len(shuttle) < 2:
             return "clear"
 
-        # Filter out zero coordinates (missing shuttle data)
         valid = (shuttle[:, 0] != 0) | (shuttle[:, 1] != 0)
         if valid.sum() < 2:
             return "clear"
@@ -175,9 +178,11 @@ class BSTClassifier:
         dx = np.diff(shuttle[:, 0])
         speed = np.sqrt(dx**2 + dy**2)
 
-        mean_speed = np.mean(speed)
-        max_speed = np.max(speed)
-        mean_dy = np.mean(dy)
+        mean_speed = float(np.mean(speed))
+        max_speed = float(np.max(speed))
+        mean_dy = float(np.mean(dy))
+        end_y = float(shuttle[-1, 1])
+        start_y = float(shuttle[0, 1])
 
         if max_speed > 0.15 and mean_dy > 0.05:
             return "smash"
@@ -187,6 +192,10 @@ class BSTClassifier:
             return "clear"
         elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
             return "drive"
+        elif mean_dy > 0.02 and mean_speed > 0.03:
+            return "lift"
+        elif end_y > 0.7 and mean_speed < 0.06:
+            return "drop"
         else:
             return "clear"
 

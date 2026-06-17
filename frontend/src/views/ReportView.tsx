@@ -1,5 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from 'react';
 import { getReport } from '../utils/api';
+import { getVideoObjectURL } from '../utils/videoStore';
 import { VideoPlayer } from '../components/VideoPlayer';
 import type { VideoPlayerHandle } from '../components/VideoPlayer';
 import { ShotChart } from '../components/ShotChart';
@@ -190,7 +191,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                   <VideoPlayer
                     ref={videoRef}
                     jobId={jobId}
-                    videoUrl={!jobId ? sessionStorage.getItem('baddycoach_video_url') : null}
+                    videoUrl={!jobId ? getVideoObjectURL() : null}
                     rallies={rallies}
                     strokes={shots}
                     fps={30}

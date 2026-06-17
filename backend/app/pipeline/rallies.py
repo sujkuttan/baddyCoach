@@ -8,7 +8,7 @@ class RallySegmentationStage:
     input_keys = ["shots"]
     output_keys = ["rallies"]
 
-    DEFAULT_GAP_THRESHOLD = 30  # frames between rallies
+    DEFAULT_GAP_THRESHOLD = 45  # frames between rallies (~1.5s at 30fps)
 
     def run(self, artifacts: ArtifactStore, config: StageConfig, gap_threshold: int | None = None) -> StageResult:
         shots_df = artifacts.get_parquet("shots")

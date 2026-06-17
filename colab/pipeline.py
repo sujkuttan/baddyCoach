@@ -861,14 +861,23 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             pred_idx = int(np.argmax(probs))
             confidence = float(probs[pred_idx])
             
-            # If top prediction is "unknown" but another class has reasonable
-            # confidence, use that instead — the model is uncertain but not clueless
+            # If top prediction is "unknown", try second-best or rule-based fallback
             if pred_idx == 0:
                 second_idx = int(np.argsort(probs)[-2])
                 second_conf = float(probs[second_idx])
                 if second_conf > 0.10:
                     pred_idx = second_idx
                     confidence = second_conf
+                else:
+                    # Rule-based shuttle trajectory fallback
+                    stroke_type = _rule_based_shuttle_predict(shuttle_df, hit_frame, vid_w, vid_h)
+                    shots.append({
+                        "frame": hit_frame,
+                        "hit_confidence": hit['confidence'],
+                        "stroke_type": stroke_type,
+                        "stroke_confidence": confidence,
+                    })
+                    continue
             
             # Map to simplified class
             if pred_idx == 0:
@@ -947,7 +956,41 @@ def stage_attribution(shots_data, shuttle_data):
     return shots_data
 
 
-def stage_rallies(shots_data, gap_threshold=30, min_shots=3):
+def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
+    """Classify stroke from shuttle trajectory when BST predicts unknown."""
+    if shuttle_df is None or len(shuttle_df) == 0:
+        return "clear"
+    window = shuttle_df[(shuttle_df['frame'] >= frame - 5) & (shuttle_df['frame'] <= frame + 5)]
+    if len(window) < 2:
+        return "clear"
+    y_vals = window['y'].values / vid_h
+    x_vals = window['x'].values / vid_w
+    valid = (x_vals != 0) | (y_vals != 0)
+    if valid.sum() < 2:
+        return "clear"
+    y_vals = y_vals[valid]
+    dy = np.diff(y_vals)
+    dx = x_vals[valid][1:] - x_vals[valid][:-1] if len(x_vals[valid]) > 1 else np.array([0.0])
+    speed = np.mean(np.sqrt(dx**2 + dy**2))
+    mean_dy = float(np.mean(dy))
+    end_y = float(y_vals[-1])
+    if speed > 0.15 and mean_dy > 0.05:
+        return "smash"
+    elif speed < 0.03:
+        return "net_shot"
+    elif mean_dy < -0.03 and speed > 0.05:
+        return "clear"
+    elif speed > 0.08 and abs(mean_dy) < 0.02:
+        return "drive"
+    elif mean_dy > 0.02 and speed > 0.03:
+        return "lift"
+    elif end_y > 0.7 and speed < 0.06:
+        return "drop"
+    else:
+        return "clear"
+
+
+def stage_rallies(shots_data, gap_threshold=45, min_shots=3):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])

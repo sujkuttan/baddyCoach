@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react';
 import { uploadVideo, processVideo, getJob } from '../utils/api';
+import { setVideoFile } from '../utils/videoStore';
 
 interface UploadViewProps {
   onJobCreated: (jobId: string) => void;
@@ -245,7 +246,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
                       <div className="w-2 h-2 rounded-full bg-feather-green" />
                       <span className="font-mono text-xs text-feather-green">Report loaded</span>
                     </div>
-                    <button onClick={() => { setStagedReport(null); setStagedVideoName(''); sessionStorage.removeItem('baddycoach_video_url'); }} className="font-mono text-[10px] text-text-muted hover:text-error-red transition-colors">REMOVE</button>
+                    <button onClick={() => { setStagedReport(null); setStagedVideoName(''); setVideoFile(null); }} className="font-mono text-[10px] text-text-muted hover:text-error-red transition-colors">REMOVE</button>
                   </div>
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
@@ -257,8 +258,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
                       <input type="file" accept=".mp4,.mov,.avi" className="hidden" onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
-                        const url = URL.createObjectURL(f);
-                        sessionStorage.setItem('baddycoach_video_url', url);
+                        setVideoFile(f);
                         setStagedVideoName(f.name);
                       }} />
                     </label>

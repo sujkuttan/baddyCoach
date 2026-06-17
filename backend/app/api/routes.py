@@ -125,6 +125,20 @@ def _extract_frames(video_path: str, sample_interval: int = 3) -> list[np.ndarra
     return frames
 
 
+def _transcode_to_h264(input_path: str, output_path: str) -> bool:
+    """Re-encode video to H.264 for browser compatibility. Returns True on success."""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-i", input_path, "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+             "-c:a", "aac", "-y", output_path],
+            capture_output=True, timeout=600
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 @router.get("/health")
 async def health_check():
     return {"status": "ok"}
@@ -146,7 +160,11 @@ async def upload_video(file: UploadFile = File(...)):
     content = await file.read()
     video_path.write_bytes(content)
 
-    job_manager.update_job(job_id, video_path=str(video_path), status="uploaded")
+    h264_path = job_dir / "video_h264.mp4"
+    if _transcode_to_h264(str(video_path), str(h264_path)):
+        job_manager.update_job(job_id, video_path=str(h264_path), status="uploaded")
+    else:
+        job_manager.update_job(job_id, video_path=str(video_path), status="uploaded")
 
     return {"job_id": job_id, "status": "uploaded", "filename": file.filename}
 
