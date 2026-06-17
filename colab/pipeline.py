@@ -186,6 +186,8 @@ class TrackNetV3:
                 self.model = TrackNetV3Model()
                 self.model.load_state_dict(state_dict)
                 self.model.to(device).eval()
+                if device == "cuda":
+                    self.model = self.model.half()
                 print(f"  TrackNet loaded from {Path(model_path).name}")
             else:
                 print(f"  TrackNet state_dict not recognized")
@@ -200,9 +202,10 @@ class TrackNetV3:
 
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
-        results = []
+
+        all_windows = []
         for i in range(len(frames)):
-            window = frames[max(0, i-8):i+1]
+            window = frames[max(0, i - 8):i + 1]
             while len(window) < 9:
                 window.insert(0, window[0])
             processed = []
@@ -210,15 +213,25 @@ class TrackNetV3:
                 r = cv2.resize(f, (self.input_width, self.input_height))
                 r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
                 processed.append(r)
-            batch = np.stack(processed).reshape(-1, self.input_height, self.input_width)
-            tensor = torch.from_numpy(batch[np.newaxis]).float().to(self.device)
+            all_windows.append(np.stack(processed).reshape(self.input_height, self.input_width, 27))
+
+        results = []
+        CHUNK = 256
+        for chunk_start in range(0, len(all_windows), CHUNK):
+            chunk = all_windows[chunk_start:chunk_start + CHUNK]
+            batch = np.stack(chunk).transpose(0, 3, 1, 2)
+            tensor = torch.from_numpy(batch).float().to(self.device)
+            if self.device == "cuda":
+                tensor = tensor.half()
             with torch.no_grad():
                 out = self.model(tensor)
-            heatmap = 1 / (1 + np.exp(-out.cpu().numpy()[0, 0]))
-            y_idx, x_idx = np.unravel_index(heatmap.argmax(), heatmap.shape)
-            results.append({"x": float(x_idx * ow / self.input_width),
-                          "y": float(y_idx * oh / self.input_height),
-                          "confidence": float(heatmap.max())})
+            heatmaps = 1 / (1 + np.exp(-out.cpu().numpy()[:, 0]))
+            for j in range(len(chunk)):
+                hm = heatmaps[j]
+                y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
+                results.append({"x": float(x_idx * ow / self.input_width),
+                              "y": float(y_idx * oh / self.input_height),
+                              "confidence": float(hm.max())})
         return results
 
 
@@ -231,12 +244,17 @@ class YOLOv8Tracker:
 
     def track_batch(self, frames, global_frame_offsets):
         all_det = {}
-        for local_idx, frame in enumerate(frames):
-            h, w = frame.shape[:2]
-            results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
-            global_idx = global_frame_offsets + local_idx
-            dets = []
-            for r in results:
+        if not frames:
+            return all_det
+        h, w = frames[0].shape[:2]
+        CHUNK = 64
+        for chunk_start in range(0, len(frames), CHUNK):
+            chunk = frames[chunk_start:chunk_start + CHUNK]
+            results = self.model.track(source=chunk, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
+            for local_offset, r in enumerate(results):
+                local_idx = chunk_start + local_offset
+                global_idx = global_frame_offsets + local_idx
+                dets = []
                 if r.boxes is not None and r.boxes.id is not None:
                     for box in r.boxes:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -247,9 +265,9 @@ class YOLOv8Tracker:
                             continue
                         dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
                                    "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
-            dets.sort(key=lambda d: d["confidence"], reverse=True)
-            dets = dets[:2]
-            all_det[global_idx] = dets
+                dets.sort(key=lambda d: d["confidence"], reverse=True)
+                dets = dets[:2]
+                all_det[global_idx] = dets
         return all_det
 
 
@@ -306,6 +324,66 @@ class RTMPoseEstimator:
             kps[:, 1] = y1 + kps[:, 1] * (y2 - y1)
         
         return kps
+
+    def estimate_batch(self, crops):
+        """Run RTMPose on multiple crops in a single ONNX call.
+        
+        Args:
+            crops: list of (bbox, frame) pairs
+        Returns:
+            list of (17, 3) keypoint arrays
+        """
+        if self.model is None:
+            return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
+
+        batch_tensors = []
+        valid_indices = []
+        crop_infos = []
+
+        for i, (bbox, frame) in enumerate(crops):
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            crop = frame[y1:y2, x1:x2]
+            if crop.size == 0:
+                continue
+            r = cv2.resize(crop, (self.w, self.h))
+            r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            r = (r - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
+            batch_tensors.append(r.transpose(2, 0, 1).astype(np.float32))
+            valid_indices.append(i)
+            crop_infos.append((x1, y1, x2 - x1, y2 - y1))
+
+        if not batch_tensors:
+            return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
+
+        batch_np = np.stack(batch_tensors)
+        outputs = self.model.run(None, {"input": batch_np})
+
+        kps_all = []
+        for j in range(len(batch_np)):
+            x1, y1, crop_w, crop_h = crop_infos[j]
+            if len(outputs) == 2:
+                simcc_x = outputs[0][j]
+                simcc_y = outputs[1][j]
+                x_coords = np.argmax(simcc_x, axis=1) / 2.0
+                y_coords = np.argmax(simcc_y, axis=1) / 2.0
+                x_conf = np.max(simcc_x, axis=1)
+                y_conf = np.max(simcc_y, axis=1)
+                conf = (x_conf + y_conf) / 2.0
+                kps = np.zeros((17, 3), dtype=np.float32)
+                kps[:, 0] = x1 + x_coords * (crop_w / self.w)
+                kps[:, 1] = y1 + y_coords * (crop_h / self.h)
+                kps[:, 2] = 1.0 / (1.0 + np.exp(-conf))
+            else:
+                out = outputs[0][j]
+                kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
+                kps[:, 0] = x1 + kps[:, 0] * crop_w
+                kps[:, 1] = y1 + kps[:, 1] * crop_h
+            kps_all.append(kps)
+
+        results = [np.zeros((17, 3), dtype=np.float32) for _ in crops]
+        for j, idx in enumerate(valid_indices):
+            results[idx] = kps_all[j]
+        return results
 
 
 # ─── Video Reader (memory-efficient) ────────────────────────────────────────
@@ -730,7 +808,11 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 model = BST_CG(in_dim, seq_len, n_class=n_classes)
                 model.load_state_dict(state_dict)
                 model.to(device).eval()
-                print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+                if device == "cuda":
+                    model = model.half()
+                    print(f"BST_CG loaded (FP16): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+                else:
+                    print(f"BST_CG loaded (FP32): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
             else:
                 print("BST state_dict not recognized, using rule-based fallback")
         except Exception as e:
@@ -852,6 +934,10 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             shuttle_t = torch.from_numpy(shuttle_arr).float().unsqueeze(0).to(device)
             pos_t = torch.from_numpy(pos_arr).float().unsqueeze(0).to(device)
             video_len_t = torch.tensor([v_len], dtype=torch.long).to(device)
+            if device == "cuda":
+                JnB_t = JnB_t.half()
+                shuttle_t = shuttle_t.half()
+                pos_t = pos_t.half()
             
             # Inference
             with torch.no_grad():
@@ -1270,7 +1356,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 # ─── Main Pipeline (streaming/batched) ──────────────────────────────────────
 
-BATCH_SIZE = 2000
+BATCH_SIZE = 4000
 
 def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     start_time = time.time()
@@ -1568,14 +1654,12 @@ def _process_batch(frames, global_indices, batch_start_offset,
         if pred_idx >= 0 and pred_idx < len(shuttle_preds):
             all_shuttle.append({"frame": global_idx, **shuttle_preds[pred_idx]})
 
-    # 3. Pose estimation (RTMPose)
-    pose_count = sum(1 for gi in global_indices if all_det.get(gi))
-    tqdm.write(f"{tag} | RTMPose pose estimation ({pose_count} frames)...")
+    # 3. Pose estimation (RTMPose) — collect crops, then batch
+    crop_list = []
     for local_idx, global_idx in enumerate(global_indices):
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
         if not dets_for_frame:
-            # Closest-in-time fallback for missing detections
             for pid in ["player_1", "player_2"]:
                 best_det = None
                 best_dist = float('inf')
@@ -1587,21 +1671,31 @@ def _process_batch(frames, global_indices, batch_start_offset,
                             best_dist = dist
                             best_det = d
                 if best_det:
-                    kps = pose_estimator.estimate(frame, best_det["bbox"])
-                    all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
+                    crop_list.append((global_idx, pid, best_det["bbox"], frame))
             continue
-        # Per-frame: map each detection to player_1/player_2 by order
         tid_to_pid = {}
-        for d in dets_for_frame:
+        for d in dets_for_frame[:2]:
             tid = d.get("track_id", 0)
             if tid not in tid_to_pid:
                 tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
         for d in dets_for_frame[:2]:
             pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
-            kps = pose_estimator.estimate(frame, d["bbox"])
-            all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps.tolist()})
+            crop_list.append((global_idx, pid, d["bbox"], frame))
+
+    tqdm.write(f"{tag} | RTMPose batch estimation ({len(crop_list)} crops)...")
+    BATCH_CHUNK = 128
+    for crop_chunk_start in range(0, len(crop_list), BATCH_CHUNK):
+        chunk = crop_list[crop_chunk_start:crop_chunk_start + BATCH_CHUNK]
+        crops = [(c[2], c[3]) for c in chunk]
+        kps_batch = pose_estimator.estimate_batch(crops)
+        for j, (global_idx, pid, _, _) in enumerate(chunk):
+            all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps_batch[j].tolist()})
 
     tqdm.write(f"{tag} done | Shuttle: {len(all_shuttle)} | Players: {len(all_player_detections)} | Pose: {len(all_pose)}")
+    if device == "cuda":
+        import torch
+        used_mb = torch.cuda.memory_allocated() / 1024 / 1024
+        tqdm.write(f"  GPU memory: {used_mb:.0f} MB allocated")
 
 
 if __name__ == "__main__":
