@@ -21,6 +21,8 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
   const [dragActive, setDragActive] = useState(false);
   const [jobs, setJobs] = useState<Job[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const [stagedReport, setStagedReport] = useState<any>(null);
+  const [stagedVideoName, setStagedVideoName] = useState<string>('');
 
   useEffect(() => {
     fetch('/api/jobs')
@@ -234,48 +236,66 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
               <span className="font-mono text-[10px] text-text-muted tracking-widest">OR</span>
               <div className="flex-1 h-px bg-court-line/20" />
             </div>
-            <div className="flex flex-col sm:flex-row gap-3 justify-center">
-              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
-                <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                </svg>
-                <span className="font-mono text-xs text-text-secondary">Report JSON</span>
-                <input
-                  type="file"
-                  accept=".json"
-                  className="hidden"
-                  onChange={async (e) => {
-                    const f = e.target.files?.[0];
-                    if (!f || !onLoadReport) return;
-                    try {
-                      const text = await f.text();
-                      const report = JSON.parse(text);
-                      onLoadReport(report);
-                    } catch {
-                      setError('Invalid report file');
-                    }
-                  }}
-                />
-              </label>
-              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
-                <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                </svg>
-                <span className="font-mono text-xs text-text-secondary">Video file (optional)</span>
-                <input
-                  type="file"
-                  accept=".mp4,.mov,.avi"
-                  className="hidden"
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (!f) return;
-                    const url = URL.createObjectURL(f);
-                    sessionStorage.setItem('baddycoach_video_url', url);
-                    sessionStorage.setItem('baddycoach_video_name', f.name);
-                  }}
-                />
-              </label>
-            </div>
+
+            {stagedReport ? (
+              <div className="space-y-4">
+                <div className="p-4 rounded-xl bg-court-mid/60 border border-court-line/15">
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className="w-2 h-2 rounded-full bg-feather-green" />
+                      <span className="font-mono text-xs text-feather-green">Report loaded</span>
+                    </div>
+                    <button onClick={() => { setStagedReport(null); setStagedVideoName(''); sessionStorage.removeItem('baddycoach_video_url'); }} className="font-mono text-[10px] text-text-muted hover:text-error-red transition-colors">REMOVE</button>
+                  </div>
+                  <div className="flex items-center justify-between mb-3">
+                    <div className="flex items-center gap-2">
+                      <div className={`w-2 h-2 rounded-full ${stagedVideoName ? 'bg-feather-green' : 'bg-text-muted'}`} />
+                      <span className="font-mono text-xs text-text-secondary">{stagedVideoName || 'No video selected'}</span>
+                    </div>
+                    <label className="font-mono text-[10px] text-shuttle-lime hover:underline cursor-pointer">
+                      {stagedVideoName ? 'CHANGE' : 'ADD VIDEO'}
+                      <input type="file" accept=".mp4,.mov,.avi" className="hidden" onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        const url = URL.createObjectURL(f);
+                        sessionStorage.setItem('baddycoach_video_url', url);
+                        setStagedVideoName(f.name);
+                      }} />
+                    </label>
+                  </div>
+                </div>
+                <button
+                  onClick={() => onLoadReport(stagedReport)}
+                  className="w-full py-4 rounded-xl font-display text-2xl tracking-wider bg-shuttle-lime text-court-dark hover:bg-shuttle-lime-dim hover:scale-[1.01] active:scale-[0.99] transition-all duration-300"
+                >
+                  VIEW REPORT
+                </button>
+              </div>
+            ) : (
+              <div className="flex flex-col sm:flex-row gap-3 justify-center">
+                <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
+                  <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                  </svg>
+                  <span className="font-mono text-xs text-text-secondary">Report JSON</span>
+                  <input
+                    type="file"
+                    accept=".json"
+                    className="hidden"
+                    onChange={async (e) => {
+                      const f = e.target.files?.[0];
+                      if (!f) return;
+                      try {
+                        const text = await f.text();
+                        setStagedReport(JSON.parse(text));
+                      } catch {
+                        setError('Invalid report file');
+                      }
+                    }}
+                  />
+                </label>
+              </div>
+            )}
           </div>
         )}
 
