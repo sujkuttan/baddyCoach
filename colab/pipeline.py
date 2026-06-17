@@ -203,35 +203,41 @@ class TrackNetV3:
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
 
-        all_windows = []
-        for i in range(len(frames)):
-            window = frames[max(0, i - 8):i + 1]
-            while len(window) < 9:
-                window.insert(0, window[0])
-            processed = []
-            for f in window[-9:]:
-                r = cv2.resize(f, (self.input_width, self.input_height))
-                r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                processed.append(r)
-            all_windows.append(np.stack(processed).reshape(self.input_height, self.input_width, 27))
+        CHUNK = 32
+        results = [None] * len(frames)
 
-        results = []
-        CHUNK = 256
-        for chunk_start in range(0, len(all_windows), CHUNK):
-            chunk = all_windows[chunk_start:chunk_start + CHUNK]
-            batch = np.stack(chunk).transpose(0, 3, 1, 2)
+        for chunk_start in range(0, len(frames), CHUNK):
+            chunk_end = min(chunk_start + CHUNK, len(frames))
+            windows = []
+            for i in range(chunk_start, chunk_end):
+                window = frames[max(0, i - 8):i + 1]
+                while len(window) < 9:
+                    window.insert(0, window[0])
+                processed = []
+                for f in window[-9:]:
+                    r = cv2.resize(f, (self.input_width, self.input_height))
+                    r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+                    processed.append(r)
+                windows.append(np.stack(processed).reshape(self.input_height, self.input_width, 27))
+
+            batch = np.stack(windows).transpose(0, 3, 1, 2)
             tensor = torch.from_numpy(batch).float().to(self.device)
             if self.device == "cuda":
                 tensor = tensor.half()
             with torch.no_grad():
                 out = self.model(tensor)
             heatmaps = 1 / (1 + np.exp(-out.cpu().numpy()[:, 0]))
-            for j in range(len(chunk)):
+            for j in range(len(windows)):
                 hm = heatmaps[j]
                 y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
-                results.append({"x": float(x_idx * ow / self.input_width),
-                              "y": float(y_idx * oh / self.input_height),
-                              "confidence": float(hm.max())})
+                results[chunk_start + j] = {
+                    "x": float(x_idx * ow / self.input_width),
+                    "y": float(y_idx * oh / self.input_height),
+                    "confidence": float(hm.max()),
+                }
+            del tensor, out, heatmaps, batch, windows
+            if self.device == "cuda":
+                torch.cuda.empty_cache()
         return results
 
 
@@ -244,17 +250,12 @@ class YOLOv8Tracker:
 
     def track_batch(self, frames, global_frame_offsets):
         all_det = {}
-        if not frames:
-            return all_det
-        h, w = frames[0].shape[:2]
-        CHUNK = 64
-        for chunk_start in range(0, len(frames), CHUNK):
-            chunk = frames[chunk_start:chunk_start + CHUNK]
-            results = self.model.track(source=chunk, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
-            for local_offset, r in enumerate(results):
-                local_idx = chunk_start + local_offset
-                global_idx = global_frame_offsets + local_idx
-                dets = []
+        for local_idx, frame in enumerate(frames):
+            h, w = frame.shape[:2]
+            results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
+            global_idx = global_frame_offsets + local_idx
+            dets = []
+            for r in results:
                 if r.boxes is not None and r.boxes.id is not None:
                     for box in r.boxes:
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
@@ -265,9 +266,9 @@ class YOLOv8Tracker:
                             continue
                         dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
                                    "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
-                dets.sort(key=lambda d: d["confidence"], reverse=True)
-                dets = dets[:2]
-                all_det[global_idx] = dets
+            dets.sort(key=lambda d: d["confidence"], reverse=True)
+            dets = dets[:2]
+            all_det[global_idx] = dets
         return all_det
 
 
@@ -1356,7 +1357,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 # ─── Main Pipeline (streaming/batched) ──────────────────────────────────────
 
-BATCH_SIZE = 4000
+BATCH_SIZE = 2000
 
 def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     start_time = time.time()
