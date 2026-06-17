@@ -20,7 +20,8 @@ interface Rally {
 }
 
 interface VideoPlayerProps {
-  jobId: string;
+  jobId?: string | null;
+  videoUrl?: string | null;
   rallies?: Rally[];
   strokes?: Stroke[];
   fps?: number;
@@ -35,7 +36,7 @@ export type VideoPlayerHandle = {
   seekTo: (time: number) => void;
 };
 
-export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, rallies = [], strokes = [], fps = 30 }, ref) {
+export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, videoUrl, rallies = [], strokes = [], fps = 30 }, ref) {
   const videoRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const [duration, setDuration] = useState(0);
@@ -43,6 +44,9 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
 
   useEffect(() => {
     if (!videoRef.current) return;
+
+    const src = videoUrl || (jobId ? `/api/jobs/${jobId}/video` : null);
+    if (!src) return;
 
     const videoElement = document.createElement('video-js');
     videoElement.classList.add('vjs-big-play-centered', 'vjs-theme-city');
@@ -52,7 +56,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
       controls: true,
       fluid: true,
       responsive: true,
-      sources: [{ src: `/api/jobs/${jobId}/video`, type: 'video/mp4' }],
+      sources: [{ src, type: 'video/mp4' }],
       playbackRates: [0.25, 0.5, 1, 1.5, 2],
       controlBar: {
         volumePanel: { inline: true },
@@ -73,7 +77,7 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
     return () => {
       player.dispose();
     };
-  }, [jobId]);
+  }, [jobId, videoUrl]);
 
   useImperativeHandle(ref, () => ({
     seekTo: (time: number) => {

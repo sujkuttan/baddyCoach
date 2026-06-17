@@ -226,7 +226,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
           </div>
         )}
 
-        {/* Load Report */}
+        {/* Load Report + Video */}
         {onLoadReport && (
           <div className="mt-8 text-center">
             <div className="flex items-center gap-3 mb-3">
@@ -234,28 +234,48 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
               <span className="font-mono text-[10px] text-text-muted tracking-widest">OR</span>
               <div className="flex-1 h-px bg-court-line/20" />
             </div>
-            <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
-              <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-              <span className="font-mono text-xs text-text-secondary">Load a report from Colab</span>
-              <input
-                type="file"
-                accept=".json"
-                className="hidden"
-                onChange={async (e) => {
-                  const f = e.target.files?.[0];
-                  if (!f || !onLoadReport) return;
-                  try {
-                    const text = await f.text();
-                    const report = JSON.parse(text);
-                    onLoadReport(report);
-                  } catch {
-                    setError('Invalid report file');
-                  }
-                }}
-              />
-            </label>
+            <div className="flex flex-col sm:flex-row gap-3 justify-center">
+              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
+                <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                <span className="font-mono text-xs text-text-secondary">Report JSON</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (!f || !onLoadReport) return;
+                    try {
+                      const text = await f.text();
+                      const report = JSON.parse(text);
+                      onLoadReport(report);
+                    } catch {
+                      setError('Invalid report file');
+                    }
+                  }}
+                />
+              </label>
+              <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-court-line/30 bg-court-surface/30 hover:border-shuttle-lime/30 hover:bg-court-surface/50 transition-colors cursor-pointer">
+                <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+                <span className="font-mono text-xs text-text-secondary">Video file (optional)</span>
+                <input
+                  type="file"
+                  accept=".mp4,.mov,.avi"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    const url = URL.createObjectURL(f);
+                    sessionStorage.setItem('baddycoach_video_url', url);
+                    sessionStorage.setItem('baddycoach_video_name', f.name);
+                  }}
+                />
+              </label>
+            </div>
           </div>
         )}
 

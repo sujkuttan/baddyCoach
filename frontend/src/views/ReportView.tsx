@@ -187,19 +187,14 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                   )}
                 </div>
                 <div className="p-4">
-                  {jobId ? (
-                    <VideoPlayer ref={videoRef} jobId={jobId} rallies={rallies} strokes={shots} fps={30} />
-                  ) : (
-                    <div className="flex items-center justify-center h-48 rounded-xl bg-court-dark/40 border border-court-line/10">
-                      <div className="text-center">
-                        <svg className="w-10 h-10 mx-auto mb-3 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                        </svg>
-                        <p className="font-mono text-xs text-text-muted">Report loaded from Colab</p>
-                        <p className="font-mono text-[10px] text-text-muted mt-1">No video available</p>
-                      </div>
-                    </div>
-                  )}
+                  <VideoPlayer
+                    ref={videoRef}
+                    jobId={jobId}
+                    videoUrl={!jobId ? sessionStorage.getItem('baddycoach_video_url') : null}
+                    rallies={rallies}
+                    strokes={shots}
+                    fps={30}
+                  />
                 </div>
               </div>
             </div>
