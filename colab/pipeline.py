@@ -159,27 +159,26 @@ def _install_mmpose_deps():
     available_cudas = ["128", "126", "124", "121", "118"]
     mmcv_url = None
     for cu in available_cudas:
-    # mmcv<2.2.0 needed by mmpose; torch2.1.0 index has mmcv==2.1.0
+    # mmcv 2.2.0 is the only version with Python 3.12 wheels
     available_cudas = ["128", "126", "124", "121", "118"]
     mmcv_url = None
     for cu in available_cudas:
-        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch2.1.0/index.html"
+        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch2.4.0/index.html"
         try:
             urllib.request.urlopen(url, timeout=5)
             mmcv_url = url
-            print(f"    Using mmcv wheels from cu{cu}/torch2.1.0 (compatible with torch{torch_ver})")
+            print(f"    Using mmcv wheels from cu{cu}/torch2.4.0")
             break
         except Exception:
             continue
 
     if mmcv_url is None:
-        mmcv_url = "https://download.openmmlab.com/mmcv/dist/cu121/torch2.1.0/index.html"
-        print(f"    Using cu121/torch2.1.0 fallback")
+        mmcv_url = "https://download.openmmlab.com/mmcv/dist/cu121/torch2.4.0/index.html"
 
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
         "--only-binary", ":all:",
-        "-f", mmcv_url, "mmcv==2.1.0",
+        "-f", mmcv_url, "mmcv==2.2.0",
     ])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet"])
 
