@@ -147,11 +147,28 @@ def _install_mmpose_deps():
     import subprocess
     import torch
     torch_ver = torch.__version__.split("+")[0]
-    cuda_ver = torch.version.cuda or ""
-    cuda_short = cuda_ver.replace(".", "")  # e.g. "121"
+    cuda_full = torch.version.cuda or ""  # e.g. "12.8"
+    cuda_short = cuda_full.replace(".", "")  # e.g. "128"
 
-    mmcv_url = f"https://download.openmmlab.com/mmcv/dist/cu{cuda_short}/torch{torch_ver}/index.html"
-    print(f"    Installing mmcv from {mmcv_url}")
+    # Find highest available CUDA version that works (forward-compatible)
+    import urllib.request
+    available_cudas = ["128", "126", "124", "121", "118"]
+    mmcv_url = None
+    for cu in available_cudas:
+        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch{torch_ver}/index.html"
+        try:
+            urllib.request.urlopen(url, timeout=5)
+            mmcv_url = url
+            print(f"    Using mmcv wheels from cu{cu}/torch{torch_ver}")
+            break
+        except Exception:
+            continue
+
+    if mmcv_url is None:
+        # Fallback: try cu121 which has widest wheel support
+        mmcv_url = f"https://download.openmmlab.com/mmcv/dist/cu121/torch{torch_ver}/index.html"
+        print(f"    No exact match, trying cu121 fallback: {mmcv_url}")
+
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
         "-f", mmcv_url, "mmcv>=2.0.0",
