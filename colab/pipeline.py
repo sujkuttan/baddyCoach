@@ -165,9 +165,9 @@ def _install_mmpose_deps():
     with tarfile.open(tar_path, "r:gz") as tar:
         tar.extractall(site_dir)
     os.remove(tar_path)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
-        "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
+        "mmengine", "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
 
 
 def _export_hrnet_onnx():
