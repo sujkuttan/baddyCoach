@@ -133,16 +133,30 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
     if not HRNET_PATH.exists() and pose_model == "mmpose":
         print("  Auto-exporting HRNet-W32 from MMPose...")
         try:
-            import subprocess
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "setuptools>=70.0", "openmim"])
-            subprocess.check_call(["mim", "install", "mmcv", "-q"])
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "mmpose", "mmdet", "-q"])
+            _install_mmpose_deps()
             _export_hrnet_onnx()
         except Exception as e:
             print(f"  HRNet auto-export failed: {e}")
             print(f"  Falling back to RTMPose")
 
     print("Models ready.\n")
+
+
+def _install_mmpose_deps():
+    """Install mmcv from pre-built wheels (bypasses mim)."""
+    import subprocess
+    import torch
+    torch_ver = torch.__version__.split("+")[0]
+    cuda_ver = torch.version.cuda or ""
+    cuda_short = cuda_ver.replace(".", "")  # e.g. "121"
+
+    mmcv_url = f"https://download.openmmlab.com/mmcv/dist/cu{cuda_short}/torch{torch_ver}/index.html"
+    print(f"    Installing mmcv from {mmcv_url}")
+    subprocess.check_call([
+        sys.executable, "-m", "pip", "install", "-q",
+        "-f", mmcv_url, "mmcv>=2.0.0",
+    ])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "mmpose", "mmdet"])
 
 
 def _export_hrnet_onnx():
