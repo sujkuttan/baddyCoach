@@ -3,18 +3,17 @@
 #
 # Requirements:
 #   - Python 3.12, CUDA toolkit installed
-#   - PyTorch with CUDA (same major version as Colab, e.g. torch 2.x+cu12x)
+#   - PyTorch with CUDA (e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121)
 #
 # Usage:
-#   conda activate <env with torch+cuda>
-#   bash colab/build_mmcv.sh
+#   conda activate <env with python 3.12 + torch+cuda>
+#   bash build_mmcv.sh
 #
-# Output: ckpts/mmcv_wheel/mmcv-*.whl
+# Output: mmcv-2.2.0-cp312-*.whl in current directory
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-OUT_DIR="$SCRIPT_DIR/../ckpts/mmcv_wheel"
+OUT_DIR="$(pwd)"
 mkdir -p "$OUT_DIR"
 
 echo "=== Build environment ==="
@@ -23,13 +22,14 @@ python --version
 
 echo ""
 echo "=== Building mmcv 2.2.0 from source ==="
-pip wheel mmcv==2.2.0 --no-binary mmcv -w "$OUT_DIR" --no-clean 2>&1 | tail -5
+pip wheel mmcv==2.2.0 --no-binary mmcv -w "$OUT_DIR" 2>&1 | tail -5
 
 echo ""
 echo "=== Built wheel ==="
-ls -lh "$OUT_DIR"/*.whl 2>/dev/null || echo "No wheel found — check build log above"
+ls -lh "$OUT_DIR"/mmcv-*.whl 2>/dev/null || echo "No wheel found — check build log above"
 
 echo ""
 echo "Next steps:"
-echo "  1. Upload $OUT_DIR/*.whl to Google Drive"
-echo "  2. Update BMCA_Colab.ipynb cell 1 to download from Drive instead of building"
+echo "  1. Upload mmcv-2.2.0-*.whl to Google Drive"
+echo "  2. Set MMCV_DRIVE_FILE_ID in BMCA_Colab.ipynb cell 1"
+echo "  3. Set MMCV_DRIVE_FILE_ID env var when running pipeline.py"
