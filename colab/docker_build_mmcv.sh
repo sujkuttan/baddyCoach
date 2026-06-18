@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 
 docker run --rm -v "$(pwd)":/workspace -w /workspace python:3.11-slim bash -c '
 set -e
+apt-get update -qq && apt-get install -y -qq build-essential > /dev/null
 pip install torch --index-url https://download.pytorch.org/whl/cpu -q
 pip install mmcv==2.2.0 --no-binary mmcv -q
 python -c "
