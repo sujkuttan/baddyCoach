@@ -143,28 +143,33 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
 
 
 def _install_mmpose_deps():
-    """Install mmcv from pre-built wheels (bypasses mim).
+    """Install mmcv + mmpose dependencies.
 
-    Pre-built wheels only exist for torch<=2.4. We pin to that URL —
-    the C++ extensions work fine with newer PyTorch at runtime.
+    If mmcv is already installed (e.g. from Colab cell 1), skip.
+    Otherwise download pre-built archive from Google Drive (MMCV_DRIVE_FILE_ID env var).
     """
     import subprocess
 
-    # Download pre-built mmcv archive from Drive (MMCV_DRIVE_FILE_ID env var)
-    drive_file_id = os.environ.get("MMCV_DRIVE_FILE_ID", "")
-    if not drive_file_id:
-        raise RuntimeError(
-            "MMCV_DRIVE_FILE_ID not set. Build mmcv locally with colab/build_mmcv.sh "
-            "and upload mmcv_files.tar.gz to Google Drive."
-        )
-    import gdown, tarfile, sysconfig
-    tar_path = str(CKPT_DIR / "mmcv_files.tar.gz")
-    print(f"    Downloading pre-built mmcv from Google Drive...")
-    gdown.download(id=drive_file_id, output=tar_path, quiet=False)
-    site_dir = sysconfig.get_path("purelib")
-    with tarfile.open(tar_path, "r:gz") as tar:
-        tar.extractall(site_dir)
-    os.remove(tar_path)
+    # Skip if mmcv already present
+    try:
+        import mmcv
+        print(f"    mmcv {mmcv.__version__} already installed")
+    except ImportError:
+        drive_file_id = os.environ.get("MMCV_DRIVE_FILE_ID", "")
+        if not drive_file_id:
+            raise RuntimeError(
+                "MMCV_DRIVE_FILE_ID not set. Build mmcv locally with colab/build_mmcv.sh "
+                "and upload mmcv_files.tar.gz to Google Drive."
+            )
+        import gdown, tarfile, sysconfig
+        tar_path = str(CKPT_DIR / "mmcv_files.tar.gz")
+        print(f"    Downloading pre-built mmcv from Google Drive...")
+        gdown.download(id=drive_file_id, output=tar_path, quiet=False)
+        site_dir = sysconfig.get_path("purelib")
+        with tarfile.open(tar_path, "r:gz") as tar:
+            tar.extractall(site_dir)
+        os.remove(tar_path)
+
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
         "mmengine", "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
