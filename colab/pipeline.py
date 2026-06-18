@@ -163,7 +163,7 @@ def _install_mmpose_deps():
         print("    Building mmcv from source (takes ~5 min)...")
         subprocess.check_call([
             sys.executable, "-m", "pip", "install", "-q",
-            "--no-binary", "mmcv", "mmcv==2.1.0",
+            "--no-binary", "mmcv", "mmcv==2.2.0",
         ])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",

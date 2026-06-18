@@ -22,8 +22,8 @@ python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.versio
 python --version
 
 echo ""
-echo "=== Building mmcv 2.1.0 from source ==="
-pip wheel mmcv==2.1.0 --no-binary mmcv -w "$OUT_DIR" --no-clean 2>&1 | tail -5
+echo "=== Building mmcv 2.2.0 from source ==="
+pip wheel mmcv==2.2.0 --no-binary mmcv -w "$OUT_DIR" --no-clean 2>&1 | tail -5
 
 echo ""
 echo "=== Built wheel ==="
