@@ -150,19 +150,21 @@ def _install_mmpose_deps():
     """
     import subprocess
 
-    # Download pre-built wheel from Drive (MMCV_DRIVE_FILE_ID env var)
+    # Download pre-built mmcv archive from Drive (MMCV_DRIVE_FILE_ID env var)
     drive_file_id = os.environ.get("MMCV_DRIVE_FILE_ID", "")
     if not drive_file_id:
         raise RuntimeError(
             "MMCV_DRIVE_FILE_ID not set. Build mmcv locally with colab/build_mmcv.sh "
-            "and upload the wheel to Google Drive."
+            "and upload mmcv_files.tar.gz to Google Drive."
         )
-    import gdown
-    wheel_path = str(CKPT_DIR / "mmcv.whl")
+    import gdown, tarfile, site
+    tar_path = str(CKPT_DIR / "mmcv_files.tar.gz")
     print(f"    Downloading pre-built mmcv from Google Drive...")
-    gdown.download(id=drive_file_id, output=wheel_path, quiet=False)
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", wheel_path])
-    os.remove(wheel_path)
+    gdown.download(id=drive_file_id, output=tar_path, quiet=False)
+    site_dir = [p for p in site.getsitepackages() if "site-packages" in p][0]
+    with tarfile.open(tar_path, "r:gz") as tar:
+        tar.extractall(site_dir)
+    os.remove(tar_path)
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
         "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
