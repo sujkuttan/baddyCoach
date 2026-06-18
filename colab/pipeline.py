@@ -1469,10 +1469,29 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
     # Pose model selection
+    pose_estimator = None
+    pose_estimator_secondary = None
+
+    if pose_model == "hybrid":
+        if HRNET_PATH.exists():
+            print(f"  Using HYBRID mode: MMPose (strokes) + RTMPose (hits)")
+            pose_estimator = RTMPoseEstimator(str(HRNET_PATH), device=device)
+            rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
+            if not Path(rtmpose_path).exists():
+                rtmpose_dir = CKPT_DIR / "rtmpose"
+                onnx_files = list(rtmpose_dir.rglob("*.onnx"))
+                if onnx_files:
+                    rtmpose_path = str(onnx_files[0])
+            pose_estimator_secondary = RTMPoseEstimator(rtmpose_path, device=device)
+        else:
+            print(f"  WARNING: HRNet not found, falling back to RTMPose only")
+            pose_model = "rtmpose"
+
     if pose_model == "mmpose" and HRNET_PATH.exists():
         pose_path = str(HRNET_PATH)
         print(f"  Using MMPose HRNet-W32 (accurate)")
-    else:
+        pose_estimator = RTMPoseEstimator(pose_path, device=device)
+    elif pose_model != "hybrid":
         pose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
         if not Path(pose_path).exists():
             rtmpose_dir = CKPT_DIR / "rtmpose"
@@ -1483,13 +1502,15 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             else:
                 print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
         print(f"  Using RTMPose (fast)")
-    pose_estimator = RTMPoseEstimator(pose_path, device=device)
+        pose_estimator = RTMPoseEstimator(pose_path, device=device)
+
     print("  Models loaded")
 
     # Accumulators for results across batches
     all_shuttle = []
     all_det = {}
     all_pose = []
+    all_pose_secondary = []  # RTMPose pose data (for hybrid hit confidence)
     all_player_detections = []
     sample_idx = 0
     batch_count = 0
@@ -1519,7 +1540,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                 _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                                tracker, tracknet, pose_estimator, device,
                                all_shuttle, all_det, all_pose, all_player_detections,
-                               batch_count, total_batches)
+                               batch_count, total_batches,
+                               pose_estimator_secondary=pose_estimator_secondary,
+                               all_pose_secondary=all_pose_secondary)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -1533,7 +1556,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         _process_batch(batch_frames, batch_global_indices, sample_idx - len(batch_frames),
                        tracker, tracknet, pose_estimator, device,
                        all_shuttle, all_det, all_pose, all_player_detections,
-                       batch_count, total_batches)
+                       batch_count, total_batches,
+                       pose_estimator_secondary=pose_estimator_secondary,
+                       all_pose_secondary=all_pose_secondary)
         batch_frames = []
         batch_global_indices = []
         gc.collect()
