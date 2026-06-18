@@ -143,7 +143,11 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
 
 
 def _install_mmpose_deps():
-    """Install mmcv from pre-built wheels (bypasses mim)."""
+    """Install mmcv from pre-built wheels (bypasses mim).
+
+    Pre-built wheels only exist for torch<=2.4. We pin to that URL —
+    the C++ extensions work fine with newer PyTorch at runtime.
+    """
     import subprocess
     import torch
     torch_ver = torch.__version__.split("+")[0]
@@ -155,23 +159,23 @@ def _install_mmpose_deps():
     available_cudas = ["128", "126", "124", "121", "118"]
     mmcv_url = None
     for cu in available_cudas:
-        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch{torch_ver}/index.html"
+        # mmcv wheels only exist for torch<=2.4, always use 2.4.0
+        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch2.4.0/index.html"
         try:
             urllib.request.urlopen(url, timeout=5)
             mmcv_url = url
-            print(f"    Using mmcv wheels from cu{cu}/torch{torch_ver}")
+            print(f"    Using mmcv wheels from cu{cu}/torch2.4.0 (compatible with torch{torch_ver})")
             break
         except Exception:
             continue
 
     if mmcv_url is None:
-        # Fallback: try cu121 which has widest wheel support
-        mmcv_url = f"https://download.openmmlab.com/mmcv/dist/cu121/torch{torch_ver}/index.html"
-        print(f"    No exact match, trying cu121 fallback: {mmcv_url}")
+        mmcv_url = "https://download.openmmlab.com/mmcv/dist/cu121/torch2.4.0/index.html"
+        print(f"    Using cu121/torch2.4.0 fallback")
 
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
-        "-f", mmcv_url, "mmcv>=2.0.0",
+        "-f", mmcv_url, "mmcv==2.2.0",
     ])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "mmpose", "mmdet"])
 
