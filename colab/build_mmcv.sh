@@ -1,35 +1,40 @@
 #!/bin/bash
-# Build mmcv wheel from source for upload to Google Drive.
-#
-# Requirements:
-#   - Python 3.12, CUDA toolkit installed
-#   - PyTorch with CUDA (e.g. pip install torch --index-url https://download.pytorch.org/whl/cu121)
+# Build mmcv for upload to Google Drive.
+# Works on any machine with Python 3.11+ and CUDA torch.
 #
 # Usage:
-#   conda activate <env with python 3.12 + torch+cuda>
-#   bash build_mmcv.sh
+#   conda activate <env with python + torch+cuda>
+#   bash colab/build_mmcv.sh
 #
-# Output: mmcv-2.2.0-cp312-*.whl in current directory
+# Output: mmcv_files.tar.gz
 
 set -e
 
-OUT_DIR="$(pwd)"
-mkdir -p "$OUT_DIR"
-
 echo "=== Build environment ==="
-python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')"
+python -c "import torch; print(f'PyTorch {torch.__version__}, CUDA {torch.version.cuda}')" 2>/dev/null || echo "No torch found (ok for CPU build)"
 python --version
 
 echo ""
-echo "=== Building mmcv 2.2.0 from source ==="
-pip wheel mmcv==2.2.0 --no-binary mmcv --no-build-isolation -w "$OUT_DIR" 2>&1 | tail -10
+echo "=== Installing mmcv from source ==="
+pip install mmcv==2.2.0 --no-binary mmcv
 
 echo ""
-echo "=== Built wheel ==="
-ls -lh "$OUT_DIR"/mmcv-*.whl 2>/dev/null || echo "No wheel found — check build log above"
+echo "=== Packaging installed files ==="
+python -c "
+import mmcv, os, tarfile
+mmcv_dir = os.path.dirname(mmcv.__file__)
+parent_dir = os.path.dirname(mmv_dir)
+out = 'mmcv_files.tar.gz'
+with tarfile.open(out, 'w:gz') as tar:
+    for root, dirs, files in os.walk(mmcv_dir):
+        for f in files:
+            full = os.path.join(root, f)
+            arcname = os.path.relpath(full, parent_dir)
+            tar.add(full, arcname=arcname)
+print(f'Created {out} ({os.path.getsize(out)/1024/1024:.1f} MB)')
+"
 
 echo ""
-echo "Next steps:"
-echo "  1. Upload mmcv-2.2.0-*.whl to Google Drive"
-echo "  2. Set MMCV_DRIVE_FILE_ID in BMCA_Colab.ipynb cell 1"
-echo "  3. Set MMCV_DRIVE_FILE_ID env var when running pipeline.py"
+echo "=== Done ==="
+echo "Upload mmcv_files.tar.gz to Google Drive"
+echo "Extract to site-packages in Colab before importing mmcv"
