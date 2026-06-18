@@ -178,9 +178,10 @@ def _install_mmpose_deps():
 
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
-        "-f", mmcv_url, "mmcv>=2.0.0,<2.2.0",
+        "--only-binary", ":all:",
+        "-f", mmcv_url, "mmcv==2.1.0",
     ])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "mmpose", "mmdet"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet"])
 
 
 def _export_hrnet_onnx():
