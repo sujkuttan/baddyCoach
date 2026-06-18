@@ -447,7 +447,8 @@ class RTMPoseEstimator:
             return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
 
         batch_np = np.stack(batch_tensors)
-        outputs = self.model.run(None, {"input": batch_np})
+        input_name = self.model.get_inputs()[0].name
+        outputs = self.model.run(None, {input_name: batch_np})
 
         kps_all = []
         for j in range(len(batch_np)):
