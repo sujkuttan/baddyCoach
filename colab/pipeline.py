@@ -157,11 +157,11 @@ def _install_mmpose_deps():
             "MMCV_DRIVE_FILE_ID not set. Build mmcv locally with colab/build_mmcv.sh "
             "and upload mmcv_files.tar.gz to Google Drive."
         )
-    import gdown, tarfile, sys
+    import gdown, tarfile, sysconfig
     tar_path = str(CKPT_DIR / "mmcv_files.tar.gz")
     print(f"    Downloading pre-built mmcv from Google Drive...")
     gdown.download(id=drive_file_id, output=tar_path, quiet=False)
-    site_dir = next(p for p in sys.path if p.endswith("site-packages"))
+    site_dir = sysconfig.get_path("purelib")
     with tarfile.open(tar_path, "r:gz") as tar:
         tar.extractall(site_dir)
     os.remove(tar_path)
