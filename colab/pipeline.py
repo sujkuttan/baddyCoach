@@ -73,7 +73,7 @@ RULES = [
 ]
 
 
-def setup_models(device: str):
+def setup_models(device: str, pose_model: str = "rtmpose"):
     print("Setting up models...")
     if not TRACKNET_PATH.exists():
         try:
@@ -130,11 +130,39 @@ def setup_models(device: str):
 
     hrnet_dir = CKPT_DIR / "mmpose"
     hrnet_dir.mkdir(parents=True, exist_ok=True)
-    if not HRNET_PATH.exists():
-        print(f"  HRNet not found at {HRNET_PATH}")
-        print(f"  To export: python colab/export_hrnet.py (requires pip install mmpose mmdet openmim && mim install mmcv)")
+    if not HRNET_PATH.exists() and pose_model == "mmpose":
+        print("  Auto-exporting HRNet-W32 from MMPose...")
+        try:
+            import subprocess
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "mmpose", "mmdet", "openmim", "-q"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "mmcv", "-q"])
+            _export_hrnet_onnx()
+        except Exception as e:
+            print(f"  HRNet auto-export failed: {e}")
+            print(f"  Falling back to RTMPose")
 
     print("Models ready.\n")
+
+
+def _export_hrnet_onnx():
+    """Export MMPose default human pose model to ONNX."""
+    import torch
+    from mmpose.apis import MMPoseInferencer
+    inferencer = MMPoseInferencer('human')
+    pose_estimator = inferencer.pose_estimator
+    if hasattr(pose_estimator, 'cfg'):
+        print(f"    Resolved config: {pose_estimator.cfg.filename}")
+    dummy = torch.randn(1, 3, 256, 192)
+    if torch.cuda.is_available():
+        dummy = dummy.cuda()
+        pose_estimator = pose_estimator.cuda()
+    torch.onnx.export(
+        pose_estimator, dummy, str(HRNET_PATH),
+        input_names=["input"], output_names=["output"],
+        dynamic_axes={"input": {0: "batch"}, "output": {0: "batch"}},
+        opset_version=14,
+    )
+    print(f"    Exported HRNet to {HRNET_PATH} ({HRNET_PATH.stat().st_size / 1024 / 1024:.1f} MB)")
 
 
 class TrackNetV3:
@@ -1375,7 +1403,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"  Device: {device}")
     print(f"=" * 60)
 
-    setup_models(device)
+    setup_models(device, pose_model)
 
     total_frames, video_fps, vid_w, vid_h, duration = get_video_info(video_path)
     sample_interval = max(1, int(video_fps / 10))
