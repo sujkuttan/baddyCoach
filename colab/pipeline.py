@@ -150,12 +150,21 @@ def _install_mmpose_deps():
     """
     import subprocess
 
-    # Build mmcv from source — pre-built wheels have ABI mismatch with Colab's torch
-    print("    Building mmcv from source (takes ~5 min)...")
-    subprocess.check_call([
-        sys.executable, "-m", "pip", "install", "-q",
-        "--no-binary", "mmcv", "mmcv==2.1.0",
-    ])
+    # Try pre-built wheel from Drive first (MMCV_DRIVE_FILE_ID env var), else build source
+    drive_file_id = os.environ.get("MMCV_DRIVE_FILE_ID", "")
+    if drive_file_id:
+        import gdown
+        wheel_path = str(CKPT_DIR / "mmcv.whl")
+        print(f"    Downloading pre-built mmcv from Google Drive...")
+        gdown.download(id=drive_file_id, output=wheel_path, quiet=False)
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", wheel_path])
+        os.remove(wheel_path)
+    else:
+        print("    Building mmcv from source (takes ~5 min)...")
+        subprocess.check_call([
+            sys.executable, "-m", "pip", "install", "-q",
+            "--no-binary", "mmcv", "mmcv==2.1.0",
+        ])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
         "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
