@@ -176,8 +176,9 @@ def _install_mmpose_deps():
         "--only-binary", ":all:",
         "-f", mmcv_url, "mmcv==2.2.0",
     ])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet"])
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "xtcocotools"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
+        "chumpy", "json-tricks", "matplotlib", "munkres", "xtcocotools", "pillow"])
 
 
 def _export_hrnet_onnx():
