@@ -131,10 +131,14 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
     hrnet_dir = CKPT_DIR / "mmpose"
     hrnet_dir.mkdir(parents=True, exist_ok=True)
     if not HRNET_PATH.exists() and pose_model == "mmpose":
-        print("  Auto-exporting HRNet-W32 from MMPose...")
+        print("  Downloading pre-exported HRNet-W32 ONNX...")
         try:
-            _install_mmpose_deps()
-            _export_hrnet_onnx()
+            import gdown
+            gdown.download(id="1LFUEbHB-D3WCyjzf9aSJ_V_kVB8igsnr",
+                           output=str(HRNET_PATH), quiet=False)
+        except Exception as e:
+            print(f"  HRNet download failed: {e}")
+            print(f"  Falling back to RTMPose")
         except Exception as e:
             print(f"  HRNet auto-export failed: {e}")
             print(f"  Falling back to RTMPose")
