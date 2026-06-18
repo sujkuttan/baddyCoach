@@ -34,6 +34,7 @@ YOLOV8_MODEL = "yolov8s.pt"
 RTMOPOSE_PATH = CKPT_DIR / "rtmpose" / "rtmpose-m_8xb64-270e_coco-256x192.onnx"
 RTMOPOSE_PATH_ALT = CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
 BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
+HRNET_PATH = CKPT_DIR / "mmpose" / "hrnet_w32_coco_256x192.onnx"
 
 COURT_LENGTH = 13.4
 COURT_WIDTH = 5.18
@@ -126,6 +127,12 @@ def setup_models(device: str):
             gdown.download(id="1yHLpW4s8Rk8FYIUKF_NvC29Z8b8XuDq2", output=str(BST_PATH), quiet=False)
         except Exception as e:
             print(f"  BST download failed: {e}")
+
+    hrnet_dir = CKPT_DIR / "mmpose"
+    hrnet_dir.mkdir(parents=True, exist_ok=True)
+    if not HRNET_PATH.exists():
+        print(f"  HRNet not found at {HRNET_PATH}")
+        print(f"  To export: python colab/export_hrnet.py (requires pip install mmpose mmdet openmim && mim install mmcv)")
 
     print("Models ready.\n")
 
@@ -276,64 +283,82 @@ class RTMPoseEstimator:
     def __init__(self, model_path: str, device: str = "cuda"):
         self.model = None
         self.h, self.w = 256, 192
+        self.model_type = "rtmpose"
         if Path(model_path).exists():
             try:
                 import onnxruntime as ort
                 providers = ['CUDAExecutionProvider', 'CPUExecutionProvider'] if 'cuda' in device else ['CPUExecutionProvider']
                 self.model = ort.InferenceSession(model_path, providers=providers)
-                print(f"  RTMPose loaded from {Path(model_path).name}")
+                n_outputs = len(self.model.get_outputs())
+                if n_outputs == 1:
+                    self.model_type = "hrnet"
+                    print(f"  HRNet loaded from {Path(model_path).name}")
+                else:
+                    self.model_type = "rtmpose"
+                    print(f"  RTMPose loaded from {Path(model_path).name}")
             except Exception as e:
-                print(f"  RTMPose load error: {e}")
+                print(f"  Pose model load error: {e}")
         else:
-            print(f"  RTMPose model not found: {model_path}")
+            print(f"  Pose model not found: {model_path}")
 
-    def estimate(self, frame, bbox):
-        if self.model is None:
-            return np.random.rand(17, 3).astype(np.float32)
+    def _preprocess(self, frame, bbox):
         x1, y1, x2, y2 = [int(v) for v in bbox]
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            return np.zeros((17, 3), dtype=np.float32)
+            return None, (x1, y1, 0, 0)
         r = cv2.resize(crop, (self.w, self.h))
         r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
         r = (r - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
         tensor = r.transpose(2, 0, 1)[np.newaxis].astype(np.float32)
-        outputs = self.model.run(None, {"input": tensor})
-        
-        # RTMPose simcc model returns [simcc_x, simcc_y]
-        if len(outputs) == 2:
-            simcc_x = outputs[0][0]  # (17, W*2)
-            simcc_y = outputs[1][0]  # (17, H*2)
-            # Argmax to get peak positions, divide by 2 for sub-pixel
-            x_coords = np.argmax(simcc_x, axis=1) / 2.0  # (17,)
-            y_coords = np.argmax(simcc_y, axis=1) / 2.0  # (17,)
-            # Confidence from peak values
-            x_conf = np.max(simcc_x, axis=1)
-            y_conf = np.max(simcc_y, axis=1)
-            conf = (x_conf + y_conf) / 2.0
-            # Scale from model input size to crop size
-            crop_w = x2 - x1
-            crop_h = y2 - y1
-            kps = np.zeros((17, 3), dtype=np.float32)
-            kps[:, 0] = x1 + x_coords * (crop_w / self.w)
-            kps[:, 1] = y1 + y_coords * (crop_h / self.h)
-            kps[:, 2] = 1.0 / (1.0 + np.exp(-conf))  # sigmoid
-        else:
-            out = outputs[0]
-            kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
-            kps[:, 0] = x1 + kps[:, 0] * (x2 - x1)
-            kps[:, 1] = y1 + kps[:, 1] * (y2 - y1)
-        
+        return tensor, (x1, y1, x2 - x1, y2 - y1)
+
+    def _decode_rtmpose(self, outputs, crop_info):
+        x1, y1, crop_w, crop_h = crop_info
+        simcc_x = outputs[0][0]
+        simcc_y = outputs[1][0]
+        x_coords = np.argmax(simcc_x, axis=1) / 2.0
+        y_coords = np.argmax(simcc_y, axis=1) / 2.0
+        x_conf = np.max(simcc_x, axis=1)
+        y_conf = np.max(simcc_y, axis=1)
+        conf = (x_conf + y_conf) / 2.0
+        kps = np.zeros((17, 3), dtype=np.float32)
+        kps[:, 0] = x1 + x_coords * (crop_w / self.w)
+        kps[:, 1] = y1 + y_coords * (crop_h / self.h)
+        kps[:, 2] = 1.0 / (1.0 + np.exp(-conf))
         return kps
 
+    def _decode_hrnet(self, outputs, crop_info):
+        x1, y1, crop_w, crop_h = crop_info
+        heatmap = outputs[0]
+        if heatmap.ndim == 4:
+            heatmap = heatmap[0]
+        if heatmap.ndim == 3 and heatmap.shape[0] >= 17:
+            kps = np.zeros((17, 3), dtype=np.float32)
+            for k in range(min(17, heatmap.shape[0])):
+                hm = heatmap[k]
+                y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
+                kps[k, 0] = x1 + (x_idx / hm.shape[1]) * crop_w
+                kps[k, 1] = y1 + (y_idx / hm.shape[0]) * crop_h
+                kps[k, 2] = float(hm.max())
+            return kps
+        out = heatmap
+        kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
+        kps[:, 0] = x1 + kps[:, 0] * crop_w
+        kps[:, 1] = y1 + kps[:, 1] * crop_h
+        return kps
+
+    def estimate(self, frame, bbox):
+        if self.model is None:
+            return np.zeros((17, 3), dtype=np.float32)
+        tensor, crop_info = self._preprocess(frame, bbox)
+        if tensor is None:
+            return np.zeros((17, 3), dtype=np.float32)
+        outputs = self.model.run(None, {"input": tensor})
+        if self.model_type == "hrnet":
+            return self._decode_hrnet(outputs, crop_info)
+        return self._decode_rtmpose(outputs, crop_info)
+
     def estimate_batch(self, crops):
-        """Run RTMPose on multiple crops in a single ONNX call.
-        
-        Args:
-            crops: list of (bbox, frame) pairs
-        Returns:
-            list of (17, 3) keypoint arrays
-        """
         if self.model is None:
             return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
 
@@ -342,16 +367,12 @@ class RTMPoseEstimator:
         crop_infos = []
 
         for i, (bbox, frame) in enumerate(crops):
-            x1, y1, x2, y2 = [int(v) for v in bbox]
-            crop = frame[y1:y2, x1:x2]
-            if crop.size == 0:
+            tensor, crop_info = self._preprocess(frame, bbox)
+            if tensor is None:
                 continue
-            r = cv2.resize(crop, (self.w, self.h))
-            r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-            r = (r - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-            batch_tensors.append(r.transpose(2, 0, 1).astype(np.float32))
+            batch_tensors.append(tensor[0])
             valid_indices.append(i)
-            crop_infos.append((x1, y1, x2 - x1, y2 - y1))
+            crop_infos.append(crop_info)
 
         if not batch_tensors:
             return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
@@ -361,25 +382,11 @@ class RTMPoseEstimator:
 
         kps_all = []
         for j in range(len(batch_np)):
-            x1, y1, crop_w, crop_h = crop_infos[j]
-            if len(outputs) == 2:
-                simcc_x = outputs[0][j]
-                simcc_y = outputs[1][j]
-                x_coords = np.argmax(simcc_x, axis=1) / 2.0
-                y_coords = np.argmax(simcc_y, axis=1) / 2.0
-                x_conf = np.max(simcc_x, axis=1)
-                y_conf = np.max(simcc_y, axis=1)
-                conf = (x_conf + y_conf) / 2.0
-                kps = np.zeros((17, 3), dtype=np.float32)
-                kps[:, 0] = x1 + x_coords * (crop_w / self.w)
-                kps[:, 1] = y1 + y_coords * (crop_h / self.h)
-                kps[:, 2] = 1.0 / (1.0 + np.exp(-conf))
+            single_outputs = [out[j:j+1] for out in outputs]
+            if self.model_type == "hrnet":
+                kps_all.append(self._decode_hrnet(single_outputs, crop_infos[j]))
             else:
-                out = outputs[0][j]
-                kps = out.reshape(17, 3) if out.ndim == 3 else out[0]
-                kps[:, 0] = x1 + kps[:, 0] * crop_w
-                kps[:, 1] = y1 + kps[:, 1] * crop_h
-            kps_all.append(kps)
+                kps_all.append(self._decode_rtmpose(single_outputs, crop_infos[j]))
 
         results = [np.zeros((17, 3), dtype=np.float32) for _ in crops]
         for j, idx in enumerate(valid_indices):
@@ -1359,7 +1366,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 BATCH_SIZE = 2000
 
-def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
+def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose"):
     start_time = time.time()
     video_name = Path(video_path).name
 
@@ -1387,17 +1394,22 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda"):
     print("\n  Loading ML models...")
     tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
-    # Find RTMPose model - check known paths, then any .onnx in directory (including nested)
-    rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
-    if not Path(rtmpose_path).exists():
-        rtmpose_dir = CKPT_DIR / "rtmpose"
-        onnx_files = list(rtmpose_dir.rglob("*.onnx"))
-        if onnx_files:
-            rtmpose_path = str(onnx_files[0])
-            print(f"  Found RTMPose at: {onnx_files[0]}")
-        else:
-            print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
-    pose_estimator = RTMPoseEstimator(rtmpose_path, device=device)
+    # Pose model selection
+    if pose_model == "mmpose" and HRNET_PATH.exists():
+        pose_path = str(HRNET_PATH)
+        print(f"  Using MMPose HRNet-W32 (accurate)")
+    else:
+        pose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
+        if not Path(pose_path).exists():
+            rtmpose_dir = CKPT_DIR / "rtmpose"
+            onnx_files = list(rtmpose_dir.rglob("*.onnx"))
+            if onnx_files:
+                pose_path = str(onnx_files[0])
+                print(f"  Found RTMPose at: {onnx_files[0]}")
+            else:
+                print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
+        print(f"  Using RTMPose (fast)")
+    pose_estimator = RTMPoseEstimator(pose_path, device=device)
     print("  Models loaded")
 
     # Accumulators for results across batches
@@ -1704,10 +1716,12 @@ if __name__ == "__main__":
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("--output", "-o", default="report.json", help="Output report path")
     parser.add_argument("--device", "-d", default="cuda", choices=["cuda", "cpu"], help="Compute device")
+    parser.add_argument("--pose-model", default="rtmpose", choices=["rtmpose", "mmpose"],
+                        help="Pose model: rtmpose (fast) or mmpose/hrnet (accurate)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
         print(f"Error: Video file not found: {args.video}")
         sys.exit(1)
 
-    run_pipeline(args.video, args.output, args.device)
+    run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model)
