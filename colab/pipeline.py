@@ -149,32 +149,12 @@ def _install_mmpose_deps():
     the C++ extensions work fine with newer PyTorch at runtime.
     """
     import subprocess
-    import torch
-    torch_ver = torch.__version__.split("+")[0]
-    cuda_full = torch.version.cuda or ""  # e.g. "12.8"
-    cuda_short = cuda_full.replace(".", "")  # e.g. "128"
 
-    # Find highest available CUDA version that works (forward-compatible)
-    import urllib.request
-    available_cudas = ["128", "126", "124", "121", "118"]
-    mmcv_url = None
-    for cu in available_cudas:
-        url = f"https://download.openmmlab.com/mmcv/dist/cu{cu}/torch2.4.0/index.html"
-        try:
-            urllib.request.urlopen(url, timeout=5)
-            mmcv_url = url
-            print(f"    Using mmcv wheels from cu{cu}/torch2.4.0")
-            break
-        except Exception:
-            continue
-
-    if mmcv_url is None:
-        mmcv_url = "https://download.openmmlab.com/mmcv/dist/cu121/torch2.4.0/index.html"
-
+    # Build mmcv from source — pre-built wheels have ABI mismatch with Colab's torch
+    print("    Building mmcv from source (takes ~5 min)...")
     subprocess.check_call([
         sys.executable, "-m", "pip", "install", "-q",
-        "--only-binary", ":all:",
-        "-f", mmcv_url, "mmcv==2.2.0",
+        "--no-binary", "mmcv", "mmcv==2.1.0",
     ])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "--no-deps", "mmpose", "mmdet", "mmengine"])
     subprocess.check_call([sys.executable, "-m", "pip", "install", "-q",
