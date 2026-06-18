@@ -1436,7 +1436,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
 BATCH_SIZE = 2000
 
-def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose"):
+def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose", sample_rate: int = 0):
     start_time = time.time()
     video_name = Path(video_path).name
 
@@ -1448,10 +1448,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     setup_models(device, pose_model)
 
     total_frames, video_fps, vid_w, vid_h, duration = get_video_info(video_path)
-    sample_interval = max(1, int(video_fps / 10))
+    if sample_rate > 0:
+        sample_interval = sample_rate
+    else:
+        sample_interval = max(1, int(video_fps / 10))
     num_samples = total_frames // sample_interval
+    target_fps = video_fps / sample_interval
     print(f"  Video: {duration:.0f}s, {total_frames} frames @ {video_fps:.0f}fps ({vid_w}x{vid_h})")
-    print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames (10fps)")
+    print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames ({target_fps:.0f}fps)")
     print(f"  Batch size: {BATCH_SIZE} frames")
 
     # Court detection (no frames needed)
@@ -1786,12 +1790,14 @@ if __name__ == "__main__":
     parser.add_argument("video", help="Path to video file")
     parser.add_argument("--output", "-o", default="report.json", help="Output report path")
     parser.add_argument("--device", "-d", default="cuda", choices=["cuda", "cpu"], help="Compute device")
-    parser.add_argument("--pose-model", default="rtmpose", choices=["rtmpose", "mmpose"],
-                        help="Pose model: rtmpose (fast) or mmpose/hrnet (accurate)")
+    parser.add_argument("--pose-model", default="rtmpose", choices=["rtmpose", "mmpose", "hybrid"],
+                        help="Pose model: rtmpose (fast), mmpose/hrnet (accurate), or hybrid (MMPose strokes + RTMPose hits)")
+    parser.add_argument("--sample-rate", "-s", type=int, default=0,
+                        help="Frame sampling interval (0=auto for 10fps, 1=every frame, 2=every 2nd, etc.)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
         print(f"Error: Video file not found: {args.video}")
         sys.exit(1)
 
-    run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model)
+    run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model, sample_rate=args.sample_rate)
