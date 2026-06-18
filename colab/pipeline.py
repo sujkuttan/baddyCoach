@@ -134,7 +134,7 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
         print("  Auto-exporting HRNet-W32 from MMPose...")
         try:
             import subprocess
-            subprocess.check_call([sys.executable, "-m", "pip", "install", "openmim", "-q"])
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "setuptools>=70.0", "openmim"])
             subprocess.check_call(["mim", "install", "mmcv", "-q"])
             subprocess.check_call([sys.executable, "-m", "pip", "install", "mmpose", "mmdet", "-q"])
             _export_hrnet_onnx()
