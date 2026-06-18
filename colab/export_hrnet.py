@@ -21,9 +21,18 @@ def export():
         print("Install: pip install mmpose mmdet openmim && mim install mmcv")
         sys.exit(1)
 
-    print("Loading MMPose HRNet-W32 inferencer...")
+    print("Loading MMPose inferencer with 'human' alias (same as BST training)...")
     inferencer = MMPoseInferencer('human')
+
+    # Print the resolved model config so we know exactly which model is used
     pose_estimator = inferencer.pose_estimator
+    if hasattr(pose_estimator, 'cfg'):
+        print(f"  Resolved config: {pose_estimator.cfg.filename}")
+        print(f"  Model type: {type(pose_estimator).__name__}")
+    elif hasattr(inferencer, 'inferencer') and hasattr(inferencer.inferencer, 'cfg'):
+        cfg = inferencer.inferencer.cfg
+        print(f"  Resolved config: {getattr(cfg, 'filename', 'unknown')}")
+        print(f"  Model class: {type(inferencer.inferencer.model).__name__}")
 
     dummy_input = torch.randn(1, 3, 256, 192)
     if torch.cuda.is_available():
@@ -41,6 +50,8 @@ def export():
         opset_version=14,
     )
     print(f"Exported to {OUTPUT_PATH} ({OUTPUT_PATH.stat().st_size / 1024 / 1024:.1f} MB)")
+    print(f"\nIMPORTANT: Verify the resolved config above matches what BST was trained with.")
+    print(f"The BST paper uses MMPoseInferencer('human') — the exact model depends on your MMPose version.")
 
 
 def test_export():
