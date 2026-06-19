@@ -406,7 +406,7 @@ class TrackNetV3:
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
 
-        CHUNK = 32
+        CHUNK = 16
         results = [None] * len(frames)
 
         for chunk_start in range(0, len(frames), CHUNK):
