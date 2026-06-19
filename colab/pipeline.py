@@ -1205,10 +1205,10 @@ def stage_footwork(pose_data, shots_data):
         com_points = []
         for _, row in player.iterrows():
             kps_raw = row["keypoints"]
-            kps = np.array(kps_raw) if isinstance(kps_raw, np.ndarray) else np.array(kps_raw)
-            if kps.shape != (17, 3) and hasattr(kps_raw, 'tolist'):
-                kps = np.array(kps_raw.tolist())
-            if kps.shape == (17, 3):
+            kps = np.array(kps_raw.tolist()) if hasattr(kps_raw, 'tolist') else np.array(kps_raw)
+            if kps.ndim == 1:
+                kps = np.array([np.array(x) for x in kps])
+            if kps.shape == (17, 3) and np.any(kps != 0):
                 com_points.append((kps[11][:2] + kps[12][:2]) / 2)
         dist = sum(np.sqrt(np.sum((np.array(com_points[i+1]) - np.array(com_points[i]))**2))
                    for i in range(len(com_points)-1)) if len(com_points) > 1 else 0
@@ -1581,6 +1581,10 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     pd.DataFrame(all_pose).to_parquet(debug_dir / "pose.parquet", index=False)
     print(f"    pose.parquet ({len(all_pose)} rows)")
 
+    if all_pose_secondary:
+        pd.DataFrame(all_pose_secondary).to_parquet(debug_dir / "pose_secondary.parquet", index=False)
+        print(f"    pose_secondary.parquet ({len(all_pose_secondary)} rows)")
+
     pd.DataFrame(all_player_detections).to_parquet(debug_dir / "player_detections.parquet", index=False)
     print(f"    player_detections.parquet ({len(all_player_detections)} rows)")
 
@@ -1623,7 +1627,17 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"    hits.parquet ({len(hits)} rows)")
 
     print("\n[7/14] Stroke classification...")
-    shots = stage_strokes(hits, all_shuttle, all_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
+    # In hybrid mode: check if primary pose (HRNet) has valid keypoints
+    # If HRNet produces all zeros, fall back to secondary (RTMPose) for BST
+    bst_pose = all_pose
+    if pose_model == "hybrid" and all_pose_secondary:
+        nonzero_count = sum(1 for p in all_pose[:100] if np.any(np.array(p["keypoints"]) != 0))
+        if nonzero_count < 10:
+            print(f"  HRNet keypoints mostly zero ({nonzero_count}/100 non-zero), using RTMPose for BST")
+            bst_pose = all_pose_secondary
+        else:
+            print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
+    shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
     shots = stage_attribution(shots, all_shuttle)
     print(f"  Classified {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
