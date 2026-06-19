@@ -1649,7 +1649,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"  {len(court_analytics['zone_transitions'])} zone transitions")
 
     print("\n[10/14] Footwork analytics...")
-    footwork = stage_footwork(all_pose, shots)
+    # Use RTMPose for footwork/fitness (better movement tracking)
+    footwork_pose = all_pose_secondary if all_pose_secondary else all_pose
+    footwork = stage_footwork(footwork_pose, shots)
     print("  Done")
 
     print("\n[11/14] Fitness analytics...")
