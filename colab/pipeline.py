@@ -236,7 +236,7 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
         try:
             import gdown
             print("  Downloading court keypoint model...")
-            gdown.download(id="1XyqQ1cQHKCqCqCqCqCqCqCqCqCqCqCq", output=str(COURT_KP_MODEL_PATH), quiet=False)
+            gdown.download(id="1FGKyX-NudJGXvfsmKEpjiQYojDAWONdy", output=str(COURT_KP_MODEL_PATH), quiet=False)
         except Exception as e:
             print(f"  Court KP model download failed: {e}")
 
