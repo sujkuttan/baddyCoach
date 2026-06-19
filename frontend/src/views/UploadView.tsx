@@ -24,6 +24,8 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [stagedReport, setStagedReport] = useState<any>(null);
   const [stagedVideoName, setStagedVideoName] = useState<string>('');
+  const [poseModel, setPoseModel] = useState<string>('rtmpose');
+  const [sampleRate, setSampleRate] = useState<number>(0);
 
   useEffect(() => {
     fetch('/api/jobs')
@@ -60,7 +62,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
     try {
       const { job_id } = await uploadVideo(file);
       localStorage.setItem('baddycoach_job_id', job_id);
-      await processVideo(job_id);
+      await processVideo(job_id, poseModel, sampleRate);
       onJobCreated(job_id);
     } catch (e: any) {
       setError(e.message || 'Upload failed');
@@ -161,6 +163,36 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
         {error && (
           <div className="mt-4 p-4 rounded-xl bg-error-red/10 border border-error-red/20">
             <p className="font-mono text-sm text-error-red">{error}</p>
+          </div>
+        )}
+
+        {/* Processing Options */}
+        {file && (
+          <div className="mt-6 grid grid-cols-2 gap-4">
+            <div>
+              <label className="block font-mono text-xs text-text-muted mb-1">Pose Model</label>
+              <select
+                value={poseModel}
+                onChange={(e) => setPoseModel(e.target.value)}
+                className="w-full px-3 py-2 rounded-lg bg-court-surface border border-court-border text-text-primary font-body text-sm focus:outline-none focus:border-shuttle-lime"
+              >
+                <option value="rtmpose">RTMPose (Fast)</option>
+                <option value="mmpose">MMPose HRNet (Accurate)</option>
+                <option value="hybrid">Hybrid (Best)</option>
+              </select>
+            </div>
+            <div>
+              <label className="block font-mono text-xs text-text-muted mb-1">Frame Rate</label>
+              <select
+                value={sampleRate}
+                onChange={(e) => setSampleRate(Number(e.target.value))}
+                className="w-full px-3 py-2 rounded-lg bg-court-surface border border-court-border text-text-primary font-body text-sm focus:outline-none focus:border-shuttle-lime"
+              >
+                <option value={0}>Auto (10fps)</option>
+                <option value={2}>Every 2nd frame (15fps)</option>
+                <option value={1}>Every frame (30fps, slow)</option>
+              </select>
+            </div>
           </div>
         )}
 

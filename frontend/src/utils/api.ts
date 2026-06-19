@@ -8,8 +8,15 @@ export async function uploadVideo(file: File): Promise<{ job_id: string }> {
   return res.json();
 }
 
-export async function processVideo(jobId: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/jobs/${jobId}/process`, { method: 'POST' });
+export async function processVideo(
+  jobId: string,
+  poseModel: string = 'rtmpose',
+  sampleRate: number = 0
+): Promise<void> {
+  const params = new URLSearchParams();
+  params.append('pose_model', poseModel);
+  if (sampleRate > 0) params.append('sample_rate', String(sampleRate));
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/process?${params.toString()}`, { method: 'POST' });
   if (!res.ok) throw new Error(await res.text());
 }
 
