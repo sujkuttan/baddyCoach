@@ -10,7 +10,13 @@ class FootworkAnalyticsStage:
     output_keys = ["footwork_analytics"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
+        # Use secondary pose (RTMPose) for footwork if available (hybrid mode)
         pose_df = artifacts.get_parquet("pose")
+        secondary_pose = artifacts.get("pose_secondary")
+        if secondary_pose and isinstance(secondary_pose, list) and len(secondary_pose) > 0:
+            import pandas as pd
+            pose_df = pd.DataFrame(secondary_pose)
+
         court = artifacts.get("court")
         rallies_df = artifacts.get_parquet("rallies")
         shots_df = artifacts.get_parquet("shots")

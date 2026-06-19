@@ -36,6 +36,14 @@ def run_pipeline(job_id: str):
     store = ArtifactStore(job_dir)
     config = StageConfig(gpu_enabled=False)
 
+    # Get pose_model and sample_rate from job (set by process endpoint)
+    pose_model = job.get("pose_model", "rtmpose")
+    sample_rate = job.get("sample_rate", 0)
+
+    # Update settings for this pipeline run
+    settings.pose_model = pose_model
+    settings.sample_rate = sample_rate
+
     job_manager.update_job(job_id, status="processing", current_stage="court_detection")
 
     def emit_progress(event):
@@ -46,7 +54,9 @@ def run_pipeline(job_id: str):
     if video_path and Path(video_path).exists():
         vid_w, vid_h = _get_video_resolution(video_path)
         store.set("video_resolution", {"width": vid_w, "height": vid_h})
-        frames = _extract_frames(video_path)
+        # Use sample_rate from job, default to 3 (10fps)
+        sample_interval = sample_rate if sample_rate > 0 else 3
+        frames = _extract_frames(video_path, sample_interval=sample_interval)
     else:
         frames = []
 
@@ -183,7 +193,12 @@ async def list_jobs():
 
 
 @router.post("/jobs/{job_id}/process")
-async def process_job(job_id: str, background_tasks: BackgroundTasks):
+async def process_job(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    pose_model: str = "rtmpose",
+    sample_rate: int = 0
+):
     job = job_manager.get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
@@ -194,8 +209,11 @@ async def process_job(job_id: str, background_tasks: BackgroundTasks):
     if not video_path or not Path(video_path).exists():
         raise HTTPException(404, "Video not found")
 
+    # Store pose_model and sample_rate in job for pipeline to use
+    job_manager.update_job(job_id, pose_model=pose_model, sample_rate=sample_rate)
+
     background_tasks.add_task(run_pipeline, job_id)
-    return {"job_id": job_id, "status": "processing"}
+    return {"job_id": job_id, "status": "processing", "pose_model": pose_model, "sample_rate": sample_rate}
 
 
 from pathlib import Path

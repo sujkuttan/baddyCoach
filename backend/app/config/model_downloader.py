@@ -14,12 +14,16 @@ BST_FILE_ID = "1oM2cGM4gQRDXpcS3J5lIMDY2sBJlUvJ4"
 # RTMPose ONNX model from MMPose (medium, 256x192, trained on Body8 dataset)
 RTMPOSE_ONNX_URL = "https://download.openmmlab.com/mmpose/v1/projects/rtmposev1/onnx_sdk/rtmpose-m_simcc-body7_pt-body7_420e-256x192-e48f03d0_20230504.zip"
 
+# HRNet-W32 ONNX model for MMPose (COCO 17 keypoints, 256x192)
+HRNET_FILE_ID = "1LFUEbHB-D3WCyjzf9aSJ_V_kVB8igsnr"
+
 # Required model files
 REQUIRED_MODELS = {
     "tracknet": CKPT_DIR / "TrackNet_best.pt",
     "inpaintnet": CKPT_DIR / "InpaintNet_best.pt",
     "yolov8n": Path("yolov8n.pt"),
     "rtmpose": CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx",
+    "hrnet": CKPT_DIR / "mmpose" / "hrnet_w32_coco_256x192.onnx",
     "bst": CKPT_DIR / "bst" / "bst_CG_AP.pt",
 }
 
@@ -113,6 +117,46 @@ def download_rtmpose_model(force: bool = False) -> Path:
         raise RuntimeError(f"Failed to download RTMPose model: {e}")
 
 
+def download_hrnet_model(force: bool = False) -> Path:
+    """Download pre-exported HRNet-W32 ONNX model from Google Drive.
+    
+    This model was exported from MMPose's MMPoseInferencer('human') and provides
+    COCO 17-keypoint format at 256x192 resolution.
+    
+    Args:
+        force: If True, re-download even if file exists.
+        
+    Returns:
+        Path to downloaded model file.
+        
+    Raises:
+        ImportError: If gdown is not installed.
+        RuntimeError: If download fails.
+    """
+    import gdown
+    
+    output_path = REQUIRED_MODELS["hrnet"]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    if output_path.exists() and not force:
+        print(f"HRNet model already exists at {output_path}")
+        return output_path
+    
+    print("Downloading HRNet-W32 ONNX model from Google Drive...")
+    
+    try:
+        gdown.download(id=HRNET_FILE_ID, output=str(output_path), quiet=False)
+        
+        if not output_path.exists():
+            raise RuntimeError(f"HRNet model file not found after download at {output_path}")
+            
+        print(f"HRNet model downloaded to {output_path}")
+        return output_path
+        
+    except Exception as e:
+        raise RuntimeError(f"Failed to download HRNet model: {e}")
+
+
 def verify_all_models() -> dict[str, bool]:
     """Verify that all required model files exist.
     
@@ -144,6 +188,12 @@ def download_all_models(force: bool = False) -> dict[str, Path]:
     
     results["bst"] = download_bst_weights(force=force)
     results["rtmpose"] = download_rtmpose_model(force=force)
+    
+    # HRNet is optional (for hybrid/mmpose mode)
+    try:
+        results["hrnet"] = download_hrnet_model(force=force)
+    except Exception as e:
+        print(f"HRNet download skipped: {e}")
     
     if not REQUIRED_MODELS["tracknet"].exists():
         raise RuntimeError(f"TrackNet weights not found: {REQUIRED_MODELS['tracknet']}")

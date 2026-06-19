@@ -20,15 +20,59 @@ class PoseEstimationStage:
 
         If frames provided, runs RTMPose inference.
         If pose_data provided, uses pre-computed data.
+        Supports hybrid mode: MMPose primary + RTMPose secondary.
         """
         if pose_data:
             return self._store_data(artifacts, pose_data)
 
         if frames:
-            pose_data = self._run_rtmpose(frames, artifacts)
+            pose_data = self._run_pose(frames, artifacts)
             return self._store_data(artifacts, pose_data)
 
         return StageResult.from_error("No frames or pose data provided")
+
+    def _run_pose(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
+        """Run pose estimation based on configured model."""
+        from app.config.settings import settings
+
+        pose_model = settings.pose_model
+
+        if pose_model == "hybrid":
+            return self._run_hybrid(frames, artifacts)
+        elif pose_model == "mmpose":
+            return self._run_mmpose(frames, artifacts)
+        else:
+            return self._run_rtmpose(frames, artifacts)
+
+    def _run_hybrid(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
+        """Run hybrid mode: MMPose primary (strokes) + RTMPose secondary (hits)."""
+        from app.models.rtmpose import RTMPoseEstimator
+        from app.config.settings import settings
+
+        # Primary: MMPose HRNet (for stroke classification)
+        hrnet_path = str(settings.hrnet_model_path) if settings.hrnet_model_path else None
+        primary_estimator = RTMPoseEstimator(hrnet_path, device=settings.device)
+
+        # Secondary: RTMPose (for hit confidence and fitness)
+        rtmpose_path = str(settings.rtmpose_model_path) if settings.rtmpose_model_path else None
+        secondary_estimator = RTMPoseEstimator(rtmpose_path, device=settings.device)
+
+        pose_data = self._estimate_with_estimator(frames, artifacts, primary_estimator)
+
+        # Store secondary pose data for fitness analytics
+        secondary_pose = self._estimate_with_estimator(frames, artifacts, secondary_estimator)
+        artifacts.set("pose_secondary", secondary_pose)
+
+        return pose_data
+
+    def _run_mmpose(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
+        """Run MMPose HRNet for pose estimation."""
+        from app.models.rtmpose import RTMPoseEstimator
+        from app.config.settings import settings
+
+        hrnet_path = str(settings.hrnet_model_path) if settings.hrnet_model_path else None
+        estimator = RTMPoseEstimator(hrnet_path, device=settings.device)
+        return self._estimate_with_estimator(frames, artifacts, estimator)
 
     def _run_rtmpose(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
         """Run RTMPose on video frames using player detections."""
@@ -37,7 +81,10 @@ class PoseEstimationStage:
 
         model_path = str(settings.rtmpose_model_path) if settings.rtmpose_model_path else None
         estimator = RTMPoseEstimator(model_path, device=settings.device)
+        return self._estimate_with_estimator(frames, artifacts, estimator)
 
+    def _estimate_with_estimator(self, frames: list[np.ndarray], artifacts: ArtifactStore, estimator) -> list[dict]:
+        """Run pose estimation with given estimator."""
         players = artifacts.get("players")
         if not players:
             return []
@@ -97,10 +144,3 @@ class PoseEstimationStage:
                 "keypoints_per_player": 17,
             }
         )
-
-
-def smooth_keypoints(keypoints: np.ndarray, alpha: float = 0.5) -> np.ndarray:
-    smoothed = np.copy(keypoints)
-    for i in range(1, len(smoothed)):
-        smoothed[i] = alpha * keypoints[i] + (1 - alpha) * smoothed[i - 1]
-    return smoothed
