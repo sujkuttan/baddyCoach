@@ -534,7 +534,19 @@ class CourtKeypointDetector:
         if len(points) < 6:
             return None
         
-        return points
+        # Validate: keypoints should form a reasonable court shape
+        # Sort by y-coordinate to find top and bottom pairs
+        sorted_by_y = sorted(range(len(points)), key=lambda i: points[i][1])
+        top_two = sorted(sorted_by_y[:2], key=lambda i: points[i][0])
+        bot_two = sorted(sorted_by_y[-2:], key=lambda i: points[i][0])
+        mid_two = sorted(sorted_by_y[2:4], key=lambda i: points[i][0])
+        
+        # Reorder as: top-left, top-right, mid-left, mid-right, bot-left, bot-right
+        ordered = [points[top_two[0]], points[top_two[1]], 
+                   points[mid_two[0]], points[mid_two[1]],
+                   points[bot_two[0]], points[bot_two[1]]]
+        
+        return ordered
     
     def detect_with_fallback(self, frame):
         """Detect court with fallback chain: model → color+line → proportional.
