@@ -495,8 +495,12 @@ class CourtKeypointDetector:
     def detect(self, frame):
         """Detect court keypoints in a frame.
         
+        Model outputs 6 keypoints in fixed order (from SoloShuttlePose source):
+        - 0: top-left, 1: top-right
+        - 2: mid-left, 3: mid-right  
+        - 4: bottom-left, 5: bottom-right
+        
         Returns: list of 6 [[x,y], ...] keypoints, or None if detection fails.
-        Keypoints ordered: top-left, top-right, mid-left, mid-right, bot-left, bot-right
         """
         if self.model is None:
             return None
@@ -529,24 +533,23 @@ class CourtKeypointDetector:
         # Take the detection with highest score
         kps = kps_list[0].detach().cpu().numpy()
         # Each keypoint is [x, y, confidence], take first 6 keypoints
+        # Fixed order: 0=tl, 1=tr, 2=ml, 3=mr, 4=bl, 5=br
         points = [[int(kps[i][0]), int(kps[i][1])] for i in range(min(6, len(kps)))]
         
         if len(points) < 6:
             return None
         
-        # Validate: keypoints should form a reasonable court shape
-        # Sort by y-coordinate to find top and bottom pairs
-        sorted_by_y = sorted(range(len(points)), key=lambda i: points[i][1])
-        top_two = sorted(sorted_by_y[:2], key=lambda i: points[i][0])
-        bot_two = sorted(sorted_by_y[-2:], key=lambda i: points[i][0])
-        mid_two = sorted(sorted_by_y[2:4], key=lambda i: points[i][0])
+        # Validate: top pair should have similar y, bottom pair should have similar y
+        top_y = (points[0][1] + points[1][1]) / 2
+        bot_y = (points[4][1] + points[5][1]) / 2
+        print(f"  Court KP raw: tl={points[0]} tr={points[1]} ml={points[2]} mr={points[3]} bl={points[4]} br={points[5]}")
+        print(f"  Court KP top_y={top_y:.0f} bot_y={bot_y:.0f}")
+        if bot_y <= top_y:
+            # Bottom should be below top — invalid detection
+            print(f"  Court KP invalid: bot_y <= top_y")
+            return None
         
-        # Reorder as: top-left, top-right, mid-left, mid-right, bot-left, bot-right
-        ordered = [points[top_two[0]], points[top_two[1]], 
-                   points[mid_two[0]], points[mid_two[1]],
-                   points[bot_two[0]], points[bot_two[1]]]
-        
-        return ordered
+        return points
     
     def detect_with_fallback(self, frame):
         """Detect court with fallback chain: model → color+line → proportional.
