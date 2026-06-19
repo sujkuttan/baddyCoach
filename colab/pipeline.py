@@ -485,7 +485,7 @@ class CourtKeypointDetector:
             return
         
         try:
-            self.model = torch.load(model_path, map_location=device)
+            self.model = torch.load(model_path, map_location=device, weights_only=False)
             self.model.to(device).eval()
             print(f"  Court KP model loaded from {Path(model_path).name}")
         except Exception as e:
@@ -1615,7 +1615,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     return shots
 
 
-def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, pose_data=None):
+def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=1280, pose_data=None):
     """Assign player_id to shots using PRD §2.7 foot midpoint when available.
     
     Priority:
@@ -2459,7 +2459,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         else:
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
     shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
-    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h, pose_data=all_pose)
+    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h, vid_w=vid_w, pose_data=all_pose)
     print(f"  Classified {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
     print(f"    shots.parquet ({len(shots)} rows)")
