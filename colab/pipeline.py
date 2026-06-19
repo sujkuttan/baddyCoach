@@ -32,6 +32,7 @@ CKPT_DIR.mkdir(exist_ok=True)
 TRACKNET_PATH = CKPT_DIR / "TrackNet_best.pt"
 YOLOV8_MODEL = "yolov8s.pt"
 RTMOPOSE_PATH = CKPT_DIR / "rtmpose" / "rtmpose-m_8xb64-270e_coco-256x192.onnx"
+COURT_KP_MODEL_PATH = CKPT_DIR / "court_kpRCNN.pth"
 RTMOPOSE_PATH_ALT = CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
 BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
 HRNET_PATH = CKPT_DIR / "mmpose" / "hrnet_w32_coco_256x192.onnx"
@@ -228,6 +229,15 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
         except Exception as e:
             print(f"  TrackNet download failed: {e}")
             print("  Shuttle tracking will use fallback")
+
+    # Court keypoint model (SoloShuttlePose)
+    if not COURT_KP_MODEL_PATH.exists():
+        try:
+            import gdown
+            print("  Downloading court keypoint model...")
+            gdown.download(id="1XyqQ1cQHKCqCqCqCqCqCqCqCqCqCqCq", output=str(COURT_KP_MODEL_PATH), quiet=False)
+        except Exception as e:
+            print(f"  Court KP model download failed: {e}")
 
     from ultralytics import YOLO
     YOLO(YOLOV8_MODEL)
@@ -451,6 +461,96 @@ class TrackNetV3:
             if self.device == "cuda":
                 torch.cuda.empty_cache()
         return results
+
+
+class CourtKeypointDetector:
+    """Court keypoint detector using Keypoint R-CNN (SoloShuttlePose).
+    
+    Detects 6 court keypoints per frame:
+    - Points 0, 1: Top-left, top-right (near net)
+    - Points 2, 3: Middle-left, middle-right (net line)
+    - Points 4, 5: Bottom-left, bottom-right (far from net)
+    
+    Falls back to color+line detection if model unavailable.
+    """
+    def __init__(self, model_path: str, device: str = "cuda"):
+        import torch
+        import torchvision
+        self.device = device
+        self.model = None
+        
+        if not Path(model_path).exists():
+            print(f"  Court KP model not found: {model_path}")
+            return
+        
+        try:
+            self.model = torch.load(model_path, map_location=device)
+            self.model.to(device).eval()
+            print(f"  Court KP model loaded from {Path(model_path).name}")
+        except Exception as e:
+            print(f"  Court KP model load failed: {e}")
+            self.model = None
+    
+    def detect(self, frame):
+        """Detect court keypoints in a frame.
+        
+        Returns: list of 6 [[x,y], ...] keypoints, or None if detection fails.
+        Keypoints ordered: top-left, top-right, mid-left, mid-right, bot-left, bot-right
+        """
+        if self.model is None:
+            return None
+        
+        import torch
+        from torchvision.transforms import functional as F
+        
+        image = frame.copy()
+        image = F.to_tensor(image).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            output = self.model(image)
+        
+        scores = output[0]['scores'].detach().cpu().numpy()
+        high_scores_idxs = np.where(scores > 0.7)[0].tolist()
+        
+        if len(high_scores_idxs) == 0:
+            return None
+        
+        import torchvision
+        post_nms_idxs = torchvision.ops.nms(
+            output[0]['boxes'][high_scores_idxs],
+            output[0]['scores'][high_scores_idxs], 0.3
+        ).cpu().numpy()
+        
+        kps_list = output[0]['keypoints'][high_scores_idxs][post_nms_idxs]
+        if len(kps_list) == 0:
+            return None
+        
+        # Take the detection with highest score
+        kps = kps_list[0].detach().cpu().numpy()
+        # Each keypoint is [x, y, confidence], take first 6 keypoints
+        points = [[int(kps[i][0]), int(kps[i][1])] for i in range(min(6, len(kps)))]
+        
+        if len(points) < 6:
+            return None
+        
+        return points
+    
+    def detect_with_fallback(self, frame):
+        """Detect court with fallback chain: model → color+line → proportional.
+        
+        Returns: list of 4 corners [bl, br, tl, tr] for homography
+        """
+        # Try model first
+        kps = self.detect(frame)
+        if kps is not None and len(kps) == 6:
+            # SoloShuttlePose returns 6 points:
+            # 0: top-left, 1: top-right, 2: mid-left, 3: mid-right, 4: bot-left, 5: bot-right
+            # We need: bottom-left, bottom-right, top-left, top-right
+            corners = [kps[4], kps[5], kps[0], kps[1]]
+            return corners
+        
+        # Fallback to color+line detection
+        return detect_court_from_frame(frame)
 
 
 class YOLOv8Tracker:
@@ -1943,18 +2043,30 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     # Court detection from video frame
     print("\n[2/14] Court detection...")
+    
+    # Initialize court keypoint detector (SoloShuttlePose model)
+    court_kp_detector = CourtKeypointDetector(str(COURT_KP_MODEL_PATH), device=device)
+    
     cap = cv2.VideoCapture(str(video_path))
     ret, sample_frame = cap.read()
     cap.release()
     
     detected_corners = None
+    detection_method = "none"
     if ret and sample_frame is not None:
-        detected_corners = detect_court_from_frame(sample_frame)
+        # Primary: SoloShuttlePose court keypoint model
+        detected_corners = court_kp_detector.detect_with_fallback(sample_frame)
+        if detected_corners is not None:
+            if court_kp_detector.model is not None:
+                detection_method = "court_kpRCNN"
+            else:
+                detection_method = "color+line"
     
     if detected_corners:
         corners = detected_corners
-        print(f"  Detected court corners: {corners}")
+        print(f"  Detected court ({detection_method}): {corners}")
     else:
+        # Fallback 2: proportional corners
         margin_x = int(vid_w * 0.08)
         court_top = int(vid_h * 0.28)
         court_bottom = int(vid_h * 0.72)
