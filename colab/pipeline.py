@@ -1800,7 +1800,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     # Court detection (no frames needed)
     print("\n[2/14] Court detection...")
-    corners = [(100, 500), (1820, 500), (100, 100), (1820, 100)]
+    margin_x = int(vid_w * 0.08)
+    court_top = int(vid_h * 0.28)
+    court_bottom = int(vid_h * 0.72)
+    corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
+               (margin_x, court_top), (vid_w - margin_x, court_top)]
     court = stage_court_detection(corners)
     print("  Done")
 
