@@ -1653,16 +1653,22 @@ def stage_coach(tactical, fitness, footwork, rallies=None, court_analytics=None,
         """Format recommendation template with actual values."""
         try:
             import re
-            fields = re.findall(r'\{(\w+(?:\.\w+)*)\}', template)
-            values = {}
-            for field in fields:
-                val = get_nested(analytics, field)
+            def _replace(match):
+                inner = match.group(1)
+                parts = inner.split(":", 1)
+                field_path = parts[0]
+                fmt = parts[1] if len(parts) > 1 else ""
+                val = get_nested(analytics, field_path)
+                if fmt and isinstance(val, (int, float)):
+                    try:
+                        return format(val, fmt)
+                    except (ValueError, TypeError):
+                        pass
                 if isinstance(val, float):
-                    values[field] = val
-                else:
-                    values[field] = val
-            return template.format(**values)
-        except (KeyError, ValueError, IndexError):
+                    return f"{val:.3f}"
+                return str(val)
+            return re.sub(r'\{([^}]+)\}', _replace, template)
+        except Exception:
             return template
 
     for pid in set(list(tactical.keys()) + list(fitness.keys())):
