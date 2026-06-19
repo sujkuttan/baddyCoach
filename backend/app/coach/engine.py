@@ -52,6 +52,8 @@ class CoachEngine:
                     weaknesses.append(rule["recommendation"])
                     improvements.append(rule["recommendation"])
                     drills.append(rule.get("drill", ""))
+                elif rule["category"] == "insight":
+                    weaknesses.append(rule["recommendation"])
 
         return {
             "strengths": strengths,
@@ -165,8 +167,9 @@ class CoachEngine:
         if total_shots > 0:
             metrics.append(f"total shots: {total_shots}")
         
-        fatigue = self._get_nested(analytics, "fitness.fatigue_trend")
-        if fatigue and fatigue != "unknown":
-            metrics.append(f"fatigue trend: {fatigue}")
+        for cf in rule.get("context_fields", []):
+            val = self._get_nested(analytics, cf)
+            if isinstance(val, float):
+                metrics.append(f"{cf}: {val:.3f}")
         
         return metrics if metrics else ["data available"]
