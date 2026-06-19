@@ -1232,16 +1232,23 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     return shots
 
 
-def stage_attribution(shots_data, shuttle_data):
+def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720):
     if not shots_data:
         return shots_data
     shuttle_df = pd.DataFrame(shuttle_data)
+
+    if court and "corners_pixel" in court:
+        corners = court["corners_pixel"]
+        court_mid_y = (corners[0][1] + corners[2][1]) / 2
+    else:
+        court_mid_y = vid_h / 2
+
     for shot in shots_data:
         frame = shot["frame"]
         shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
         if len(shuttle_row) > 0:
             sy = float(shuttle_row.iloc[0]["y"])
-            shot["player_id"] = "player_1" if sy > 300 else "player_2"
+            shot["player_id"] = "player_1" if sy > court_mid_y else "player_2"
         else:
             shot["player_id"] = "player_1"
     return shots_data
@@ -1971,7 +1978,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         else:
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
     shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
-    shots = stage_attribution(shots, all_shuttle)
+    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=oh)
     print(f"  Classified {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
     print(f"    shots.parquet ({len(shots)} rows)")
