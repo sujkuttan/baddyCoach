@@ -2117,10 +2117,36 @@ if __name__ == "__main__":
                         help="Pose model: rtmpose (fast), mmpose/hrnet (accurate), or hybrid (MMPose strokes + RTMPose hits)")
     parser.add_argument("--sample-rate", "-s", type=int, default=0,
                         help="Frame sampling interval (0=auto for 10fps, 1=every frame, 2=every 2nd, etc.)")
+    parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
         print(f"Error: Video file not found: {args.video}")
         sys.exit(1)
 
+    log_file = None
+    if args.log:
+        log_file = open(args.log, "w")
+        import io
+        class TeeWriter(io.TextIOBase):
+            def __init__(self, file_a, file_b):
+                self.file_a = file_a
+                self.file_b = file_b
+            def write(self, data):
+                self.file_a.write(data)
+                self.file_b.write(data)
+                self.file_a.flush()
+                self.file_b.flush()
+                return len(data)
+            def flush(self):
+                self.file_a.flush()
+                self.file_b.flush()
+        tee = TeeWriter(sys.stdout, log_file)
+        sys.stdout = tee
+        sys.stderr = tee
+        print(f"Logging to: {args.log}")
+
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model, sample_rate=args.sample_rate)
+
+    if log_file:
+        log_file.close()
