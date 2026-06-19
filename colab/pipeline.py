@@ -40,6 +40,15 @@ COURT_LENGTH = 13.4
 COURT_WIDTH = 5.18
 NET_HEIGHT = 1.55
 
+# Canonical court model (metres) — origin at top-left, x=along length, y=along width
+# Used for homography mapping image pixels → court coordinates
+COURT_MODEL = {
+    "outer_tl": (0.0, 0.0),
+    "outer_tr": (0.0, COURT_WIDTH),
+    "outer_bl": (COURT_LENGTH, 0.0),
+    "outer_br": (COURT_LENGTH, COURT_WIDTH),
+}
+
 STROKE_CLASSES = [
     "serve", "short_serve", "flick_serve", "clear", "lift",
     "smash", "drop", "net_shot", "drive", "push", "block", "kill"
@@ -621,64 +630,137 @@ def frame_generator(video_path, sample_interval=3, target_fps=10):
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def detect_court_from_frame(frame):
-    """Detect badminton court outer boundary from a video frame using line detection.
+    """Detect badminton court from a video frame using multi-stage detection.
     
-    Returns list of 4 corner points [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] 
+    Stage 1: Color segmentation + line detection (primary)
+    Stage 2: HoughLinesP edge detection (fallback 1)
+    Stage 3: Returns None to trigger proportional fallback (fallback 2)
+    
+    Returns list of 4 corner points [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
     ordered as bottom-left, bottom-right, top-left, top-right.
-    Falls back to proportional corners if detection fails.
     """
     h, w = frame.shape[:2]
-    
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
     
-    # Adaptive threshold to handle varying lighting on court surface
-    edges = cv2.Canny(blur, 30, 100, apertureSize=3)
+    # ── Stage 1: Color-based court segmentation ──
+    # Badminton courts are typically green or blue with white lines
+    # Detect court floor using HSV color ranges
+    court_mask = None
     
-    # Detect lines
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80,
-                            minLineLength=min(h, w) * 0.25, maxLineGap=20)
+    # Green court (most common)
+    green_lower = np.array([35, 40, 40])
+    green_upper = np.array([85, 255, 255])
+    green_mask = cv2.inRange(hsv, green_lower, green_upper)
     
-    if lines is None or len(lines) < 4:
-        return None
+    # Blue court
+    blue_lower = np.array([100, 40, 40])
+    blue_upper = np.array([130, 255, 255])
+    blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
     
-    # Separate horizontal and vertical lines
-    h_lines = []
-    v_lines = []
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-        length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-        if abs(angle) < 30:  # horizontal
-            h_lines.append((min(y1, y2), max(y1, y2), min(x1, x2), max(x1, x2), length))
-        elif abs(abs(angle) - 90) < 30:  # vertical
-            v_lines.append((min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2), length))
+    # Combine court floor colors
+    floor_mask = cv2.bitwise_or(green_mask, blue_mask)
     
-    if len(h_lines) < 2 or len(v_lines) < 2:
-        return None
+    # Clean up mask
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kernel)
+    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel)
     
-    # Sort by length and take the longest lines (likely court boundary)
-    h_lines.sort(key=lambda l: l[4], reverse=True)
-    v_lines.sort(key=lambda l: l[4], reverse=True)
+    # Find largest contour (should be the court)
+    contours, _ = cv2.findContours(floor_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     
-    # Find outermost horizontal lines (top and bottom of court)
-    top_y = min(l[0] for l in h_lines[:4])
-    bot_y = max(l[1] for l in h_lines[:4])
+    corners = None
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        area = cv2.contourArea(largest)
+        
+        # Court should be at least 10% of frame area
+        if area > w * h * 0.10:
+            # Approximate contour to polygon
+            epsilon = 0.02 * cv2.arcLength(largest, True)
+            approx = cv2.approxPolyDP(largest, epsilon, True)
+            
+            if len(approx) == 4:
+                pts = approx.reshape(4, 2).astype(np.float64)
+                # Order: bottom-left, bottom-right, top-left, top-right
+                s = pts.sum(axis=1)
+                d = np.diff(pts, axis=1).flatten()
+                corners = [
+                    pts[np.argmin(s)].tolist(),  # top-left (smallest sum)
+                    pts[np.argmin(d)].tolist(),  # top-right (smallest diff)
+                    pts[np.argmax(d)].tolist(),  # bottom-left (largest diff)
+                    pts[np.argmax(s)].tolist(),  # bottom-right (largest sum)
+                ]
     
-    # Find outermost vertical lines (left and right of court)
-    left_x = min(l[0] for l in v_lines[:4])
-    right_x = max(l[1] for l in v_lines[:4])
+    # ── Stage 2: HoughLinesP edge detection (fallback) ──
+    if corners is None:
+        blur = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blur, 30, 100, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80,
+                                minLineLength=min(h, w) * 0.25, maxLineGap=20)
+        
+        if lines is not None and len(lines) >= 4:
+            h_lines = []
+            v_lines = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if abs(angle) < 30:
+                    h_lines.append((min(y1, y2), max(y1, y2), min(x1, x2), max(x1, x2), length))
+                elif abs(abs(angle) - 90) < 30:
+                    v_lines.append((min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2), length))
+            
+            if len(h_lines) >= 2 and len(v_lines) >= 2:
+                h_lines.sort(key=lambda l: l[4], reverse=True)
+                v_lines.sort(key=lambda l: l[4], reverse=True)
+                top_y = min(l[0] for l in h_lines[:4])
+                bot_y = max(l[1] for l in h_lines[:4])
+                left_x = min(l[0] for l in v_lines[:4])
+                right_x = max(l[1] for l in v_lines[:4])
+                
+                court_w = right_x - left_x
+                court_h = bot_y - top_y
+                if court_w > w * 0.2 and court_h > h * 0.2 and court_w < w * 0.95 and court_h < h * 0.95:
+                    corners = [[left_x, bot_y], [right_x, bot_y], [left_x, top_y], [right_x, top_y]]
     
-    # Validate: court should be reasonable size (>20% of frame)
-    court_w = right_x - left_x
-    court_h = bot_y - top_y
-    if court_w < w * 0.2 or court_h < h * 0.2:
-        return None
-    if court_w > w * 0.95 or court_h > h * 0.95:
-        return None
+    # ── Validate corners ──
+    if corners is not None:
+        # Check aspect ratio (court is ~2.59:1 length:width)
+        pts = np.array(corners, dtype=np.float64)
+        top_w = np.linalg.norm(pts[2] - pts[3])
+        bot_w = np.linalg.norm(pts[0] - pts[1])
+        left_h = np.linalg.norm(pts[0] - pts[2])
+        right_h = np.linalg.norm(pts[1] - pts[3])
+        avg_w = (top_w + bot_w) / 2
+        avg_h = (left_h + right_h) / 2
+        
+        if avg_w > 0 and avg_h > 0:
+            aspect = max(avg_w, avg_h) / min(avg_w, avg_h)
+            # Badminton court aspect ratio is ~2.59 (13.4/5.18)
+            if 1.5 < aspect < 4.0:
+                return corners
     
-    # Return corners: bottom-left, bottom-right, top-left, top-right
-    return [[left_x, bot_y], [right_x, bot_y], [left_x, top_y], [right_x, top_y]]
+    # ── Stage 3: Return None (proportional fallback) ──
+    return None
+
+
+def compute_court_homography(corners_pixel):
+    """Compute homography mapping image pixels to court metres.
+    
+    corners_pixel: list of 4 points [bl, br, tl, tr] in image space
+    Returns: 3x3 homography matrix (image → court metres)
+    """
+    src = np.array(corners_pixel, dtype=np.float64)
+    dst = np.array([
+        COURT_MODEL["outer_bl"],
+        COURT_MODEL["outer_br"],
+        COURT_MODEL["outer_tl"],
+        COURT_MODEL["outer_tr"],
+    ], dtype=np.float64)
+    
+    H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+    return H
 
 
 def stage_court_detection(corners):
@@ -1881,6 +1963,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         print(f"  Using proportional corners: {corners}")
     
     court = stage_court_detection(corners)
+    court["homography"] = compute_court_homography(corners)
     print("  Done")
 
     # Initialize ML models
