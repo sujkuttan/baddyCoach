@@ -1737,7 +1737,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
 def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
-                   all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0):
+                   all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0,
+                   pose_estimator_secondary=None, all_pose_secondary=None):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
@@ -1802,6 +1803,16 @@ def _process_batch(frames, global_indices, batch_start_offset,
         kps_batch = pose_estimator.estimate_batch(crops)
         for j, (global_idx, pid, _, _) in enumerate(chunk):
             all_pose.append({"frame": global_idx, "player_id": pid, "keypoints": kps_batch[j].tolist()})
+
+    # Secondary pose estimation (for hybrid mode)
+    if pose_estimator_secondary is not None and all_pose_secondary is not None:
+        tqdm.write(f"{tag} | Secondary RTMPose estimation ({len(crop_list)} crops)...")
+        for crop_chunk_start in range(0, len(crop_list), BATCH_CHUNK):
+            chunk = crop_list[crop_chunk_start:crop_chunk_start + BATCH_CHUNK]
+            crops = [(c[2], c[3]) for c in chunk]
+            kps_secondary = pose_estimator_secondary.estimate_batch(crops)
+            for j, (global_idx, pid, _, _) in enumerate(chunk):
+                all_pose_secondary.append({"frame": global_idx, "player_id": pid, "keypoints": kps_secondary[j].tolist()})
 
     tqdm.write(f"{tag} done | Shuttle: {len(all_shuttle)} | Players: {len(all_player_detections)} | Pose: {len(all_pose)}")
     if device == "cuda":
