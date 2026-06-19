@@ -13,6 +13,7 @@ Requirements:
 import argparse
 import gc
 import json
+from collections import deque
 import os
 import sys
 import time
@@ -845,21 +846,160 @@ def detect_court_from_frame(frame):
     return None
 
 
+# ─── PRD §2.5: Per-frame homography with reprojection error ─────────────────
+
+CORNER_NAMES = ["outer_bl", "outer_br", "outer_tl", "outer_tr"]
+
+def compute_homography(image_corners, min_points=4):
+    """Compute homography mapping image pixels → court metres with reprojection error.
+    
+    image_corners: dict {name: (u, v)} or list of 4 points [bl, br, tl, tr]
+    Returns: (H, reproj_err_m, n_used) or (None, inf, 0)
+    """
+    if isinstance(image_corners, list):
+        if len(image_corners) < min_points:
+            return None, float("inf"), 0
+        src = np.array(image_corners[:4], dtype=np.float64)
+        dst = np.array([
+            COURT_MODEL["outer_bl"], COURT_MODEL["outer_br"],
+            COURT_MODEL["outer_tl"], COURT_MODEL["outer_tr"],
+        ], dtype=np.float64)
+    elif isinstance(image_corners, dict):
+        names = [n for n in image_corners if n in COURT_MODEL]
+        if len(names) < min_points:
+            return None, float("inf"), 0
+        src = np.array([image_corners[n] for n in names], dtype=np.float64)
+        dst = np.array([COURT_MODEL[n] for n in names], dtype=np.float64)
+    else:
+        return None, float("inf"), 0
+
+    H, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransacReprojThreshold=5.0)
+    if H is None:
+        return None, float("inf"), 0
+
+    proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), H).reshape(-1, 2)
+    err_m = float(np.mean(np.linalg.norm(proj - dst, axis=1)))
+    return H, err_m, int(mask.sum()) if mask is not None else len(src)
+
+
+def image_to_court(H, uv):
+    """Project a single image point (u, v) to court metres (x, y)."""
+    pt = np.array([[uv]], dtype=np.float64)
+    out = cv2.perspectiveTransform(pt, H)
+    return float(out[0, 0, 0]), float(out[0, 0, 1])
+
+
+# ─── PRD §2.6: Temporal smoothing (handheld-critical) ──────────────────────
+
+ERR_GATE_M = 0.20  # reject frames with reproj error > 20cm
+
+class HomographySmoother:
+    """Smooths the FOUR outer court corners (in image space) over time,
+    then recomputes H from the smoothed corners. Robust to per-frame flicker.
+    
+    Uses median over window (robust to outliers) + EMA toward current frame.
+    """
+    def __init__(self, alpha=0.6, win=5):
+        self.alpha = alpha
+        self.win = win
+        self.buf = deque(maxlen=win)
+        self.last_valid_H = None
+
+    def update(self, corners_pixel, H_raw, reproj_err):
+        """Update smoother with new frame's detection.
+        
+        corners_pixel: list of 4 points [bl, br, tl, tr] or None
+        H_raw: raw homography from detection (may be None)
+        reproj_err: reprojection error in metres
+        
+        Returns: (H_smoothed, valid) — smoothed homography and validity flag
+        """
+        corners = np.array(corners_pixel, dtype=np.float64) if corners_pixel else None
+        
+        # Gate: reject if reproj error too high
+        if corners is None or reproj_err > ERR_GATE_M:
+            # Use last valid H if available
+            if self.last_valid_H is not None:
+                return self.last_valid_H, False
+            return None, False
+        
+        self.buf.append(corners)
+        
+        if len(self.buf) == 1:
+            smoothed_corners = corners
+        else:
+            med = np.median(np.stack(self.buf), axis=0)
+            smoothed_corners = self.alpha * med + (1 - self.alpha) * corners
+        
+        # Recompute H from smoothed corners
+        dst = np.array([
+            COURT_MODEL["outer_bl"], COURT_MODEL["outer_br"],
+            COURT_MODEL["outer_tl"], COURT_MODEL["outer_tr"],
+        ], dtype=np.float64)
+        H_smooth, _ = cv2.findHomography(smoothed_corners, dst, cv2.RANSAC, 5.0)
+        
+        if H_smooth is not None:
+            self.last_valid_H = H_smooth
+            return H_smooth, True
+        elif self.last_valid_H is not None:
+            return self.last_valid_H, False
+        return None, False
+
+
+# ─── PRD §2.3: Undistortion (optional, requires camera calibration) ────────
+
+def make_undistorter(K, dist, size):
+    """Create undistortion function from camera intrinsics.
+    
+    K: 3x3 intrinsics matrix
+    dist: distortion coefficients
+    size: (width, height)
+    
+    If camera not calibrated, return identity (no-op).
+    """
+    if K is None or dist is None:
+        return lambda frame: frame
+    
+    newK, _ = cv2.getOptimalNewCameraMatrix(K, dist, size, alpha=0)
+    mapx, mapy = cv2.initUndistortRectifyMap(K, dist, None, newK, size, cv2.CV_16SC2)
+    
+    def undistort(frame):
+        return cv2.remap(frame, mapx, mapy, cv2.INTER_LINEAR)
+    
+    return undistort
+
+
+# ─── PRD §2.7: Player foot point ───────────────────────────────────────────
+
+def foot_midpoint_from_pose(keypoints_xy, conf=None, conf_thr=0.3):
+    """COCO-17 ankles are indices 15 (left) and 16 (right).
+    Returns (u, v) midpoint of ankles, or None if both low-confidence."""
+    L_ANKLE, R_ANKLE = 15, 16
+    pts = []
+    for i in (L_ANKLE, R_ANKLE):
+        if conf is None or conf[i] >= conf_thr:
+            pts.append(keypoints_xy[i])
+    if not pts:
+        return None
+    pts = np.array(pts, dtype=np.float64)
+    return tuple(pts.mean(axis=0))
+
+
+def foot_point_from_bbox(bbox_xyxy):
+    """Fallback when pose is unavailable: bottom-center of the player box."""
+    x1, y1, x2, y2 = bbox_xyxy
+    return ((x1 + x2) / 2.0, float(y2))
+
+
+# ─── Legacy wrapper ─────────────────────────────────────────────────────────
+
 def compute_court_homography(corners_pixel):
-    """Compute homography mapping image pixels to court metres.
+    """Compute homography mapping image pixels to court metres (legacy wrapper).
     
     corners_pixel: list of 4 points [bl, br, tl, tr] in image space
     Returns: 3x3 homography matrix (image → court metres)
     """
-    src = np.array(corners_pixel, dtype=np.float64)
-    dst = np.array([
-        COURT_MODEL["outer_bl"],
-        COURT_MODEL["outer_br"],
-        COURT_MODEL["outer_tl"],
-        COURT_MODEL["outer_tr"],
-    ], dtype=np.float64)
-    
-    H, _ = cv2.findHomography(src, dst, cv2.RANSAC, 5.0)
+    H, _, _ = compute_homography(corners_pixel)
     return H
 
 
@@ -1475,10 +1615,29 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     return shots
 
 
-def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720):
+def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, pose_data=None):
+    """Assign player_id to shots using PRD §2.7 foot midpoint when available.
+    
+    Priority:
+    1. Foot midpoint from pose keypoints (ankles 15, 16)
+    2. Shuttle position relative to court midline
+    3. Default to player_1
+    """
     if not shots_data:
         return shots_data
     shuttle_df = pd.DataFrame(shuttle_data)
+
+    # Build pose lookup: frame → {player_id: keypoints}
+    pose_lookup = {}
+    if pose_data:
+        for p in pose_data:
+            frame = p["frame"]
+            pid = p.get("player_id", "player_1")
+            kps = np.array(p["keypoints"])
+            if kps.shape == (17, 3) and np.any(kps != 0):
+                if frame not in pose_lookup:
+                    pose_lookup[frame] = {}
+                pose_lookup[frame][pid] = kps
 
     if court and "corners_pixel" in court:
         corners = court["corners_pixel"]
@@ -1486,14 +1645,48 @@ def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720):
     else:
         court_mid_y = vid_h / 2
 
+    H = court.get("homography") if court else None
+
     for shot in shots_data:
         frame = shot["frame"]
+        
+        # PRD §2.7: Try foot midpoint from pose first
+        if frame in pose_lookup:
+            foot_positions = {}
+            for pid, kps in pose_lookup[frame].items():
+                foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
+                if foot is None:
+                    foot = foot_point_from_bbox([0, 0, vid_w, vid_h])  # fallback
+                foot_positions[pid] = foot
+            
+            if len(foot_positions) == 2:
+                pids = list(foot_positions.keys())
+                y1 = foot_positions[pids[0]][1]
+                y2 = foot_positions[pids[1]][1]
+                # Player with lower y (higher in image) is "far", higher y is "near"
+                if y1 > y2:
+                    shot["player_id"] = pids[0]
+                else:
+                    shot["player_id"] = pids[1]
+                # Project foot to court coordinates if homography available
+                if H is not None:
+                    foot = foot_positions[shot["player_id"]]
+                    try:
+                        cx, cy = image_to_court(H, foot)
+                        shot["court_x"] = round(cx, 3)
+                        shot["court_y"] = round(cy, 3)
+                    except Exception:
+                        pass
+                continue
+        
+        # Fallback: shuttle position relative to court midline
         shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
         if len(shuttle_row) > 0:
             sy = float(shuttle_row.iloc[0]["y"])
             shot["player_id"] = "player_1" if sy > court_mid_y else "player_2"
         else:
             shot["player_id"] = "player_1"
+    
     return shots_data
 
 
@@ -2047,6 +2240,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     # Initialize court keypoint detector (SoloShuttlePose model)
     court_kp_detector = CourtKeypointDetector(str(COURT_KP_MODEL_PATH), device=device)
     
+    # PRD §2.6: Initialize temporal smoother for handheld robustness
+    smoother = HomographySmoother(alpha=0.6, win=5)
+    
     cap = cv2.VideoCapture(str(video_path))
     ret, sample_frame = cap.read()
     cap.release()
@@ -2075,7 +2271,18 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         print(f"  Using proportional corners: {corners}")
     
     court = stage_court_detection(corners)
-    court["homography"] = compute_court_homography(corners)
+    
+    # PRD §2.5: Compute homography with reprojection error
+    H_raw, reproj_err, n_used = compute_homography(corners)
+    
+    # PRD §2.6: Apply temporal smoothing
+    H_smooth, valid = smoother.update(corners, H_raw, reproj_err)
+    
+    court["homography"] = H_smooth if H_smooth is not None else H_raw
+    court["reproj_err_m"] = reproj_err
+    court["valid"] = valid
+    court["detection_method"] = detection_method
+    print(f"  Homography reproj error: {reproj_err:.4f}m, valid: {valid}")
     print("  Done")
 
     # Initialize ML models
@@ -2252,7 +2459,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         else:
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
     shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
-    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h)
+    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h, pose_data=all_pose)
     print(f"  Classified {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
     print(f"    shots.parquet ({len(shots)} rows)")
