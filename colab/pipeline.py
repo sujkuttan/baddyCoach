@@ -1446,7 +1446,56 @@ def stage_tactical(shots_data):
     return tactical
 
 
-def stage_technical(shots_data):
+def _evaluate_shot(stroke_type, kps):
+    if kps.shape != (17, 3):
+        return 0.5
+    if stroke_type in ("smash", "clear"):
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
+    elif stroke_type == "net_shot":
+        knee = kps[13][:2]
+        hip = kps[11][:2]
+        lunge_depth = abs(knee[1] - hip[1])
+        return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
+    elif stroke_type == "drive":
+        elbow = kps[7][:2]
+        wrist = kps[9][:2]
+        arm_extension = abs(wrist[0] - elbow[0])
+        return min(1.0, max(0.0, arm_extension / 60.0 + 0.2))
+    elif stroke_type == "lift":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 120.0 + 0.4))
+    elif stroke_type == "drop":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 150.0 + 0.3))
+    elif stroke_type == "block":
+        wrist = kps[9][:2]
+        hip = kps[11][:2]
+        compactness = abs(wrist[1] - hip[1])
+        return min(1.0, max(0.0, compactness / 50.0 + 0.2))
+    elif stroke_type == "rush":
+        knee = kps[13][:2]
+        ankle = kps[15][:2]
+        lunge = abs(knee[1] - ankle[1])
+        return min(1.0, max(0.0, lunge / 40.0 + 0.3))
+    return 0.5
+
+
+def stage_technical(shots_data, pose_data=None):
+    pose_by_frame_pid = {}
+    if pose_data:
+        for p in pose_data:
+            key = (p["frame"], p.get("player_id", "player_1"))
+            kps = np.array(p["keypoints"])
+            if kps.shape == (17, 3) and np.any(kps != 0):
+                pose_by_frame_pid[key] = kps
+
     technical = {}
     for shot in shots_data:
         pid = shot.get("player_id", "player_1")
@@ -1454,10 +1503,18 @@ def stage_technical(shots_data):
             technical[pid] = {}
         st = shot["stroke_type"]
         if st not in technical[pid]:
-            technical[pid][st] = {"avg_score": 0.5, "shot_count": 0, "scores": []}
+            technical[pid][st] = {"avg_score": 0.0, "shot_count": 0, "scores": []}
+
+        kps = pose_by_frame_pid.get((shot["frame"], pid))
+        if kps is not None:
+            score = _evaluate_shot(st, kps)
+        else:
+            score = 0.5
         technical[pid][st]["shot_count"] += 1
-        technical[pid][st]["scores"].append(0.5)
-        technical[pid][st]["avg_score"] = 0.5
+        technical[pid][st]["scores"].append(round(score, 3))
+        technical[pid][st]["avg_score"] = round(
+            sum(technical[pid][st]["scores"]) / len(technical[pid][st]["scores"]), 3
+        )
     return technical
 
 
@@ -1947,7 +2004,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print("  Done")
 
     print("\n[13/14] Technical analytics...")
-    technical = stage_technical(shots)
+    technical = stage_technical(shots, pose_data=all_pose)
     print("  Done")
 
     print("\n[14/14] Coach recommendations...")
