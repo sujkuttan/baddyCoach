@@ -620,6 +620,67 @@ def frame_generator(video_path, sample_interval=3, target_fps=10):
 
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
+def detect_court_from_frame(frame):
+    """Detect badminton court outer boundary from a video frame using line detection.
+    
+    Returns list of 4 corner points [[x1,y1], [x2,y2], [x3,y3], [x4,y4]] 
+    ordered as bottom-left, bottom-right, top-left, top-right.
+    Falls back to proportional corners if detection fails.
+    """
+    h, w = frame.shape[:2]
+    
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    blur = cv2.GaussianBlur(gray, (5, 5), 0)
+    
+    # Adaptive threshold to handle varying lighting on court surface
+    edges = cv2.Canny(blur, 30, 100, apertureSize=3)
+    
+    # Detect lines
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80,
+                            minLineLength=min(h, w) * 0.25, maxLineGap=20)
+    
+    if lines is None or len(lines) < 4:
+        return None
+    
+    # Separate horizontal and vertical lines
+    h_lines = []
+    v_lines = []
+    for line in lines:
+        x1, y1, x2, y2 = line[0]
+        angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
+        length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+        if abs(angle) < 30:  # horizontal
+            h_lines.append((min(y1, y2), max(y1, y2), min(x1, x2), max(x1, x2), length))
+        elif abs(abs(angle) - 90) < 30:  # vertical
+            v_lines.append((min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2), length))
+    
+    if len(h_lines) < 2 or len(v_lines) < 2:
+        return None
+    
+    # Sort by length and take the longest lines (likely court boundary)
+    h_lines.sort(key=lambda l: l[4], reverse=True)
+    v_lines.sort(key=lambda l: l[4], reverse=True)
+    
+    # Find outermost horizontal lines (top and bottom of court)
+    top_y = min(l[0] for l in h_lines[:4])
+    bot_y = max(l[1] for l in h_lines[:4])
+    
+    # Find outermost vertical lines (left and right of court)
+    left_x = min(l[0] for l in v_lines[:4])
+    right_x = max(l[1] for l in v_lines[:4])
+    
+    # Validate: court should be reasonable size (>20% of frame)
+    court_w = right_x - left_x
+    court_h = bot_y - top_y
+    if court_w < w * 0.2 or court_h < h * 0.2:
+        return None
+    if court_w > w * 0.95 or court_h > h * 0.95:
+        return None
+    
+    # Return corners: bottom-left, bottom-right, top-left, top-right
+    return [[left_x, bot_y], [right_x, bot_y], [left_x, top_y], [right_x, top_y]]
+
+
 def stage_court_detection(corners):
     src = np.array(corners, dtype=np.float32)
     dst = np.array([[0, 0], [COURT_WIDTH, 0], [0, COURT_LENGTH], [COURT_WIDTH, COURT_LENGTH]], dtype=np.float32)
@@ -1798,13 +1859,27 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"  Sampling: every {sample_interval} frames -> ~{num_samples} frames ({target_fps:.0f}fps)")
     print(f"  Batch size: {BATCH_SIZE} frames")
 
-    # Court detection (no frames needed)
+    # Court detection from video frame
     print("\n[2/14] Court detection...")
-    margin_x = int(vid_w * 0.08)
-    court_top = int(vid_h * 0.28)
-    court_bottom = int(vid_h * 0.72)
-    corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
-               (margin_x, court_top), (vid_w - margin_x, court_top)]
+    cap = cv2.VideoCapture(str(video_path))
+    ret, sample_frame = cap.read()
+    cap.release()
+    
+    detected_corners = None
+    if ret and sample_frame is not None:
+        detected_corners = detect_court_from_frame(sample_frame)
+    
+    if detected_corners:
+        corners = detected_corners
+        print(f"  Detected court corners: {corners}")
+    else:
+        margin_x = int(vid_w * 0.08)
+        court_top = int(vid_h * 0.28)
+        court_bottom = int(vid_h * 0.72)
+        corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
+                   (margin_x, court_top), (vid_w - margin_x, court_top)]
+        print(f"  Using proportional corners: {corners}")
+    
     court = stage_court_detection(corners)
     print("  Done")
 
