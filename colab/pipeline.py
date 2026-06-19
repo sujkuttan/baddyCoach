@@ -46,30 +46,157 @@ STROKE_CLASSES = [
 ]
 
 RULES = [
+    # ─── Tactical Rules ────────────────────────────────────────
     {"name": "smash_efficiency",
-     "check": {"field": "tactical.shot_distribution.smash", "operator": "<", "threshold": 0.3, "min_shots": "tactical.total_shots >= 10"},
-     "recommendation": "Your smash conversion rate is low. Focus on placement over power.",
-     "category": "weakness", "drill": "Practice targeted smashes to designated court zones."},
-    {"name": "recovery_speed",
-     "check": {"field": "footwork.avg_recovery", "operator": ">", "threshold": 1.2},
-     "recommendation": "Recovery after shots is slower than optimal. Work on split-step timing.",
-     "category": "weakness", "drill": "Shadow footwork drills: return to base after each shot."},
-    {"name": "shot_variety",
-     "check": {"field": "tactical.max_shot_percentage", "operator": ">", "threshold": 0.5, "min_shots": "tactical.total_shots >= 20"},
-     "recommendation": "Shot selection is predictable. Vary your attack.",
-     "category": "weakness", "drill": "Rally drills: alternate clear/drop/net each shot."},
-    {"name": "fatigue_management",
-     "check": {"field": "fitness.fatigue_trend", "operator": "==", "value": "declining"},
-     "recommendation": "Performance declines in later rallies. Improve match fitness.",
-     "category": "weakness", "drill": "Interval training: 12x (30s high intensity + 30s rest)."},
-    {"name": "net_play_strength",
+     "check": {"field": "tactical.shot_distribution.smash", "operator": "<", "threshold": 0.08, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Smash usage is below 8% ({tactical.shot_distribution.smash:.1%}). Smashes are your primary attacking weapon — use them more when opponents return high.",
+     "category": "weakness", "drill": "Feed drills: partner lifts to rear court, practice 10 smashes to each corner.",
+     "context_fields": ["tactical.shot_distribution.smash", "tactical.total_shots"]},
+
+    {"name": "smash_strength",
+     "check": {"field": "tactical.shot_distribution.smash", "operator": ">", "threshold": 0.15, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Excellent smash frequency ({tactical.shot_distribution.smash:.1%}) — maintaining attacking pressure.",
+     "category": "strength", "context_fields": ["tactical.shot_distribution.smash"]},
+
+    {"name": "shot_variety_predictable",
+     "check": {"field": "tactical.max_shot_percentage", "operator": ">", "threshold": 0.45, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Shot selection is predictable — dominant stroke accounts for {tactical.max_shot_percentage:.1%} of shots. Opponents can read your patterns.",
+     "category": "weakness", "drill": "Pattern-breaking drill: after 2 identical shots, forced switch to a different stroke.",
+     "context_fields": ["tactical.max_shot_percentage"]},
+
+    {"name": "shot_variety_good",
+     "check": {"field": "tactical.max_shot_percentage", "operator": "<", "threshold": 0.3, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Good shot variety — no single stroke dominates. This keeps opponents guessing.",
+     "category": "strength"},
+
+    {"name": "net_play_dominant",
      "check": {"field": "tactical.shot_distribution.net_shot", "operator": ">", "threshold": 0.2, "min_shots": "tactical.total_shots >= 10"},
-     "recommendation": "Strong net play presence. Use this to set up attacking opportunities.",
-     "category": "strength", "drill": "Maintain net dominance with variation."},
-    {"name": "clear_usage",
+     "recommendation": "Strong net play ({tactical.shot_distribution.net_shot:.1%}) — use this to force lifts and create smash opportunities.",
+     "category": "strength", "context_fields": ["tactical.shot_distribution.net_shot"]},
+
+    {"name": "net_play_weak",
+     "check": {"field": "tactical.shot_distribution.net_shot", "operator": "<", "threshold": 0.05, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Net shots are rare ({tactical.shot_distribution.net_shot:.1%}). Improve front court presence to control rallies.",
+     "category": "weakness", "drill": "Net kill drills: partner feeds to net, practice tight spinning net shots.",
+     "context_fields": ["tactical.shot_distribution.net_shot"]},
+
+    {"name": "clear_heavy",
      "check": {"field": "tactical.shot_distribution.clear", "operator": ">", "threshold": 0.35, "min_shots": "tactical.total_shots >= 10"},
-     "recommendation": "Heavy use of clears — mix with drops and smashes.",
-     "category": "neutral", "drill": "Clear-drop combination drills from rear court."},
+     "recommendation": "Heavy reliance on clears ({tactical.shot_distribution.clear:.1%}) — mix with drops and smashes to vary pace.",
+     "category": "weakness", "drill": "Clear-drop combination: alternate clear and drop from rear court.",
+     "context_fields": ["tactical.shot_distribution.clear"]},
+
+    {"name": "drop_shot_effective",
+     "check": {"field": "tactical.shot_distribution.drop", "operator": ">", "threshold": 0.12, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Good use of drop shots ({tactical.shot_distribution.drop:.1%}) — keeps opponents off balance.",
+     "category": "strength", "context_fields": ["tactical.shot_distribution.drop"]},
+
+    {"name": "drive_effective",
+     "check": {"field": "tactical.shot_distribution.drive", "operator": ">", "threshold": 0.15, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Strong drive game ({tactical.shot_distribution.drive:.1%}) — flat exchanges keep pressure on opponents.",
+     "category": "strength", "context_fields": ["tactical.shot_distribution.drive"]},
+
+    {"name": "rush_game",
+     "check": {"field": "tactical.shot_distribution.rush", "operator": ">", "threshold": 0.1, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Active rush game ({tactical.shot_distribution.rush:.1%}) — taking the shuttle early creates time pressure.",
+     "category": "strength", "context_fields": ["tactical.shot_distribution.rush"]},
+
+    # ─── Fitness Rules ─────────────────────────────────────────
+    {"name": "fatigue_declining",
+     "check": {"field": "fitness.fatigue_trend", "operator": "==", "value": "declining"},
+     "recommendation": "Performance declines in later rallies (fatigue trend: declining). Late-match intensity drops by {fitness.late_rally_fatigue:.0%}.",
+     "category": "weakness", "drill": "Interval training: 12x (30s high intensity + 30s rest). Simulate match demands.",
+     "context_fields": ["fitness.late_rally_fatigue", "fitness.peak_intensity"]},
+
+    {"name": "fatigue_improving",
+     "check": {"field": "fitness.fatigue_trend", "operator": "==", "value": "improving"},
+     "recommendation": "Great stamina — performance improves in later rallies. You outlast opponents.",
+     "category": "strength", "context_fields": ["fitness.late_rally_fatigue"]},
+
+    {"name": "low_intensity",
+     "check": {"field": "fitness.rally_intensity", "operator": "<", "threshold": 1.0, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Rally intensity is low ({fitness.rally_intensity:.2f} shots/sec). Increase pace to pressure opponents.",
+     "category": "weakness", "drill": "Speed rallies: 50-shot rallies at maximum pace.",
+     "context_fields": ["fitness.rally_intensity"]},
+
+    {"name": "high_intensity",
+     "check": {"field": "fitness.peak_intensity", "operator": ">", "threshold": 3.0, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "High peak intensity ({fitness.peak_intensity:.2f} shots/sec) — explosive rallies when needed.",
+     "category": "strength", "context_fields": ["fitness.peak_intensity"]},
+
+    {"name": "distance_low",
+     "check": {"field": "fitness.total_distance", "operator": "<", "threshold": 100000, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Court coverage is limited ({fitness.total_distance:.0f} units). Work on movement to reach more shots.",
+     "category": "weakness", "drill": "6-corner footwork: shadow movement to all court positions.",
+     "context_fields": ["fitness.total_distance"]},
+
+    {"name": "distance_high",
+     "check": {"field": "fitness.total_distance", "operator": ">", "threshold": 300000, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Excellent court coverage ({fitness.total_distance:.0f} units) — you cover the full court effectively.",
+     "category": "strength", "context_fields": ["fitness.total_distance"]},
+
+    # ─── Footwork Rules ────────────────────────────────────────
+    {"name": "recovery_slow",
+     "check": {"field": "footwork.avg_recovery", "operator": ">", "threshold": 1.5},
+     "recommendation": "Recovery to base takes {footwork.avg_recovery:.1f} frames on average. Work on split-step timing.",
+     "category": "weakness", "drill": "Split-step practice: bounce on toes, explode to shuttle on opponent's hit.",
+     "context_fields": ["footwork.avg_recovery"]},
+
+    {"name": "recovery_fast",
+     "check": {"field": "footwork.avg_recovery", "operator": "<", "threshold": 0.5, "min_shots": "tactical.total_shots >= 10"},
+     "recommendation": "Quick recovery ({footwork.avg_recovery:.1f} frames) — you reset well between shots.",
+     "category": "strength", "context_fields": ["footwork.avg_recovery"]},
+
+    # ─── Rally Rules ───────────────────────────────────────────
+    {"name": "short_rallies",
+     "check": {"field": "rally_stats.avg_length", "operator": "<", "threshold": 5.0, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Average rally length is {rally_stats.avg_length:.1f} shots. Opponents end rallies quickly — work on sustaining pressure.",
+     "category": "weakness", "drill": "Patience drill: cannot smash until rally reaches 8 shots.",
+     "context_fields": ["rally_stats.avg_length"]},
+
+    {"name": "long_rallies",
+     "check": {"field": "rally_stats.avg_length", "operator": ">", "threshold": 12.0, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Long rallies (avg {rally_stats.avg_length:.1f} shots) — you control tempo well.",
+     "category": "strength", "context_fields": ["rally_stats.avg_length"]},
+
+    {"name": "first_shot_winner",
+     "check": {"field": "rally_stats.first_shot_win_rate", "operator": ">", "threshold": 0.3, "min_shots": "tactical.total_shots >= 20"},
+     "recommendation": "Strong opening shots — {rally_stats.first_shot_win_rate:.0%} of rallies won on first shot.",
+     "category": "strength", "context_fields": ["rally_stats.first_shot_win_rate"]},
+
+    # ─── Court Position Rules ──────────────────────────────────
+    {"name": "front_court_weak",
+     "check": {"field": "court_analysis.front_pct", "operator": "<", "threshold": 0.2, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Limited front court presence ({court_analysis.front_pct:.1%}). Move forward to intercept and pressure.",
+     "category": "weakness", "drill": "Net approaches: practice moving from base to net after clears.",
+     "context_fields": ["court_analysis.front_pct"]},
+
+    {"name": "rear_court_dominant",
+     "check": {"field": "court_analysis.rear_pct", "operator": ">", "threshold": 0.6, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Spending {court_analysis.rear_pct:.1%} of time in rear court — opponents are pushing you back.",
+     "category": "weakness", "drill": "Counter-attack drills: practice attacking from rear court.",
+     "context_fields": ["court_analysis.rear_pct"]},
+
+    {"name": "balanced_court",
+     "check": {"field": "court_analysis.front_pct", "operator": ">", "threshold": 0.25, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Good court balance — front court presence at {court_analysis.front_pct:.1%} keeps opponents guessing.",
+     "category": "strength", "context_fields": ["court_analysis.front_pct"]},
+
+    # ─── Comparison Rules (player vs opponent) ─────────────────
+    {"name": "opponent_smash_weak",
+     "check": {"field": "opponent.smash_pct", "operator": "<", "threshold": 0.08, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Opponent rarely smashes ({opponent.smash_pct:.1%}). Expect clears and drops — position forward.",
+     "category": "insight", "context_fields": ["opponent.smash_pct"]},
+
+    {"name": "opponent_net_weak",
+     "check": {"field": "opponent.net_pct", "operator": "<", "threshold": 0.05, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Opponent avoids net play ({opponent.net_pct:.1%}). Push to net to force weak returns.",
+     "category": "insight", "context_fields": ["opponent.net_pct"]},
+
+    {"name": "opponent_clear_heavy",
+     "check": {"field": "opponent.clear_pct", "operator": ">", "threshold": 0.4, "min_shots": "tactical.total_shots >= 15"},
+     "recommendation": "Opponent relies heavily on clears ({opponent.clear_pct:.1%}). Anticipate deep shots and counter with drops.",
+     "category": "insight", "context_fields": ["opponent.clear_pct"]},
 ]
 
 
@@ -1270,19 +1397,52 @@ def stage_fitness(footwork_data, rallies_data, shots_data):
 
 
 def stage_tactical(shots_data):
+    """Compute tactical analytics with sequence patterns."""
     tactical = {}
     for shot in shots_data:
         pid = shot.get("player_id", "player_1")
         if pid not in tactical:
-            tactical[pid] = {"shot_distribution": Counter(), "total_shots": 0, "common_patterns": [], "unique_strokes": []}
+            tactical[pid] = {"shot_distribution": Counter(), "total_shots": 0,
+                           "common_patterns": [], "unique_strokes": [],
+                           "rally_openers": Counter(), "rally_enders": Counter()}
         tactical[pid]["shot_distribution"][shot["stroke_type"]] += 1
         tactical[pid]["total_shots"] += 1
+
+    shots_by_player = {}
+    for shot in shots_data:
+        pid = shot.get("player_id", "player_1")
+        if pid not in shots_by_player:
+            shots_by_player[pid] = []
+        shots_by_player[pid].append(shot["stroke_type"])
+
     for pid in tactical:
         total = tactical[pid]["total_shots"]
         tactical[pid]["shot_distribution"] = {k: v/total for k, v in tactical[pid]["shot_distribution"].items()}
-        seq = [s["stroke_type"] for s in shots_data if s.get("player_id") == pid]
-        tactical[pid]["common_patterns"] = [{"pattern": " -> ".join(seq[i:i+3]), "count": 1} for i in range(min(len(seq)-2, 5))]
+        seq = shots_by_player.get(pid, [])
+
+        patterns = Counter()
+        for i in range(len(seq) - 2):
+            pattern = f"{seq[i]} -> {seq[i+1]} -> {seq[i+2]}"
+            patterns[pattern] += 1
+        tactical[pid]["common_patterns"] = [
+            {"pattern": p, "count": c} for p, c in patterns.most_common(5)
+        ]
+
         tactical[pid]["unique_strokes"] = list(tactical[pid]["shot_distribution"].keys())
+
+        from collections import defaultdict
+        rally_shots = defaultdict(list)
+        for shot in shots_data:
+            if shot.get("player_id") == pid and shot.get("rally_id") is not None:
+                rally_shots[shot["rally_id"]].append(shot["stroke_type"])
+        for rally_id, strokes in rally_shots.items():
+            if strokes:
+                tactical[pid]["rally_openers"][strokes[0]] += 1
+                tactical[pid]["rally_enders"][strokes[-1]] += 1
+
+        tactical[pid]["rally_openers"] = dict(tactical[pid]["rally_openers"])
+        tactical[pid]["rally_enders"] = dict(tactical[pid]["rally_enders"])
+
     return tactical
 
 
@@ -1301,14 +1461,81 @@ def stage_technical(shots_data):
     return technical
 
 
-def stage_coach(tactical, fitness, footwork):
-    """Generate coaching recommendations using dot-notation rules."""
+def stage_rally_stats(shots_data, rallies_data):
+    """Compute rally-level statistics for coaching."""
+    stats = {"avg_length": 0, "max_length": 0, "min_length": 0,
+             "first_shot_win_rate": 0, "long_rally_pct": 0}
+    if not rallies_data or not shots_data:
+        return stats
+
+    lengths = [r["shot_count"] for r in rallies_data]
+    stats["avg_length"] = float(np.mean(lengths))
+    stats["max_length"] = max(lengths)
+    stats["min_length"] = min(lengths)
+    stats["long_rally_pct"] = float(sum(1 for l in lengths if l > 8) / len(lengths))
+
+    shots_df = pd.DataFrame(shots_data)
+    first_shot_wins = 0
+    for rally in rallies_data:
+        rally_shots = shots_df[(shots_df["frame"] >= rally["start_frame"]) &
+                               (shots_df["frame"] <= rally["end_frame"])]
+        if len(rally_shots) >= 2:
+            first_player = rally_shots.iloc[0].get("player_id")
+            last_player = rally_shots.iloc[-1].get("player_id")
+            if first_player == last_player:
+                first_shot_wins += 1
+    stats["first_shot_win_rate"] = float(first_shot_wins / len(rallies_data)) if rallies_data else 0
+
+    return stats
+
+
+def stage_court_analysis(court_analytics, shots_data):
+    """Analyze court zone distribution for coaching."""
+    transitions = court_analytics.get("zone_transitions", [])
+    if not transitions:
+        return {"front_pct": 0, "mid_pct": 0, "rear_pct": 0, "left_pct": 0, "right_pct": 0}
+
+    total = len(transitions)
+    front = sum(1 for t in transitions if "front" in t.get("zone", ""))
+    mid = sum(1 for t in transitions if "mid" in t.get("zone", ""))
+    rear = sum(1 for t in transitions if "rear" in t.get("zone", ""))
+    left = sum(1 for t in transitions if "left" in t.get("zone", ""))
+    right = sum(1 for t in transitions if "right" in t.get("zone", ""))
+
+    return {
+        "front_pct": float(front / total),
+        "mid_pct": float(mid / total),
+        "rear_pct": float(rear / total),
+        "left_pct": float(left / total),
+        "right_pct": float(right / total),
+    }
+
+
+def stage_coach(tactical, fitness, footwork, rallies=None, court_analytics=None, shots_data=None):
+    """Generate context-aware coaching recommendations using all analytics."""
     strengths_set = set()
     weaknesses_set = set()
     improvements = []
     drills = []
     evidence = []
-    
+
+    rally_stats = stage_rally_stats(shots_data or [], rallies or [])
+    court_analysis = stage_court_analysis(court_analytics or {}, shots_data or [])
+
+    player_ids = list(tactical.keys())
+    opponent_data = {}
+    for pid in player_ids:
+        opp_ids = [p for p in player_ids if p != pid]
+        if opp_ids:
+            opp_tactical = tactical.get(opp_ids[0], {})
+            opp_dist = opp_tactical.get("shot_distribution", {})
+            opponent_data[pid] = {
+                "smash_pct": opp_dist.get("smash", 0),
+                "net_pct": opp_dist.get("net_shot", 0),
+                "clear_pct": opp_dist.get("clear", 0),
+                "total_shots": opp_tactical.get("total_shots", 0),
+            }
+
     def get_nested(data, path):
         keys = path.split(".")
         current = data
@@ -1326,7 +1553,7 @@ def stage_coach(tactical, fitness, footwork):
             else:
                 return 0
         return current if current is not None else 0
-    
+
     def compare(actual, op, expected):
         try:
             actual, expected = float(actual), float(expected)
@@ -1339,7 +1566,7 @@ def stage_coach(tactical, fitness, footwork):
         elif op == "==": return actual == expected
         elif op == "!=": return actual != expected
         return False
-    
+
     def evaluate_condition(expr, analytics):
         parts = expr.split()
         if len(parts) != 3:
@@ -1350,7 +1577,7 @@ def stage_coach(tactical, fitness, footwork):
         except ValueError:
             return False
         return compare(get_nested(analytics, field_path), op, val)
-    
+
     def evaluate_rule(rule, analytics):
         check = rule.get("check", {})
         if not check:
@@ -1364,42 +1591,84 @@ def stage_coach(tactical, fitness, footwork):
         if not field_path or not op:
             return False
         return compare(get_nested(analytics, field_path), op, threshold)
-    
+
+    def format_recommendation(template, analytics):
+        """Format recommendation template with actual values."""
+        try:
+            import re
+            fields = re.findall(r'\{(\w+(?:\.\w+)*)\}', template)
+            values = {}
+            for field in fields:
+                val = get_nested(analytics, field)
+                if isinstance(val, float):
+                    values[field] = val
+                else:
+                    values[field] = val
+            return template.format(**values)
+        except (KeyError, ValueError, IndexError):
+            return template
+
     for pid in set(list(tactical.keys()) + list(fitness.keys())):
         player_analytics = {
             "tactical": tactical.get(pid, {}),
             "fitness": fitness.get(pid, {}),
             "footwork": footwork.get(pid, {}),
+            "rally_stats": rally_stats,
+            "court_analysis": court_analysis,
+            "opponent": opponent_data.get(pid, {}),
         }
-        
+
         tactical_data = player_analytics["tactical"]
         if tactical_data:
             shot_dist = tactical_data.get("shot_distribution", {})
             tactical_data["max_shot_percentage"] = max(shot_dist.values()) if shot_dist else 0
-        
+
+        fitness_data = player_analytics["fitness"]
+        if fitness_data:
+            fitness_data["intensity"] = fitness_data.get("rally_intensity", 0)
+            fitness_data["peak"] = fitness_data.get("peak_intensity", 0)
+            fitness_data["distance"] = fitness_data.get("total_distance", 0)
+
+        footwork_data = player_analytics["footwork"]
+        if footwork_data:
+            footwork_data["recovery"] = footwork_data.get("avg_recovery", 0)
+
         total = tactical_data.get("total_shots", 0)
-        
+
         for rule in RULES:
             try:
                 if evaluate_rule(rule, player_analytics):
-                    rec = rule["recommendation"]
-                    entry = {"finding": rec, "metrics": [f"player: {pid}", f"total shots: {total}"]}
+                    rec = format_recommendation(rule["recommendation"], player_analytics)
+                    rec_with_player = f"[{pid}] {rec}"
+                    entry = {
+                        "finding": rec_with_player,
+                        "metrics": [f"player: {pid}", f"total shots: {total}"],
+                    }
+                    for cf in rule.get("context_fields", []):
+                        val = get_nested(player_analytics, cf)
+                        if isinstance(val, float):
+                            entry["metrics"].append(f"{cf}: {val:.3f}")
                     evidence.append(entry)
+
                     if rule["category"] == "strength":
-                        if rec not in strengths_set:
-                            strengths_set.add(rec)
+                        if rec_with_player not in strengths_set:
+                            strengths_set.add(rec_with_player)
                     elif rule["category"] == "weakness":
-                        if rec not in weaknesses_set:
-                            weaknesses_set.add(rec)
-                            improvements.append(rec)
+                        if rec_with_player not in weaknesses_set:
+                            weaknesses_set.add(rec_with_player)
+                            improvements.append(rec_with_player)
                             drills.append(rule.get("drill", ""))
+                    elif rule["category"] == "insight":
+                        if rec_with_player not in weaknesses_set:
+                            weaknesses_set.add(rec_with_player)
             except Exception:
                 continue
-    
+
     strengths = list(strengths_set)
     weaknesses = list(weaknesses_set)
     return {"strengths": strengths, "weaknesses": weaknesses,
-            "top_3_improvements": improvements[:3], "recommended_drills": drills[:3], "evidence": evidence}
+            "top_3_improvements": improvements[:3], "recommended_drills": drills[:3],
+            "evidence": evidence, "rally_stats": rally_stats}
 
 
 def generate_report(court, players, shuttle, pose, hits, shots, rallies,
@@ -1427,6 +1696,7 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
         "strengths": coach["strengths"], "weaknesses": coach["weaknesses"],
         "top_3_improvements": coach["top_3_improvements"],
         "recommended_drills": coach["recommended_drills"], "evidence": coach["evidence"],
+        "rally_stats": coach.get("rally_stats", {}),
         "rallies": rallies, "shot_count": len(shots),
         "shots": shots_with_ts,
     }
@@ -1681,7 +1951,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print("  Done")
 
     print("\n[14/14] Coach recommendations...")
-    coach = stage_coach(tactical, fitness, footwork)
+    coach = stage_coach(tactical, fitness, footwork, rallies=rallies,
+                        court_analytics=court_analytics, shots_data=shots)
     print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
 
     report = generate_report(court, players_data, all_shuttle, all_pose, hits, shots, rallies,
