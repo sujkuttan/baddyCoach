@@ -532,8 +532,17 @@ class CourtKeypointDetector:
         
         # Take the detection with highest score
         kps = kps_list[0].detach().cpu().numpy()
-        # Each keypoint is [x, y, confidence], take first 6 keypoints
-        # Fixed order: 0=tl, 1=tr, 2=ml, 3=mr, 4=bl, 5=br
+        
+        # Debug: print all keypoints to understand model output
+        print(f"  Court KP model outputs {len(kps)} keypoints:")
+        for i, kp in enumerate(kps):
+            print(f"    KP {i}: [{kp[0]:.0f}, {kp[1]:.0f}] conf={kp[2]:.3f}")
+        
+        # The model outputs court keypoints in a fixed order.
+        # From SoloShuttlePose source, the 6 court keypoints are:
+        # 0=top-left, 1=top-right, 2=mid-left, 3=mid-right, 4=bot-left, 5=bot-right
+        # But some models may output all 17 COCO keypoints.
+        # Take the first 6 for court corners.
         points = [[int(kps[i][0]), int(kps[i][1])] for i in range(min(6, len(kps)))]
         
         if len(points) < 6:
