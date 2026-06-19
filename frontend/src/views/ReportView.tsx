@@ -260,6 +260,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                     improvements={report.top_3_improvements || []}
                     drills={report.recommended_drills || []}
                     evidence={report.evidence || []}
+                    rallyStats={report.rally_stats}
                   />
                 </div>
               </div>

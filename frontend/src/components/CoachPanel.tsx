@@ -5,19 +5,54 @@ interface Evidence {
   metrics: string[];
 }
 
+interface RallyStats {
+  avg_length: number;
+  max_length: number;
+  first_shot_win_rate: number;
+}
+
 interface CoachPanelProps {
   strengths: string[];
   weaknesses: string[];
   improvements: string[];
   drills: string[];
   evidence: Evidence[];
+  rallyStats?: RallyStats;
 }
 
-export function CoachPanel({ strengths, weaknesses, drills, evidence }: CoachPanelProps) {
+export function CoachPanel({ strengths, weaknesses, drills, evidence, rallyStats }: CoachPanelProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   return (
     <div className="space-y-8">
+      {/* Rally Stats Summary */}
+      {rallyStats && rallyStats.avg_length > 0 && (
+        <div className="animate-entrance" style={{ animationDelay: '0ms' }}>
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-6 h-6 rounded-md bg-shuttle-lime/15 flex items-center justify-center">
+              <svg className="w-3.5 h-3.5 text-shuttle-lime" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+              </svg>
+            </div>
+            <h3 className="font-display text-xl text-shuttle-lime tracking-wide">RALLY INSIGHTS</h3>
+          </div>
+          <div className="grid grid-cols-3 gap-4">
+            <div className="px-4 py-3 rounded-xl bg-court-surface border border-court-border text-center">
+              <div className="font-mono text-2xl text-text-primary">{rallyStats.avg_length.toFixed(1)}</div>
+              <div className="font-body text-xs text-text-muted mt-1">Avg Rally Length</div>
+            </div>
+            <div className="px-4 py-3 rounded-xl bg-court-surface border border-court-border text-center">
+              <div className="font-mono text-2xl text-text-primary">{rallyStats.max_length}</div>
+              <div className="font-body text-xs text-text-muted mt-1">Longest Rally</div>
+            </div>
+            <div className="px-4 py-3 rounded-xl bg-court-surface border border-court-border text-center">
+              <div className="font-mono text-2xl text-shuttle-lime">{(rallyStats.first_shot_win_rate * 100).toFixed(0)}%</div>
+              <div className="font-body text-xs text-text-muted mt-1">First Shot Win</div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Strengths */}
       {strengths.length > 0 && (
         <div className="animate-entrance" style={{ animationDelay: '100ms' }}>
@@ -63,7 +98,7 @@ export function CoachPanel({ strengths, weaknesses, drills, evidence }: CoachPan
       )}
 
       {/* Recommended Drills */}
-      {drills.length > 0 && (
+      {drills.length > 0 && drills.some(d => d) && (
         <div className="animate-entrance" style={{ animationDelay: '300ms' }}>
           <div className="flex items-center gap-2 mb-3">
             <div className="w-6 h-6 rounded-md bg-shuttle-lime/15 flex items-center justify-center">
@@ -74,7 +109,7 @@ export function CoachPanel({ strengths, weaknesses, drills, evidence }: CoachPan
             <h3 className="font-display text-xl text-shuttle-lime tracking-wide">RECOMMENDED DRILLS</h3>
           </div>
           <div className="space-y-2">
-            {drills.map((d, i) => (
+            {drills.filter(d => d).map((d, i) => (
               <div key={i} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-shuttle-lime/5 border border-shuttle-lime/10">
                 <div className="w-6 h-6 rounded-full bg-shuttle-lime/15 flex items-center justify-center flex-shrink-0 mt-0.5">
                   <span className="font-mono text-xs text-shuttle-lime font-semibold">{i + 1}</span>
