@@ -2,11 +2,12 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.court import image_to_court, foot_midpoint_from_pose, foot_point_from_bbox
 
 
 class PlayerAttributionStage:
     name = "player_attribution"
-    input_keys = ["shots", "shuttle", "players", "court"]
+    input_keys = ["shots", "shuttle", "players", "court", "pose"]
     output_keys = ["shots"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
@@ -17,6 +18,7 @@ class PlayerAttributionStage:
         shuttle_df = artifacts.get_parquet("shuttle")
         players_data = artifacts.get("players")
         court = artifacts.get("court") or {}
+        pose_df = artifacts.get_parquet("pose")
 
         if players_data is None:
             return StageResult.from_error("Player data required for attribution")
@@ -29,15 +31,66 @@ class PlayerAttributionStage:
         else:
             court_mid_y = 360
 
-        player_ids = list(players.keys())
+        # Build pose lookup: frame → {player_id: keypoints}
+        pose_lookup = {}
+        if pose_df is not None:
+            for _, row in pose_df.iterrows():
+                frame = int(row["frame"])
+                pid = row.get("player_id", "player_1")
+                kps = np.array(row["keypoints"].tolist()) if hasattr(row["keypoints"], 'tolist') else np.array(row["keypoints"])
+                if kps.shape == (17, 3) and np.any(kps != 0):
+                    if frame not in pose_lookup:
+                        pose_lookup[frame] = {}
+                    pose_lookup[frame][pid] = kps
+
+        H = None
+        if "homography" in court and court["homography"] is not None:
+            H = np.array(court["homography"])
+
         attributed = []
+        court_coords = []
 
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
+
+            # PRD §2.7: Try foot midpoint from pose first
+            if frame in pose_lookup:
+                foot_positions = {}
+                for pid, kps in pose_lookup[frame].items():
+                    foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
+                    if foot is None:
+                        foot = foot_point_from_bbox([0, 0, 1280, 720])
+                    foot_positions[pid] = foot
+
+                if len(foot_positions) == 2:
+                    pids = list(foot_positions.keys())
+                    y1 = foot_positions[pids[0]][1]
+                    y2 = foot_positions[pids[1]][1]
+                    player_id = pids[0] if y1 > y2 else pids[1]
+                    attributed.append(player_id)
+
+                    if H is not None:
+                        foot = foot_positions[player_id]
+                        try:
+                            cx, cy = image_to_court(H, foot)
+                            court_coords.append({"frame": frame, "court_x": round(cx, 3), "court_y": round(cy, 3)})
+                        except Exception:
+                            court_coords.append({"frame": frame, "court_x": None, "court_y": None})
+                    continue
+
+            # Fallback: shuttle position relative to court midline
             player_id = self._assign_player(frame, shuttle_df, players, court_mid_y)
             attributed.append(player_id)
+            court_coords.append({"frame": frame, "court_x": None, "court_y": None})
 
         shots_df["player_id"] = attributed
+
+        # Add court coordinates if available
+        if court_coords:
+            court_df = pd.DataFrame(court_coords)
+            if "court_x" not in shots_df.columns:
+                shots_df = shots_df.merge(court_df, on="frame", how="left")
+
         artifacts.set_parquet("shots", shots_df)
 
         counts = shots_df["player_id"].value_counts().to_dict()

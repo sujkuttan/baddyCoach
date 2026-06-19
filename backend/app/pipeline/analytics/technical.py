@@ -30,7 +30,8 @@ class TechnicalAnalyticsStage:
                     frame = int(shot["frame"])
                     pose_row = player_poses[player_poses["frame"] == frame]
                     if len(pose_row) > 0:
-                        score = self._evaluate_shot(shot["stroke_type"], pose_row.iloc[0])
+                        kps = np.array(pose_row.iloc[0]["keypoints"].tolist()) if hasattr(pose_row.iloc[0]["keypoints"], 'tolist') else np.array(pose_row.iloc[0]["keypoints"])
+                        score = _evaluate_shot(stroke_type, kps)
                         scores.append(score)
 
                 assessments[stroke_type] = {
@@ -48,22 +49,45 @@ class TechnicalAnalyticsStage:
             metadata={"technical_assessment": technical}
         )
 
-    @staticmethod
-    def _evaluate_shot(stroke_type: str, pose_row: pd.Series) -> float:
-        kps = np.array(pose_row["keypoints"].tolist())
-        if kps.shape != (17, 3):
-            return 0.5
 
-        if stroke_type in ("smash", "clear"):
-            shoulder = kps[5][:2]
-            wrist = kps[9][:2]
-            height_diff = shoulder[1] - wrist[1]
-            return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
-
-        elif stroke_type == "net_shot":
-            knee = kps[13][:2]
-            hip = kps[11][:2]
-            lunge_depth = abs(knee[1] - hip[1])
-            return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
-
+def _evaluate_shot(stroke_type, kps):
+    """Evaluate shot quality using pose keypoints (matches colab implementation)."""
+    if kps.shape != (17, 3):
         return 0.5
+
+    if stroke_type in ("smash", "clear"):
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
+    elif stroke_type == "net_shot":
+        knee = kps[13][:2]
+        hip = kps[11][:2]
+        lunge_depth = abs(knee[1] - hip[1])
+        return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
+    elif stroke_type == "drive":
+        elbow = kps[7][:2]
+        wrist = kps[9][:2]
+        arm_extension = abs(wrist[0] - elbow[0])
+        return min(1.0, max(0.0, arm_extension / 60.0 + 0.2))
+    elif stroke_type == "lift":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 120.0 + 0.4))
+    elif stroke_type == "drop":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 150.0 + 0.3))
+    elif stroke_type == "block":
+        wrist = kps[9][:2]
+        hip = kps[11][:2]
+        compactness = abs(wrist[1] - hip[1])
+        return min(1.0, max(0.0, compactness / 50.0 + 0.2))
+    elif stroke_type == "rush":
+        knee = kps[13][:2]
+        ankle = kps[15][:2]
+        lunge = abs(knee[1] - ankle[1])
+        return min(1.0, max(0.0, lunge / 40.0 + 0.3))
+    return 0.5
