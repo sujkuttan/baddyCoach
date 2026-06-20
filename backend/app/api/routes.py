@@ -260,3 +260,35 @@ async def stream_video(job_id: str):
         raise HTTPException(404, "Video not found")
 
     return FileResponse(video_path)
+
+
+@router.get("/shuttle-coach/analyze/{job_id}")
+async def analyze_shuttle_coach(job_id: str, question: str = None):
+    """Run shuttle-coach analysis on a completed job."""
+    import os
+    from app.shuttle_coach.engine import analyze, narrate
+
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    job_dir = settings.job_dir(job_id)
+    if not job_dir.exists():
+        raise HTTPException(404, "Job directory not found")
+
+    try:
+        result = analyze(str(job_dir))
+    except FileNotFoundError as e:
+        raise HTTPException(400, f"Missing parquet files: {e}")
+    except Exception as e:
+        raise HTTPException(500, f"Analysis failed: {e}")
+
+    if question and os.environ.get("GEMINI_API_KEY"):
+        try:
+            result["narration"] = narrate(
+                question, result["metrics"], os.environ["GEMINI_API_KEY"]
+            )
+        except Exception as e:
+            result["narration_error"] = str(e)
+
+    return result
