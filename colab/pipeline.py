@@ -1819,7 +1819,17 @@ def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
         return "clear"
 
 
-def stage_rallies(shots_data, gap_threshold=45, min_shots=3):
+def _infer_end_reason(stroke_type, confidence):
+    if stroke_type in ("smash", "drop") and confidence >= 0.6:
+        return "winner"
+    if stroke_type in ("net_shot",):
+        return "net"
+    if stroke_type in ("clear", "drive") and confidence < 0.4:
+        return "unforced_error"
+    return "forced_error"
+
+
+def stage_rallies(shots_data, gap_threshold=45, min_shots=3, fps=30, video_name=""):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])
@@ -1830,16 +1840,30 @@ def stage_rallies(shots_data, gap_threshold=45, min_shots=3):
     for i in range(1, len(shots_sorted)):
         if shots_sorted[i]["frame"] - shots_sorted[i-1]["frame"] > gap_threshold:
             if count >= min_shots:
-                rallies.append({"rally_id": rally_id, "start_frame": start,
-                              "end_frame": shots_sorted[i-1]["frame"], "shot_count": count})
+                rallies.append({
+                    "rally_id": rally_id,
+                    "match_id": video_name,
+                    "start_frame": start,
+                    "end_frame": shots_sorted[i-1]["frame"],
+                    "start_ts": round(start / fps, 3),
+                    "end_ts": round(shots_sorted[i-1]["frame"] / fps, 3),
+                    "shot_count": count,
+                })
                 rally_id += 1
             start = shots_sorted[i]["frame"]
             count = 1
         else:
             count += 1
     if count >= min_shots:
-        rallies.append({"rally_id": rally_id, "start_frame": start,
-                       "end_frame": shots_sorted[-1]["frame"], "shot_count": count})
+        rallies.append({
+            "rally_id": rally_id,
+            "match_id": video_name,
+            "start_frame": start,
+            "end_frame": shots_sorted[-1]["frame"],
+            "start_ts": round(start / fps, 3),
+            "end_ts": round(shots_sorted[-1]["frame"] / fps, 3),
+            "shot_count": count,
+        })
     return rallies
 
 
@@ -2280,10 +2304,11 @@ def generate_report(court, players, shuttle, pose, hits, shots, rallies,
 
     # Add timestamps to shots for UI
     shots_with_ts = []
-    for s in shots:
+    for shot_idx, s in enumerate(shots, 1):
         shots_with_ts.append({
+            "shot_id": shot_idx,
             "frame": s["frame"],
-            "timestamp": round(s["frame"] / fps, 2),
+            "start_ts": round(s["frame"] / fps, 3),
             "stroke_type": s["stroke_type"],
             "confidence": round(s.get("stroke_confidence", 0.5), 3),
             "player_id": s.get("player_id", "player_1"),
@@ -2546,9 +2571,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
     shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
     print(f"  Classified {len(shots)} shots")
+    for shot_idx, s in enumerate(shots, 1):
+        s["shot_id"] = shot_idx
+        s["start_ts"] = round(s["frame"] / video_fps, 3)
 
     print("\n[8/14] Rally segmentation...")
-    rallies = stage_rallies(shots)
+    rallies = stage_rallies(shots, fps=video_fps, video_name=video_name)
     print(f"  Segmented {len(rallies)} rallies")
     pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
     print(f"    rallies.parquet ({len(rallies)} rows)")
@@ -2565,6 +2593,24 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"  Attributed {len(shots)} shots")
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
     print(f"    shots.parquet ({len(shots)} rows)")
+
+    for rally in rallies:
+        rally_shots = [s for s in shots if s.get("rally_id") == rally["rally_id"]]
+        rally_shots.sort(key=lambda s: s["frame"])
+        if rally_shots:
+            last_shot = rally_shots[-1]
+            rally["end_reason"] = _infer_end_reason(
+                last_shot.get("stroke_type", "clear"),
+                last_shot.get("stroke_confidence", 0.5),
+            )
+            rally["winner_player_id"] = last_shot.get("player_id") if rally["end_reason"] == "winner" else None
+        else:
+            rally["winner_player_id"] = None
+            rally["end_reason"] = "unknown"
+        # NOTE: Alternating by rally parity is an approximation — real serve
+        # detection would require a dedicated model.
+        first_server = "player_1" if rally["rally_id"] % 2 == 1 else "player_2"
+        rally["serving_player_id"] = first_server
 
     print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)
