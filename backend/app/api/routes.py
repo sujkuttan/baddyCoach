@@ -223,9 +223,7 @@ async def process_job(
     return {"job_id": job_id, "status": "processing", "pose_model": pose_model, "sample_rate": sample_rate}
 
 
-from pathlib import Path
 from app.report.generator import ReportGenerator
-from app.config.settings import settings
 
 
 report_generator = ReportGenerator()
