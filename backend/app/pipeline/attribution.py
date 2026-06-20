@@ -31,7 +31,10 @@ class PlayerAttributionStage:
         else:
             court_mid_y = 360
 
-        # Build pose lookup: frame → {player_id: keypoints}
+        H = None
+        if "homography" in court and court["homography"] is not None:
+            H = np.array(court["homography"])
+
         pose_lookup = {}
         if pose_df is not None:
             for _, row in pose_df.iterrows():
@@ -43,18 +46,36 @@ class PlayerAttributionStage:
                         pose_lookup[frame] = {}
                     pose_lookup[frame][pid] = kps
 
-        H = None
-        if "homography" in court and court["homography"] is not None:
-            H = np.array(court["homography"])
+        shuttle_y_map = {}
+        shuttle_conf_map = {}
+        if shuttle_df is not None and len(shuttle_df) > 0:
+            shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
+            shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
 
+        LOOKBACK = 5
         attributed = []
         court_coords = []
 
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
+            did_attribute = False
 
-            # PRD §2.7: Try foot midpoint from pose first
-            if frame in pose_lookup:
+            y_at = shuttle_y_map.get(frame)
+            if y_at is not None:
+                y_before = None
+                for lookback in range(1, LOOKBACK + 1):
+                    y_prev = shuttle_y_map.get(frame - lookback)
+                    if y_prev is not None and abs(y_prev) > 1:
+                        y_before = y_prev
+                        break
+
+                if y_before is not None and abs(y_at) > 1:
+                    dy = y_at - y_before
+                    if abs(dy) > 2:
+                        attributed.append("player_1" if dy > 0 else "player_2")
+                        did_attribute = True
+
+            if not did_attribute and frame in pose_lookup:
                 foot_positions = {}
                 for pid, kps in pose_lookup[frame].items():
                     foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
@@ -68,6 +89,7 @@ class PlayerAttributionStage:
                     y2 = foot_positions[pids[1]][1]
                     player_id = pids[0] if y1 > y2 else pids[1]
                     attributed.append(player_id)
+                    did_attribute = True
 
                     if H is not None:
                         foot = foot_positions[player_id]
@@ -76,16 +98,14 @@ class PlayerAttributionStage:
                             court_coords.append({"frame": frame, "court_x": round(cx, 3), "court_y": round(cy, 3)})
                         except Exception:
                             court_coords.append({"frame": frame, "court_x": None, "court_y": None})
-                    continue
 
-            # Fallback: shuttle position relative to court midline
-            player_id = self._assign_player(frame, shuttle_df, players, court_mid_y)
-            attributed.append(player_id)
-            court_coords.append({"frame": frame, "court_x": None, "court_y": None})
+            if not did_attribute:
+                player_id = self._assign_player(frame, shuttle_df, players, court_mid_y)
+                attributed.append(player_id)
+                court_coords.append({"frame": frame, "court_x": None, "court_y": None})
 
         shots_df["player_id"] = attributed
 
-        # Add court coordinates if available
         if court_coords:
             court_df = pd.DataFrame(court_coords)
             if "court_x" not in shots_df.columns:

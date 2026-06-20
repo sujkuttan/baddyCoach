@@ -421,27 +421,31 @@ class TrackNetV3:
     def predict_batch(self, frames, original_size=None):
         import torch
         if self.model is None or len(frames) < 3:
-            return [{"x": 0, "y": 0, "confidence": 0}] * len(frames)
+            return [{"x": 0, "y": 0, "confidence": 0} for _ in frames]
 
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
 
-        CHUNK = 16
-        results = [None] * len(frames)
+        preprocessed = np.empty((len(frames), self.input_height, self.input_width, 3), dtype=np.float32)
+        for i, f in enumerate(frames):
+            r = cv2.resize(f, (self.input_width, self.input_height))
+            r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+            preprocessed[i] = r
+        del frames
 
-        for chunk_start in range(0, len(frames), CHUNK):
-            chunk_end = min(chunk_start + CHUNK, len(frames))
+        CHUNK = 16
+        results = [{"x": 0, "y": 0, "confidence": 0} for _ in range(len(preprocessed))]
+
+        for chunk_start in range(0, len(preprocessed), CHUNK):
+            chunk_end = min(chunk_start + CHUNK, len(preprocessed))
             windows = []
             for i in range(chunk_start, chunk_end):
-                window = frames[max(0, i - 8):i + 1]
-                while len(window) < 9:
-                    window.insert(0, window[0])
-                processed = []
-                for f in window[-9:]:
-                    r = cv2.resize(f, (self.input_width, self.input_height))
-                    r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
-                    processed.append(r)
-                windows.append(np.stack(processed).reshape(self.input_height, self.input_width, 27))
+                start = max(0, i - 8)
+                window = preprocessed[start:i + 1]
+                pad_len = 9 - len(window)
+                if pad_len > 0:
+                    window = np.concatenate([window[:1]] * pad_len + [window], axis=0)
+                windows.append(window[-9:].reshape(self.input_height, self.input_width, 27))
 
             batch = np.stack(windows).transpose(0, 3, 1, 2)
             tensor = torch.from_numpy(batch).float().to(self.device)
@@ -459,8 +463,6 @@ class TrackNetV3:
                     "confidence": float(hm.max()),
                 }
             del tensor, out, heatmaps, batch, windows
-            if self.device == "cuda":
-                torch.cuda.empty_cache()
         return results
 
 
@@ -574,24 +576,31 @@ class YOLOv8Tracker:
         self.conf = conf_threshold
         self.device = device
 
-    def track_batch(self, frames, global_frame_offsets):
+    def track_batch(self, frames, global_frame_offsets, batch_size=16):
         all_det = {}
-        for local_idx, frame in enumerate(frames):
-            h, w = frame.shape[:2]
-            results = self.model.track(frame, classes=[0], conf=self.conf, verbose=False, persist=True, device=self.device)
+        if not frames:
+            return all_det
+        h, w = frames[0].shape[:2]
+
+        results = self.model.track(
+            frames, classes=[0], conf=self.conf,
+            verbose=False, persist=True, device=self.device,
+            batch=batch_size
+        )
+
+        for local_idx, r in enumerate(results):
             global_idx = global_frame_offsets + local_idx
             dets = []
-            for r in results:
-                if r.boxes is not None and r.boxes.id is not None:
-                    for box in r.boxes:
-                        x1, y1, x2, y2 = box.xyxy[0].tolist()
-                        bw, bh = x2 - x1, y2 - y1
-                        bbox_area = bw * bh
-                        frame_area = w * h
-                        if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
-                            continue
-                        dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
-                                   "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
+            if r.boxes is not None and r.boxes.id is not None:
+                for box in r.boxes:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    bw, bh = x2 - x1, y2 - y1
+                    bbox_area = bw * bh
+                    frame_area = w * h
+                    if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
+                        continue
+                    dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
+                               "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
             dets.sort(key=lambda d: d["confidence"], reverse=True)
             dets = dets[:2]
             all_det[global_idx] = dets
@@ -1673,18 +1682,31 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
 
 
 def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=1280, pose_data=None):
-    """Assign player_id to shots using PRD §2.7 foot midpoint when available.
-    
+    """Assign player_id to shots using shuttle trajectory direction.
+
     Priority:
-    1. Foot midpoint from pose keypoints (ankles 15, 16)
-    2. Shuttle position relative to court midline
-    3. Default to player_1
+    1. Shuttle trajectory direction before hit (most reliable signal)
+    2. Foot midpoint from pose keypoints (when both players present)
+    3. Shuttle position relative to court midline
     """
     if not shots_data:
         return shots_data
     shuttle_df = pd.DataFrame(shuttle_data)
 
-    # Build pose lookup: frame → {player_id: keypoints}
+    if court and "corners_pixel" in court:
+        corners = court["corners_pixel"]
+        court_mid_y = (corners[0][1] + corners[2][1]) / 2
+    else:
+        court_mid_y = vid_h / 2
+
+    H = court.get("homography") if court else None
+
+    shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
+    shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
+    shuttle_conf_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["confidence"].astype(float)))
+    shuttle_frames = np.array(shuttle_sorted["frame"].astype(int))
+    shuttle_ys = np.array(shuttle_sorted["y"].astype(float))
+
     pose_lookup = {}
     if pose_data:
         for p in pose_data:
@@ -1696,36 +1718,42 @@ def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=128
                     pose_lookup[frame] = {}
                 pose_lookup[frame][pid] = kps
 
-    if court and "corners_pixel" in court:
-        corners = court["corners_pixel"]
-        court_mid_y = (corners[0][1] + corners[2][1]) / 2
-    else:
-        court_mid_y = vid_h / 2
-
-    H = court.get("homography") if court else None
-
+    LOOKBACK = 5
     for shot in shots_data:
         frame = shot["frame"]
-        
-        # PRD §2.7: Try foot midpoint from pose first
-        if frame in pose_lookup:
+        attributed = False
+
+        # Priority 1: Shuttle trajectory direction before hit
+        y_before = None
+        y_at = shuttle_y_map.get(frame)
+        if y_at is not None:
+            for lookback in range(1, LOOKBACK + 1):
+                y_prev = shuttle_y_map.get(frame - lookback)
+                if y_prev is not None and abs(y_prev) > 1:
+                    y_before = y_prev
+                    break
+
+            if y_before is not None and abs(y_at) > 1:
+                dy = y_at - y_before
+                if abs(dy) > 2:
+                    shot["player_id"] = "player_1" if dy > 0 else "player_2"
+                    attributed = True
+
+        # Priority 2: Foot midpoint from pose
+        if not attributed and frame in pose_lookup:
             foot_positions = {}
             for pid, kps in pose_lookup[frame].items():
                 foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
                 if foot is None:
-                    foot = foot_point_from_bbox([0, 0, vid_w, vid_h])  # fallback
+                    foot = foot_point_from_bbox([0, 0, vid_w, vid_h])
                 foot_positions[pid] = foot
-            
+
             if len(foot_positions) == 2:
                 pids = list(foot_positions.keys())
                 y1 = foot_positions[pids[0]][1]
                 y2 = foot_positions[pids[1]][1]
-                # Player with lower y (higher in image) is "far", higher y is "near"
-                if y1 > y2:
-                    shot["player_id"] = pids[0]
-                else:
-                    shot["player_id"] = pids[1]
-                # Project foot to court coordinates if homography available
+                shot["player_id"] = pids[0] if y1 > y2 else pids[1]
+                attributed = True
                 if H is not None:
                     foot = foot_positions[shot["player_id"]]
                     try:
@@ -1734,16 +1762,14 @@ def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=128
                         shot["court_y"] = round(cy, 3)
                     except Exception:
                         pass
-                continue
-        
-        # Fallback: shuttle position relative to court midline
-        shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
-        if len(shuttle_row) > 0:
-            sy = float(shuttle_row.iloc[0]["y"])
-            shot["player_id"] = "player_1" if sy > court_mid_y else "player_2"
-        else:
-            shot["player_id"] = "player_1"
-    
+
+        # Priority 3: Shuttle position relative to court midline
+        if not attributed:
+            if y_at is not None:
+                shot["player_id"] = "player_1" if y_at > court_mid_y else "player_2"
+            else:
+                shot["player_id"] = "player_1"
+
     return shots_data
 
 
@@ -2468,24 +2494,13 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     pd.DataFrame(all_player_detections).to_parquet(debug_dir / "player_detections.parquet", index=False)
     print(f"    player_detections.parquet ({len(all_player_detections)} rows)")
 
-    # Build player summary
-    tid_counts = Counter(d.get("track_id", 0) for d in all_player_detections)
-    top2 = [tid for tid, _ in tid_counts.most_common(2)]
-    filtered_dets = [d for d in all_player_detections if d.get("track_id", 0) in top2]
-
-    players = {}
-    for d in filtered_dets:
-        tid = d.get("track_id", 0)
+    # Build player summary from side-assigned detections
+    players = {"player_1": {"id": "player_1", "side": "near", "detections": []},
+               "player_2": {"id": "player_2", "side": "far", "detections": []}}
+    for d in all_player_detections:
         side = d.get("side", "near")
-        matched = False
-        for pid, p in players.items():
-            if p.get("track_id") == tid:
-                p["detections"].append(d)
-                matched = True
-                break
-        if not matched:
-            pid = f"player_{len(players)+1}"
-            players[pid] = {"id": pid, "side": side, "track_id": tid, "detections": [d]}
+        pid = "player_1" if side == "near" else "player_2"
+        players[pid]["detections"].append(d)
 
     players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])} for p in players.values()]}
 
@@ -2648,9 +2663,20 @@ def _process_batch(frames, global_indices, batch_start_offset,
     h, w = frames[0].shape[:2]
     court_mid_y = h * 0.5
     for local_idx, global_idx in enumerate(global_indices):
-        for d in batch_det.get(local_idx, []):
+        dets = batch_det.get(local_idx, [])
+        if len(dets) >= 2:
+            b0_center_y = (dets[0]["bbox"][1] + dets[0]["bbox"][3]) / 2
+            b1_center_y = (dets[1]["bbox"][1] + dets[1]["bbox"][3]) / 2
+            if b0_center_y > b1_center_y:
+                dets[0]["side"] = "near"
+                dets[1]["side"] = "far"
+            else:
+                dets[0]["side"] = "far"
+                dets[1]["side"] = "near"
+        elif len(dets) == 1:
+            dets[0]["side"] = "near" if (dets[0]["bbox"][1] + dets[0]["bbox"][3]) / 2 > court_mid_y else "far"
+        for d in dets:
             d["frame"] = global_idx
-            d["side"] = "near" if d["bbox"][1] > court_mid_y else "far"
             all_player_detections.append(d)
             all_det[global_idx] = all_det.get(global_idx, [])
             all_det[global_idx].append(d)
@@ -2676,21 +2702,42 @@ def _process_batch(frames, global_indices, batch_start_offset,
                 for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
                     other_global = global_indices[other_idx]
                     for d in all_det.get(other_global, []):
-                        dist = abs(other_idx - local_idx)
-                        if dist < best_dist:
-                            best_dist = dist
-                            best_det = d
+                        if d.get("side") == ("near" if pid == "player_1" else "far"):
+                            dist = abs(other_idx - local_idx)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_det = d
+                if best_det is None:
+                    for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
+                        other_global = global_indices[other_idx]
+                        for d in all_det.get(other_global, []):
+                            dist = abs(other_idx - local_idx)
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_det = d
                 if best_det:
                     crop_list.append((global_idx, pid, best_det["bbox"], frame))
             continue
-        tid_to_pid = {}
-        for d in dets_for_frame[:2]:
-            tid = d.get("track_id", 0)
-            if tid not in tid_to_pid:
-                tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
-        for d in dets_for_frame[:2]:
-            pid = tid_to_pid.get(d.get("track_id", 0), "player_1")
-            crop_list.append((global_idx, pid, d["bbox"], frame))
+        near_det = None
+        far_det = None
+        for d in dets_for_frame:
+            if d.get("side") == "near":
+                near_det = d
+            elif d.get("side") == "far":
+                far_det = d
+        if near_det is None and len(dets_for_frame) >= 2:
+            cy0 = (dets_for_frame[0]["bbox"][1] + dets_for_frame[0]["bbox"][3]) / 2
+            cy1 = (dets_for_frame[1]["bbox"][1] + dets_for_frame[1]["bbox"][3]) / 2
+            if cy0 > cy1:
+                near_det, far_det = dets_for_frame[0], dets_for_frame[1]
+            else:
+                near_det, far_det = dets_for_frame[1], dets_for_frame[0]
+        elif near_det is None and len(dets_for_frame) == 1:
+            near_det = dets_for_frame[0]
+        if near_det:
+            crop_list.append((global_idx, "player_1", near_det["bbox"], frame))
+        if far_det:
+            crop_list.append((global_idx, "player_2", far_det["bbox"], frame))
 
     tqdm.write(f"{tag} | RTMPose batch estimation ({len(crop_list)} crops)...")
     BATCH_CHUNK = 128
