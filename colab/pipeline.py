@@ -468,11 +468,15 @@ class CourtKeypointDetector:
     """Court keypoint detector using Keypoint R-CNN (SoloShuttlePose).
     
     Detects 6 court keypoints per frame:
-    - Points 0, 1: Top-left, top-right (near net)
-    - Points 2, 3: Middle-left, middle-right (net line)
-    - Points 4, 5: Bottom-left, bottom-right (far from net)
+    - KP 0: far-left corner   (court: 0, 0)
+    - KP 1: far-right corner  (court: 0, 5.18)
+    - KP 2: net-left          (court: 6.7, 0)   — unreliable, often duplicates KP0
+    - KP 3: net-right         (court: 6.7, 5.18)
+    - KP 4: near-left corner  (court: 13.4, 0)
+    - KP 5: near-right corner (court: 13.4, 5.18)
     
-    Falls back to color+line detection if model unavailable.
+    Only KP0, KP1, KP4, KP5 (4 outer corners) are used for homography.
+    Falls back to proportional estimation if model unavailable.
     """
     def __init__(self, model_path: str, device: str = "cuda"):
         import torch
@@ -495,10 +499,10 @@ class CourtKeypointDetector:
     def detect(self, frame):
         """Detect court keypoints in a frame.
         
-        Model outputs 6 keypoints in fixed order (from SoloShuttlePose source):
-        - 0: top-left, 1: top-right
-        - 2: mid-left, 3: mid-right  
-        - 4: bottom-left, 5: bottom-right
+        Model outputs 6 keypoints:
+        - 0: far-left corner, 1: far-right corner
+        - 2: net-left (unreliable), 3: net-right  
+        - 4: near-left corner, 5: near-right corner
         
         Returns: list of 6 [[x,y], ...] keypoints, or None if detection fails.
         """
@@ -533,44 +537,29 @@ class CourtKeypointDetector:
         # Take the detection with highest score
         kps = kps_list[0].detach().cpu().numpy()
         
-        # Debug: print all keypoints to understand model output
-        print(f"  Court KP model outputs {len(kps)} keypoints:")
-        for i, kp in enumerate(kps):
-            print(f"    KP {i}: [{kp[0]:.0f}, {kp[1]:.0f}] conf={kp[2]:.3f}")
-        
-        # The model outputs court keypoints in a fixed order.
-        # From SoloShuttlePose source, the 6 court keypoints are:
-        # 0=top-left, 1=top-right, 2=mid-left, 3=mid-right, 4=bot-left, 5=bot-right
-        # But some models may output all 17 COCO keypoints.
-        # Take the first 6 for court corners.
         points = [[int(kps[i][0]), int(kps[i][1])] for i in range(min(6, len(kps)))]
         
         if len(points) < 6:
             return None
         
-        # Validate: top pair should have similar y, bottom pair should have similar y
+        # Validate: bottom y must be below top y
         top_y = (points[0][1] + points[1][1]) / 2
         bot_y = (points[4][1] + points[5][1]) / 2
-        print(f"  Court KP raw: tl={points[0]} tr={points[1]} ml={points[2]} mr={points[3]} bl={points[4]} br={points[5]}")
-        print(f"  Court KP top_y={top_y:.0f} bot_y={bot_y:.0f}")
         if bot_y <= top_y:
-            # Bottom should be below top — invalid detection
-            print(f"  Court KP invalid: bot_y <= top_y")
             return None
         
         return points
     
     def detect_with_fallback(self, frame):
-        """Detect court with fallback chain: model → color+line → proportional.
+        """Detect court with fallback chain: model → proportional.
         
         Returns: list of 4 corners [bl, br, tl, tr] for homography
         """
         # Try model first
         kps = self.detect(frame)
         if kps is not None and len(kps) == 6:
-            # SoloShuttlePose returns 6 points:
-            # 0: top-left, 1: top-right, 2: mid-left, 3: mid-right, 4: bot-left, 5: bot-right
-            # We need: bottom-left, bottom-right, top-left, top-right
+            # Use 4 outer corners only (KP2/KP3 ignored — unreliable):
+            # KP0=far-left, KP1=far-right, KP4=near-left, KP5=near-right
             corners = [kps[4], kps[5], kps[0], kps[1]]
             return corners
         
@@ -870,19 +859,67 @@ def detect_court_from_frame(frame):
     return None
 
 
-# ─── PRD §2.5: Per-frame homography with reprojection error ─────────────────
+# ─── PRD §2.5: Per-frame homography with geometric validation ───────────────
 
 CORNER_NAMES = ["outer_bl", "outer_br", "outer_tl", "outer_tr"]
+COURT_ASPECT_RATIO = COURT_LENGTH / COURT_WIDTH  # ≈ 2.587
+
+
+def _correct_court_points(corners_4):
+    """Enforce horizontal court lines by averaging y-coords of left/right pairs.
+
+    corners_4: [bl, br, tl, tr] in image space.
+    Returns: corrected [bl, br, tl, tr] with horizontal baselines.
+    """
+    pts = np.array(corners_4, dtype=np.float64)
+    tl_y = tr_y = round((pts[2][1] + pts[3][1]) / 2)
+    bl_y = br_y = round((pts[0][1] + pts[1][1]) / 2)
+    pts[0][1] = bl_y
+    pts[1][1] = br_y
+    pts[2][1] = tl_y
+    pts[3][1] = tr_y
+    return [[int(x), int(y)] for x, y in pts]
+
+
+def _validate_court_geometry(corners_px):
+    """Validate detected court corners form a reasonable quadrilateral.
+
+    In broadcast views, perspective foreshortening makes the physical 2.587:1
+    ratio invisible in pixel space. We check for degenerate cases instead:
+    1. Minimum area (not a point or line)
+    2. Convex quadrilateral (no crossing edges)
+    """
+    pts = np.array(corners_px, dtype=np.float64)
+    area = cv2.contourArea(pts.reshape(-1, 1, 2).astype(np.float32))
+    if area < 1000:
+        return False
+
+    # Traverse boundary in order: bl → br → tr → tl (clockwise)
+    bl, br, tl, tr = pts
+    boundary = [bl, br, tr, tl]
+
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    signs = [cross(boundary[i], boundary[(i + 1) % 4], boundary[(i + 2) % 4]) for i in range(4)]
+    if not all(s > 0 for s in signs) and not all(s < 0 for s in signs):
+        return False
+
+    return True
+
 
 def compute_homography(image_corners, min_points=4):
-    """Compute homography mapping image pixels → court metres with reprojection error.
-    
+    """Compute homography mapping image pixels → court metres.
+
+    Uses geometric validation instead of reprojection error (which is always 0
+    for 4-point homographies).
+
     image_corners: dict {name: (u, v)} or list of 4 points [bl, br, tl, tr]
-    Returns: (H, reproj_err_m, n_used) or (None, inf, 0)
+    Returns: (H, valid)
     """
     if isinstance(image_corners, list):
         if len(image_corners) < min_points:
-            return None, float("inf"), 0
+            return None, False
         src = np.array(image_corners[:4], dtype=np.float64)
         dst = np.array([
             COURT_MODEL["outer_bl"], COURT_MODEL["outer_br"],
@@ -891,19 +928,18 @@ def compute_homography(image_corners, min_points=4):
     elif isinstance(image_corners, dict):
         names = [n for n in image_corners if n in COURT_MODEL]
         if len(names) < min_points:
-            return None, float("inf"), 0
+            return None, False
         src = np.array([image_corners[n] for n in names], dtype=np.float64)
         dst = np.array([COURT_MODEL[n] for n in names], dtype=np.float64)
     else:
-        return None, float("inf"), 0
+        return None, False
 
     H, mask = cv2.findHomography(src, dst, cv2.RANSAC, ransacReprojThreshold=5.0)
     if H is None:
-        return None, float("inf"), 0
+        return None, False
 
-    proj = cv2.perspectiveTransform(src.reshape(-1, 1, 2), H).reshape(-1, 2)
-    err_m = float(np.mean(np.linalg.norm(proj - dst, axis=1)))
-    return H, err_m, int(mask.sum()) if mask is not None else len(src)
+    valid = _validate_court_geometry(src)
+    return H, valid
 
 
 def image_to_court(H, uv):
@@ -913,9 +949,7 @@ def image_to_court(H, uv):
     return float(out[0, 0, 0]), float(out[0, 0, 1])
 
 
-# ─── PRD §2.6: Temporal smoothing (handheld-critical) ──────────────────────
-
-ERR_GATE_M = 0.20  # reject frames with reproj error > 20cm
+# ─── Temporal smoothing (handheld-critical) ────────────────────────────────
 
 class HomographySmoother:
     """Smooths the FOUR outer court corners (in image space) over time,
@@ -929,20 +963,19 @@ class HomographySmoother:
         self.buf = deque(maxlen=win)
         self.last_valid_H = None
 
-    def update(self, corners_pixel, H_raw, reproj_err):
+    def update(self, corners_pixel, H_raw, valid):
         """Update smoother with new frame's detection.
         
         corners_pixel: list of 4 points [bl, br, tl, tr] or None
         H_raw: raw homography from detection (may be None)
-        reproj_err: reprojection error in metres
+        valid: geometric validity flag from compute_homography
         
         Returns: (H_smoothed, valid) — smoothed homography and validity flag
         """
         corners = np.array(corners_pixel, dtype=np.float64) if corners_pixel else None
         
-        # Gate: reject if reproj error too high
-        if corners is None or reproj_err > ERR_GATE_M:
-            # Use last valid H if available
+        # Gate: reject if geometry invalid
+        if corners is None or not valid:
             if self.last_valid_H is not None:
                 return self.last_valid_H, False
             return None, False
@@ -1023,7 +1056,7 @@ def compute_court_homography(corners_pixel):
     corners_pixel: list of 4 points [bl, br, tl, tr] in image space
     Returns: 3x3 homography matrix (image → court metres)
     """
-    H, _, _ = compute_homography(corners_pixel)
+    H, _ = compute_homography(corners_pixel)
     return H
 
 
@@ -2296,17 +2329,19 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     
     court = stage_court_detection(corners)
     
-    # PRD §2.5: Compute homography with reprojection error
-    H_raw, reproj_err, n_used = compute_homography(corners)
+    # Apply geometric correction: average y-coords to enforce horizontal lines
+    corrected_corners = _correct_court_points(corners)
     
-    # PRD §2.6: Apply temporal smoothing
-    H_smooth, valid = smoother.update(corners, H_raw, reproj_err)
+    # Compute homography with geometric validation
+    H_raw, valid = compute_homography(corrected_corners)
+    
+    # Apply temporal smoothing
+    H_smooth, valid = smoother.update(corrected_corners, H_raw, valid)
     
     court["homography"] = H_smooth if H_smooth is not None else H_raw
-    court["reproj_err_m"] = reproj_err
     court["valid"] = valid
     court["detection_method"] = detection_method
-    print(f"  Homography reproj error: {reproj_err:.4f}m, valid: {valid}")
+    print(f"  Court geometry valid: {valid}")
     print("  Done")
 
     # Initialize ML models

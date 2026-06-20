@@ -15,6 +15,7 @@ class Settings(BaseModel):
     # Model paths
     tracknet_model_path: Path = Path("ckpts/TrackNet_best.pt")
     inpaintnet_model_path: Path = Path("ckpts/InpaintNet_best.pt")
+    court_kpRCNN_model_path: Path = Path("ckpts/court_kpRCNN.pth")
     yolov8_model_path: Path | None = None
     rtmpose_model_path: Path | None = Path("ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx")
     hrnet_model_path: Path | None = Path("ckpts/mmpose/hrnet_w32_coco_256x192.onnx")

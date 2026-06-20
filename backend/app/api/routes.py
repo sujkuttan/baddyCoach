@@ -60,10 +60,17 @@ def run_pipeline(job_id: str):
     else:
         frames = []
 
+    # Extract a sample frame for court detection
+    court_frame = None
+    if video_path and Path(video_path).exists():
+        cap = cv2.VideoCapture(video_path)
+        ret, court_frame = cap.read()
+        cap.release()
+        if not ret:
+            court_frame = None
+
     stages = [
-        ("court_detection", lambda: CourtDetectionStage().run(store, config, corners=[
-            (100, 500), (1820, 500), (100, 100), (1820, 100)
-        ])),
+        ("court_detection", lambda: CourtDetectionStage().run(store, config, frame=court_frame)),
         ("player_tracking", lambda: PlayerTrackingStage().run(store, config, frames=frames if frames else None)),
         ("shuttle_tracking", lambda: ShuttleTrackingStage().run(store, config, frames=frames if frames else None)),
         ("pose_estimation", lambda: PoseEstimationStage().run(store, config, frames=frames if frames else None)),
