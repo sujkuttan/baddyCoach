@@ -121,23 +121,37 @@ class CourtDetectionStage:
             corners: list[tuple[int, int]] | None = None,
             frame: np.ndarray | None = None) -> StageResult:
         # Auto-detect from frame if corners not provided
+        H, valid = None, False
+        corrected = None
+
         if corners is None and frame is not None:
             detector = CourtKeypointDetector(settings.court_kpRCNN_model_path, device=settings.device)
-            corners = detector.detect_with_fallback(frame)
+            # Try model detection first
+            corners = detector.detect_corners(frame)
 
-        if corners is None or len(corners) != 4:
+        if corners is not None and len(corners) == 4:
+            corrected = _correct_court_points(corners)
+            H, valid = compute_homography(corrected)
+
+        # If geometric validation failed or no corners found, fallback to fixed params
+        if not valid and frame is not None:
+            h, w = frame.shape[:2]
+            mx = int(w * 0.08)
+            corners = [
+                (mx, int(h * 0.72)), (w - mx, int(h * 0.72)),  # bl, br
+                (mx, int(h * 0.28)), (w - mx, int(h * 0.28)),  # tl, tr
+            ]
+            corrected = _correct_court_points(corners)
+            H, valid = compute_homography(corrected)
+            # Mark valid as False since this is a fallback, not a true detection
+            valid = False
+
+        if corrected is None or len(corrected) != 4:
             return StageResult.from_error("Court corners are required (4 points). Provide frame or manual corners.")
 
-        # Apply geometric correction: average y-coords of left/right pairs
-        # to enforce horizontal court lines before computing homography.
-        corrected = _correct_court_points(corners)
-
-        # Compute homography
-        H, valid = compute_homography(corrected)
-
-        # Temporal smoothing
+        # Temporal smoothing (mostly irrelevant since run() is only called once, but kept for API)
         smoother = HomographySmoother(alpha=0.6, win=5)
-        H_smooth, valid = smoother.update(corrected, H, valid)
+        H_smooth, valid_smooth = smoother.update(corrected, H, valid)
 
         court_data = {
             "homography": (H_smooth if H_smooth is not None else H).tolist() if H_smooth is not None or H is not None else None,
@@ -145,14 +159,14 @@ class CourtDetectionStage:
             "court_length": self.COURT_LENGTH,
             "court_width": self.COURT_WIDTH,
             "net_height": self.NET_HEIGHT,
-            "valid": valid,
+            "valid": valid_smooth,
         }
 
         artifacts.set("court", court_data)
 
         return StageResult.success(
             artifacts={"court": artifacts.path("court")},
-            metadata={"homography_computed": True, "valid": valid}
+            metadata={"homography_computed": True, "valid": valid_smooth}
         )
 
 
