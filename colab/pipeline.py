@@ -1685,17 +1685,20 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     return shots
 
 
-def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=1280, pose_data=None):
-    """Assign player_id to shots using shuttle trajectory direction.
+def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=1280, pose_data=None, rallies_data=None):
+    """Assign player_id to shots using rally alternation.
+
+    Badminton players MUST alternate hits within a rally. This is the most
+    reliable signal — far more robust than shuttle trajectory direction
+    which is biased by hit detection missing one player's shots.
 
     Priority:
-    1. Shuttle trajectory direction before hit (most reliable signal)
-    2. Foot midpoint from pose keypoints (when both players present)
+    1. Rally alternation (determine first hitter, then alternate P1/P2)
+    2. Shuttle trajectory direction (for shots outside rallies)
     3. Shuttle position relative to court midline
     """
     if not shots_data:
         return shots_data
-    shuttle_df = pd.DataFrame(shuttle_data)
 
     if court and "corners_pixel" in court:
         corners = court["corners_pixel"]
@@ -1703,76 +1706,81 @@ def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=128
     else:
         court_mid_y = vid_h / 2
 
+    shuttle_sorted = pd.DataFrame(shuttle_data).sort_values("frame").reset_index(drop=True)
+    shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
+
     H = court.get("homography") if court else None
 
-    shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
-    shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
-    shuttle_conf_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["confidence"].astype(float)))
-    shuttle_frames = np.array(shuttle_sorted["frame"].astype(int))
-    shuttle_ys = np.array(shuttle_sorted["y"].astype(float))
-
-    pose_lookup = {}
-    if pose_data:
-        for p in pose_data:
-            frame = p["frame"]
-            pid = p.get("player_id", "player_1")
-            kps = np.array(p["keypoints"])
-            if kps.shape == (17, 3) and np.any(kps != 0):
-                if frame not in pose_lookup:
-                    pose_lookup[frame] = {}
-                pose_lookup[frame][pid] = kps
+    shot_by_frame = {int(s["frame"]): s for s in shots_data}
 
     LOOKBACK = 5
-    for shot in shots_data:
-        frame = shot["frame"]
-        attributed = False
 
-        # Priority 1: Shuttle trajectory direction before hit
-        y_before = None
+    def _shuttle_direction_at(frame):
         y_at = shuttle_y_map.get(frame)
-        if y_at is not None:
-            for lookback in range(1, LOOKBACK + 1):
-                y_prev = shuttle_y_map.get(frame - lookback)
-                if y_prev is not None and abs(y_prev) > 1:
-                    y_before = y_prev
-                    break
-
-            if y_before is not None and abs(y_at) > 1:
-                dy = y_at - y_before
+        if y_at is None or abs(y_at) <= 1:
+            return None
+        for lb in range(1, LOOKBACK + 1):
+            y_prev = shuttle_y_map.get(frame - lb)
+            if y_prev is not None and abs(y_prev) > 1:
+                dy = y_at - y_prev
                 if abs(dy) > 2:
-                    shot["player_id"] = "player_1" if dy > 0 else "player_2"
-                    attributed = True
+                    return "player_1" if dy > 0 else "player_2"
+                return None
+        return None
 
-        # Priority 2: Foot midpoint from pose
-        if not attributed and frame in pose_lookup:
-            foot_positions = {}
-            for pid, kps in pose_lookup[frame].items():
-                foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
-                if foot is None:
-                    foot = foot_point_from_bbox([0, 0, vid_w, vid_h])
-                foot_positions[pid] = foot
+    if rallies_data:
+        for rally in rallies_data:
+            rally_shots = [s for s in shots_data
+                          if rally["start_frame"] <= s["frame"] <= rally["end_frame"]]
+            rally_shots.sort(key=lambda s: s["frame"])
+            if not rally_shots:
+                continue
 
-            if len(foot_positions) == 2:
-                pids = list(foot_positions.keys())
-                y1 = foot_positions[pids[0]][1]
-                y2 = foot_positions[pids[1]][1]
-                shot["player_id"] = pids[0] if y1 > y2 else pids[1]
-                attributed = True
-                if H is not None:
-                    foot = foot_positions[shot["player_id"]]
-                    try:
-                        cx, cy = image_to_court(H, foot)
-                        shot["court_x"] = round(cx, 3)
-                        shot["court_y"] = round(cy, 3)
-                    except Exception:
-                        pass
+            first_frame = rally_shots[0]["frame"]
+            first_player = _shuttle_direction_at(first_frame)
+            if first_player is None:
+                y_at = shuttle_y_map.get(first_frame)
+                first_player = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
 
-        # Priority 3: Shuttle position relative to court midline
-        if not attributed:
-            if y_at is not None:
-                shot["player_id"] = "player_1" if y_at > court_mid_y else "player_2"
+            second_player = "player_2" if first_player == "player_1" else "player_1"
+            for i, shot in enumerate(rally_shots):
+                shot["player_id"] = first_player if i % 2 == 0 else second_player
+
+    for shot in shots_data:
+        if "player_id" not in shot or shot.get("player_id") is None:
+            result = _shuttle_direction_at(shot["frame"])
+            if result:
+                shot["player_id"] = result
             else:
-                shot["player_id"] = "player_1"
+                y_at = shuttle_y_map.get(shot["frame"])
+                shot["player_id"] = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+
+    if H is not None:
+        pose_lookup = {}
+        if pose_data:
+            for p in pose_data:
+                frame = p["frame"]
+                pid = p.get("player_id", "player_1")
+                kps = np.array(p["keypoints"])
+                if kps.shape == (17, 3) and np.any(kps != 0):
+                    if frame not in pose_lookup:
+                        pose_lookup[frame] = {}
+                    pose_lookup[frame][pid] = kps
+
+        for shot in shots_data:
+            frame = shot["frame"]
+            if frame in pose_lookup:
+                pid = shot.get("player_id", "player_1")
+                if pid in pose_lookup[frame]:
+                    kps = pose_lookup[frame][pid]
+                    foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
+                    if foot is not None:
+                        try:
+                            cx, cy = image_to_court(H, foot)
+                            shot["court_x"] = round(cx, 3)
+                            shot["court_y"] = round(cy, 3)
+                        except Exception:
+                            pass
 
     return shots_data
 
@@ -2537,10 +2545,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         else:
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
     shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
-    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h, vid_w=vid_w, pose_data=all_pose)
     print(f"  Classified {len(shots)} shots")
-    pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
-    print(f"    shots.parquet ({len(shots)} rows)")
 
     print("\n[8/14] Rally segmentation...")
     rallies = stage_rallies(shots)
@@ -2548,7 +2553,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
     print(f"    rallies.parquet ({len(rallies)} rows)")
 
-    # Assign rally_id to each shot
     for shot in shots:
         shot_rally = None
         for rally in rallies:
@@ -2556,6 +2560,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                 shot_rally = rally["rally_id"]
                 break
         shot["rally_id"] = shot_rally
+
+    shots = stage_attribution(shots, all_shuttle, court=court, vid_h=vid_h, vid_w=vid_w, pose_data=all_pose, rallies_data=rallies)
+    print(f"  Attributed {len(shots)} shots")
+    pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
+    print(f"    shots.parquet ({len(shots)} rows)")
 
     print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)

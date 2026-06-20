@@ -7,7 +7,7 @@ from app.pipeline.court import image_to_court, foot_midpoint_from_pose, foot_poi
 
 class PlayerAttributionStage:
     name = "player_attribution"
-    input_keys = ["shots", "shuttle", "players", "court", "pose"]
+    input_keys = ["shots", "shuttle", "players", "court", "pose", "rallies"]
     output_keys = ["shots"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
@@ -19,11 +19,10 @@ class PlayerAttributionStage:
         players_data = artifacts.get("players")
         court = artifacts.get("court") or {}
         pose_df = artifacts.get_parquet("pose")
+        rallies_df = artifacts.get_parquet("rallies")
 
         if players_data is None:
             return StageResult.from_error("Player data required for attribution")
-
-        players = {p["id"]: p for p in players_data["players"]}
 
         court_corners = court.get("corners_pixel", [])
         if court_corners and len(court_corners) >= 3:
@@ -35,81 +34,72 @@ class PlayerAttributionStage:
         if "homography" in court and court["homography"] is not None:
             H = np.array(court["homography"])
 
-        pose_lookup = {}
-        if pose_df is not None:
-            for _, row in pose_df.iterrows():
-                frame = int(row["frame"])
-                pid = row.get("player_id", "player_1")
-                kps = np.array(row["keypoints"].tolist()) if hasattr(row["keypoints"], 'tolist') else np.array(row["keypoints"])
-                if kps.shape == (17, 3) and np.any(kps != 0):
-                    if frame not in pose_lookup:
-                        pose_lookup[frame] = {}
-                    pose_lookup[frame][pid] = kps
-
         shuttle_y_map = {}
-        shuttle_conf_map = {}
         if shuttle_df is not None and len(shuttle_df) > 0:
             shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
             shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
 
         LOOKBACK = 5
-        attributed = []
-        court_coords = []
 
-        for _, shot in shots_df.iterrows():
-            frame = int(shot["frame"])
-            did_attribute = False
-
+        def _shuttle_direction_at(frame):
             y_at = shuttle_y_map.get(frame)
-            if y_at is not None:
-                y_before = None
-                for lookback in range(1, LOOKBACK + 1):
-                    y_prev = shuttle_y_map.get(frame - lookback)
-                    if y_prev is not None and abs(y_prev) > 1:
-                        y_before = y_prev
-                        break
-
-                if y_before is not None and abs(y_at) > 1:
-                    dy = y_at - y_before
+            if y_at is None or abs(y_at) <= 1:
+                return None
+            for lb in range(1, LOOKBACK + 1):
+                y_prev = shuttle_y_map.get(frame - lb)
+                if y_prev is not None and abs(y_prev) > 1:
+                    dy = y_at - y_prev
                     if abs(dy) > 2:
-                        attributed.append("player_1" if dy > 0 else "player_2")
-                        did_attribute = True
+                        return "player_1" if dy > 0 else "player_2"
+                    return None
+            return None
 
-            if not did_attribute and frame in pose_lookup:
-                foot_positions = {}
-                for pid, kps in pose_lookup[frame].items():
-                    foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
-                    if foot is None:
-                        foot = foot_point_from_bbox([0, 0, 1280, 720])
-                    foot_positions[pid] = foot
+        if rallies_df is not None and len(rallies_df) > 0:
+            for _, rally in rallies_df.iterrows():
+                start_f = int(rally["start_frame"])
+                end_f = int(rally["end_frame"])
+                rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)
+                rally_shots = shots_df[rally_mask].sort_values("frame")
+                if len(rally_shots) == 0:
+                    continue
 
-                if len(foot_positions) == 2:
-                    pids = list(foot_positions.keys())
-                    y1 = foot_positions[pids[0]][1]
-                    y2 = foot_positions[pids[1]][1]
-                    player_id = pids[0] if y1 > y2 else pids[1]
-                    attributed.append(player_id)
-                    did_attribute = True
+                first_frame = int(rally_shots.iloc[0]["frame"])
+                first_player = _shuttle_direction_at(first_frame)
+                if first_player is None:
+                    y_at = shuttle_y_map.get(first_frame)
+                    first_player = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
 
-                    if H is not None:
-                        foot = foot_positions[player_id]
-                        try:
-                            cx, cy = image_to_court(H, foot)
-                            court_coords.append({"frame": frame, "court_x": round(cx, 3), "court_y": round(cy, 3)})
-                        except Exception:
-                            court_coords.append({"frame": frame, "court_x": None, "court_y": None})
+                second_player = "player_2" if first_player == "player_1" else "player_1"
+                players_list = [first_player, second_player]
+                for i, idx in enumerate(rally_shots.index):
+                    shots_df.at[idx, "player_id"] = players_list[i % 2]
 
-            if not did_attribute:
-                player_id = self._assign_player(frame, shuttle_df, players, court_mid_y)
-                attributed.append(player_id)
-                court_coords.append({"frame": frame, "court_x": None, "court_y": None})
+        for idx, shot in shots_df.iterrows():
+            if pd.isna(shot.get("player_id")):
+                result = _shuttle_direction_at(int(shot["frame"]))
+                if result:
+                    shots_df.at[idx, "player_id"] = result
+                else:
+                    y_at = shuttle_y_map.get(int(shot["frame"]))
+                    shots_df.at[idx, "player_id"] = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
 
-        shots_df["player_id"] = attributed
-
-        if court_coords:
-            court_df = pd.DataFrame(court_coords)
-            if "court_x" not in shots_df.columns:
-                shots_df = shots_df.merge(court_df, on="frame", how="left")
+        if H is not None and pose_df is not None:
+            for idx, shot in shots_df.iterrows():
+                frame = int(shot["frame"])
+                pid = shot.get("player_id", "player_1")
+                row_matches = pose_df[(pose_df["frame"] == frame) & (pose_df["player_id"] == pid)]
+                if len(row_matches) > 0:
+                    row = row_matches.iloc[0]
+                    kps = np.array(row["keypoints"].tolist()) if hasattr(row["keypoints"], 'tolist') else np.array(row["keypoints"])
+                    if kps.shape == (17, 3) and np.any(kps != 0):
+                        foot = foot_midpoint_from_pose(kps[:, :2], kps[:, 2])
+                        if foot is not None:
+                            try:
+                                cx, cy = image_to_court(H, foot)
+                                shots_df.at[idx, "court_x"] = round(cx, 3)
+                                shots_df.at[idx, "court_y"] = round(cy, 3)
+                            except Exception:
+                                pass
 
         artifacts.set_parquet("shots", shots_df)
 
@@ -118,23 +108,3 @@ class PlayerAttributionStage:
             artifacts={"shots": artifacts.path("shots")},
             metadata={"attributed": len(shots_df), "distribution": counts, "court_mid_y": court_mid_y}
         )
-
-    def _assign_player(self, frame: int, shuttle_df: pd.DataFrame | None, players: dict, court_mid_y: float) -> str:
-        if shuttle_df is None or len(players) == 0:
-            return list(players.keys())[0] if players else "unknown"
-
-        shuttle_row = shuttle_df[shuttle_df["frame"] == frame]
-        if len(shuttle_row) == 0:
-            return list(players.keys())[0]
-
-        shuttle_y = float(shuttle_row.iloc[0]["y"])
-
-        player_list = list(players.values())
-        if len(player_list) == 2:
-            sides = [p["side"] for p in player_list]
-            if shuttle_y > court_mid_y and "near" in sides:
-                return next(p["id"] for p in player_list if p["side"] == "near")
-            elif shuttle_y <= court_mid_y and "far" in sides:
-                return next(p["id"] for p in player_list if p["side"] == "far")
-
-        return player_list[0]["id"]
