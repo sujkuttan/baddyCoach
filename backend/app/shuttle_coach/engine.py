@@ -38,5 +38,7 @@ def analyze(data_dir: str) -> dict[str, Any]:
 
 
 def narrate(question: str, metrics: list[dict], api_key: str) -> str:
-    from app.shuttle_coach.narration.gemini import answer
-    return answer(question, metrics, api_key)
+    raise NotImplementedError(
+        "Narration module (T19) not yet implemented. "
+        "app.shuttle_coach.narration.gemini will provide answer()."
+    )
