@@ -576,34 +576,37 @@ class YOLOv8Tracker:
         self.conf = conf_threshold
         self.device = device
 
-    def track_batch(self, frames, global_frame_offsets, batch_size=16):
+    def track_batch(self, frames, global_frame_offsets, batch_size=16, yolo_chunk=200):
         all_det = {}
         if not frames:
             return all_det
         h, w = frames[0].shape[:2]
 
-        results = self.model.track(
-            frames, classes=[0], conf=self.conf,
-            verbose=False, persist=True, device=self.device,
-            batch=batch_size
-        )
-
-        for local_idx, r in enumerate(results):
-            global_idx = global_frame_offsets + local_idx
-            dets = []
-            if r.boxes is not None and r.boxes.id is not None:
-                for box in r.boxes:
-                    x1, y1, x2, y2 = box.xyxy[0].tolist()
-                    bw, bh = x2 - x1, y2 - y1
-                    bbox_area = bw * bh
-                    frame_area = w * h
-                    if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
-                        continue
-                    dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
-                               "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
-            dets.sort(key=lambda d: d["confidence"], reverse=True)
-            dets = dets[:2]
-            all_det[global_idx] = dets
+        for chunk_start in range(0, len(frames), yolo_chunk):
+            chunk = frames[chunk_start:chunk_start + yolo_chunk]
+            results = self.model.track(
+                chunk, classes=[0], conf=self.conf,
+                verbose=False, persist=True, device=self.device,
+                batch=batch_size, stream=True
+            )
+            for local_idx, r in enumerate(results):
+                global_idx = global_frame_offsets + chunk_start + local_idx
+                dets = []
+                if r.boxes is not None and r.boxes.id is not None:
+                    for box in r.boxes:
+                        x1, y1, x2, y2 = box.xyxy[0].tolist()
+                        bw, bh = x2 - x1, y2 - y1
+                        bbox_area = bw * bh
+                        frame_area = w * h
+                        if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
+                            continue
+                        dets.append({"frame": global_idx, "bbox": [x1, y1, x2, y2],
+                                   "confidence": box.conf[0].item(), "track_id": int(box.id[0].item())})
+                dets.sort(key=lambda d: d["confidence"], reverse=True)
+                dets = dets[:2]
+                all_det[global_idx] = dets
+            del results
+            import gc; gc.collect()
         return all_det
 
 
