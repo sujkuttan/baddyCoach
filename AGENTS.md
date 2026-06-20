@@ -36,7 +36,9 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 ## Architecture
 
 ### Pipeline Stages (sequential)
-1. Court Detection → 2. Player Tracking (YOLOv8) → 3. Shuttle Tracking (TrackNetV3) → 4. Pose Estimation (RTMPose) → 5. Hit Frame Localization → 6. Stroke Classification (BST) → 7. Player Attribution → 8. Rally Segmentation → 9-13. Analytics (Court/Footwork/Fitness/Tactical/Technical) → 14. Coach Recommendations
+1. Court Detection → 2. Player Tracking (YOLOv8) → 3. Shuttle Tracking (TrackNetV3) → 4. Pose Estimation (RTMPose) → 5. Hit Frame Localization → 6. Stroke Classification (BST) → 7. Rally Segmentation → 8. Player Attribution → 9-13. Analytics (Court/Footwork/Fitness/Tactical/Technical) → 14. Coach Recommendations
+
+**Note:** Rally segmentation (7) runs BEFORE player attribution (8) because attribution uses rally alternation.
 
 ### Data Flow
 - All tabular data stored as **Parquet** (shuttle, pose, shots, rallies)
@@ -65,7 +67,7 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | `frontend/src/components/StrokeListPanel.tsx` | Filterable stroke list grouped by rally |
 | `frontend/src/components/StageProgress.tsx` | Pipeline stage progress display |
 | `frontend/src/hooks/useWebSocket.ts` | WebSocket hook for job progress events |
-| `colab/pipeline.py` | Self-contained GPU pipeline (1500+ lines, all models inlined) |
+| `colab/pipeline.py` | Self-contained GPU pipeline (2800+ lines, all models inlined) |
 | `colab/BMCA_Colab.ipynb` | Colab notebook for running pipeline |
 
 ## Conventions
@@ -75,6 +77,12 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 - `gpu_enabled: bool = False` default — use `settings.device` property for auto-detect
 - Parquet keypoint data: always reshape with `np.array(kps.tolist())` — pyarrow flattens nested lists
 - Pipeline stages accept optional kwargs beyond `(artifacts, config)` for testing
+
+### Player Attribution
+- **Rally alternation is the primary method** — Players MUST alternate hits within a rally. Determine first hitter via shuttle direction, then alternate P1/P2. Fallback: shuttle trajectory direction.
+- **Side assignment uses relative bbox center_y** — The player with the larger center_y (lower in frame) is "near", smaller is "far". NEVER use `bbox[1] > court_mid_y` (broken for broadcast angles where both bboxes are above the midline).
+- **No track ID filtering** — Don't use `top2` track ID filtering. Group all detections by side directly. YOLOv8 creates 200+ unique track IDs on broadcast footage; top 2 cover only ~13% of frames.
+- Pipeline order: rally segmentation BEFORE attribution (attribution depends on rally structure).
 
 ### BST Integration
 - BST_CG inputs: `JnB` (batch, seq_len, 2 players, 72), `shuttle` (batch, seq_len, 2), `pos` (batch, seq_len, 2, 2), `video_len` (batch,)
@@ -100,6 +108,13 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 - Commit messages: `feat:`, `fix:`, `docs:` prefixes
 - Never commit `ckpts/`, `data/`, `.venv/`, `node_modules/`, `dist/`, `BST/`, `RTMPose/`, `results/`, `videos/`, `*.pt`
 
+### Colab GPU Constraints
+- **YOLOv8**: Must chunk frames to 200 per call + `stream=True`. Passing all 2000 frames causes 14.65GiB allocation on T4 (14.56GiB) → CUDA OOM.
+- **RTMPose ONNX**: Must chunk crops to 64 per ONNX call. 3997 crops in one call → "Failed to allocate 1019381760 bytes".
+- **TrackNet**: Pre-process frames once into `(N, 288, 512, 3)` array, build sliding windows via numpy slicing. Eliminates 9x redundant cv2.resize.
+- **Pipeline stage order**: Rally segmentation runs BEFORE player attribution (attribution depends on rally alternation).
+- **Colab download**: Filter out `Zone.Identifier` files from zip. `files.download()` can fail silently — add try/except with individual file fallback.
+
 ## Models
 
 | Model | Path | Purpose |
@@ -110,16 +125,16 @@ python colab/pipeline.py video.mp4 --output report.json --device cuda
 | BST-CG (best) | `BST/weight/bst_CG_JnB_bone_merged.pt` | Stroke classification (ShuttleSet merged 25 classes) |
 
 **Known limitations:**
-- YOLOv8n/s fails on wide-angle broadcast footage (players too small). Synthetic fallback used.
+- YOLOv8n/s fails on wide-angle broadcast footage (players too small). Synthetic fallback used. Both players ARE detected on 99% of frames with broadcast footage — the issue was side assignment, not detection.
 - BST weights are raw state_dict (no bundled model class). Falls back to rule-based classification using shuttle trajectory when model unavailable or produces class 0.
 - TrackNetV3 input: 27 channels (9 frames × 3 RGB). Sigmoid postprocessing required.
 - RTMPose uses `onnxruntime-gpu` for CUDA acceleration; falls back to CPU gracefully.
 
 ## Testing
 
-68 tests in `backend/tests/`. Run full suite before commits:
+70 tests in `backend/tests/`. Run full suite before commits:
 ```bash
-.venv/bin/pytest backend/tests/ -v
+PYTHONPATH=/home/sujith/baddyCoach/backend .venv/bin/pytest backend/tests/ -v
 ```
 
 ## Dependencies
