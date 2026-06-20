@@ -689,40 +689,41 @@ class RTMPoseEstimator:
             return self._decode_hrnet(outputs, crop_info)
         return self._decode_rtmpose(outputs, crop_info)
 
-    def estimate_batch(self, crops):
+    def estimate_batch(self, crops, onnx_chunk=64):
         if self.model is None:
             return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
 
-        batch_tensors = []
-        valid_indices = []
-        crop_infos = []
-
-        for i, (bbox, frame) in enumerate(crops):
-            tensor, crop_info = self._preprocess(frame, bbox)
-            if tensor is None:
-                continue
-            batch_tensors.append(tensor[0])
-            valid_indices.append(i)
-            crop_infos.append(crop_info)
-
-        if not batch_tensors:
-            return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
-
-        batch_np = np.stack(batch_tensors)
-        input_name = self.model.get_inputs()[0].name
-        outputs = self.model.run(None, {input_name: batch_np})
-
-        kps_all = []
-        for j in range(len(batch_np)):
-            single_outputs = [out[j:j+1] for out in outputs]
-            if self.model_type == "hrnet":
-                kps_all.append(self._decode_hrnet(single_outputs, crop_infos[j]))
-            else:
-                kps_all.append(self._decode_rtmpose(single_outputs, crop_infos[j]))
-
         results = [np.zeros((17, 3), dtype=np.float32) for _ in crops]
-        for j, idx in enumerate(valid_indices):
-            results[idx] = kps_all[j]
+        input_name = self.model.get_inputs()[0].name
+
+        for chunk_start in range(0, len(crops), onnx_chunk):
+            chunk_end = min(chunk_start + onnx_chunk, len(crops))
+            batch_tensors = []
+            valid_indices = []
+            crop_infos = []
+
+            for i in range(chunk_start, chunk_end):
+                bbox, frame = crops[i]
+                tensor, crop_info = self._preprocess(frame, bbox)
+                if tensor is None:
+                    continue
+                batch_tensors.append(tensor[0])
+                valid_indices.append(i)
+                crop_infos.append(crop_info)
+
+            if not batch_tensors:
+                continue
+
+            batch_np = np.stack(batch_tensors)
+            outputs = self.model.run(None, {input_name: batch_np})
+
+            for j, idx in enumerate(valid_indices):
+                single_outputs = [out[j:j+1] for out in outputs]
+                if self.model_type == "hrnet":
+                    results[idx] = self._decode_hrnet(single_outputs, crop_infos[j])
+                else:
+                    results[idx] = self._decode_rtmpose(single_outputs, crop_infos[j])
+
         return results
 
 
