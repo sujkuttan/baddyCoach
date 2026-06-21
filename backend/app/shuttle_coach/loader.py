@@ -11,12 +11,15 @@ COLUMN_ALIASES = {
     "rallies": {
         "shot_count": None,
     },
+    "player_detections": {
+        "side": "player_id",  # Colab uses 'side' (near/far), backend uses 'player_id'
+    },
 }
 
 REQUIRED = {
     "rallies": ["rally_id"],
     "shots": ["rally_id", "player_id"],
-    "hits": ["rally_id", "frame"],
+    "hits": ["frame"],  # rally_id optional (Colab doesn't always have it)
     "shuttle": ["frame"],
     "player_detections": ["frame", "player_id"],
     "pose": ["frame", "player_id"],
@@ -49,7 +52,14 @@ def load_match(data_dir: Path) -> dict[str, pd.DataFrame]:
             if old in df.columns:
                 rename_map[old] = new
         if rename_map:
-            tables[table_name] = df.rename(columns=rename_map)
+            df = df.rename(columns=rename_map)
+        
+        # Convert side labels to player_id format
+        if table_name == "player_detections" and "player_id" in df.columns:
+            side_map = {"near": "player_1", "far": "player_2"}
+            df["player_id"] = df["player_id"].map(side_map).fillna(df["player_id"])
+        
+        tables[table_name] = df
 
     missing_tables = set(REQUIRED) - set(tables) - OPTIONAL_TABLES
     if missing_tables:
