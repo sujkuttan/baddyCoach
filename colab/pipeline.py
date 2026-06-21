@@ -2415,25 +2415,39 @@ def _shuttle_coach_derive_findings(metrics):
     for m in by_id.get("errors.location_reason", []):
         if isinstance(m["value"], dict):
             unforced = m["value"].get("unforced_error", 0)
-            if unforced > 30 and m["sample_size"] >= 10:
-                severity = min(1.0, unforced / 60)
+            if unforced > 20 and m["sample_size"] >= 8:
+                severity = min(1.0, unforced / 50)
                 findings.append({
                     "code": "high_unforced",
                     "player_id": m["player_id"],
                     "severity": severity,
-                    "headline": "High share of unforced errors",
-                    "detail": f"{unforced:.0f}% of lost points are unforced ({m['sample_size']} lost rallies). Shot tolerance/consistency is the highest-leverage area.",
+                    "headline": "High unforced error rate",
+                    "detail": f"{unforced:.0f}% of lost points are unforced errors ({m['sample_size']} lost rallies). Shot tolerance is the highest-leverage area to improve.",
                     "evidence": [m["metric_id"]],
                     "drill": "Consistency drills: rally with partner, focus on keeping shuttle in play."
                 })
+            
+            # High net errors
+            net_err = m["value"].get("net", 0)
+            if net_err > 8 and m["sample_size"] >= 8:
+                severity = min(1.0, net_err / 20)
+                findings.append({
+                    "code": "high_net_errors",
+                    "player_id": m["player_id"],
+                    "severity": severity,
+                    "headline": "Frequent net errors",
+                    "detail": f"{net_err:.0f}% of lost points ended at the net ({m['sample_size']} lost rallies). Tighten net shots and improve clearance.",
+                    "evidence": [m["metric_id"]],
+                    "drill": "Net clearance drills: practice lifting just over the tape from mid-court."
+                })
     
-    # Low variety
+    # Shot variety
     for m in by_id.get("shots.mix", []):
         if isinstance(m["value"], dict) and m["value"]:
             max_shot = max(m["value"].values())
-            if max_shot > 45 and m["sample_size"] >= 20:
-                severity = (max_shot - 45) / 55
-                max_type = max(m["value"], key=m["value"].get)
+            max_type = max(m["value"], key=m["value"].get)
+            if max_shot > 40 and m["sample_size"] >= 15:
+                severity = (max_shot - 40) / 40
                 findings.append({
                     "code": "low_variety",
                     "player_id": m["player_id"],
@@ -2442,6 +2456,16 @@ def _shuttle_coach_derive_findings(metrics):
                     "detail": f"Dominant stroke accounts for {max_shot:.0f}% of shots. Opponents can read your patterns.",
                     "evidence": [m["metric_id"]],
                     "drill": "Pattern-breaking drill: after 2 identical shots, forced switch to a different stroke."
+                })
+            elif max_shot < 25 and m["sample_size"] >= 15:
+                findings.append({
+                    "code": "good_variety",
+                    "player_id": m["player_id"],
+                    "severity": 0.1,
+                    "headline": "Good shot variety",
+                    "detail": f"No single stroke dominates (max {max_shot:.0f}%). This keeps opponents guessing.",
+                    "evidence": [m["metric_id"]],
+                    "drill": ""
                 })
     
     return findings
