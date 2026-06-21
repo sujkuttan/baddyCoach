@@ -2801,8 +2801,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print("\n[8/14] Rally segmentation...")
     rallies = stage_rallies(shots, fps=video_fps, video_name=video_name)
     print(f"  Segmented {len(rallies)} rallies")
-    pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
-    print(f"    rallies.parquet ({len(rallies)} rows)")
 
     for shot in shots:
         shot_rally = None
@@ -2817,6 +2815,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
     print(f"    shots.parquet ({len(shots)} rows)")
 
+    # Enrich rallies with winner/end_reason BEFORE exporting parquet
     for rally in rallies:
         rally_shots = [s for s in shots if s.get("rally_id") == rally["rally_id"]]
         rally_shots.sort(key=lambda s: s["frame"])
@@ -2834,6 +2833,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         # detection would require a dedicated model.
         first_server = "player_1" if rally["rally_id"] % 2 == 1 else "player_2"
         rally["serving_player_id"] = first_server
+
+    pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
+    print(f"    rallies.parquet ({len(rallies)} rows)")
 
     print("\n[9/14] Court position analytics...")
     court_analytics = stage_court_position(all_shuttle, shots, vid_w, vid_h)
