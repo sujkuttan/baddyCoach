@@ -2302,21 +2302,28 @@ def _shuttle_coach_recovery_time(positions_df, shots_df, player_ids):
     """Compute recovery time metric for each player."""
     import numpy as np
     results = []
+    # Skip if required columns are missing
+    if "court_x" not in positions_df.columns or "court_y" not in positions_df.columns:
+        return results
+    if "player_id" not in positions_df.columns:
+        return results
+    # Use ts if available, otherwise derive from frame
+    ts_col = "ts" if "ts" in positions_df.columns else "frame"
     for pid in player_ids:
-        pos = positions_df[positions_df["player_id"] == pid].dropna(subset=["court_x", "court_y"]).sort_values("ts")
+        pos = positions_df[positions_df["player_id"] == pid].dropna(subset=["court_x", "court_y"]).sort_values(ts_col)
         if len(pos) < 10:
             continue
         base = np.array([pos["court_x"].median(), pos["court_y"].median()])
         player_shots = shots_df[shots_df["player_id"] == pid].sort_values("start_ts")
         recov = []
         for _, s in player_shots.iterrows():
-            ts = s.get("start_ts", s.get("frame", 0) / 30.0)
-            after = pos[pos["ts"] >= ts].head(60)
+            shot_ts = s.get("start_ts", s.get("frame", 0) / 30.0)
+            after = pos[pos[ts_col] >= shot_ts].head(60)
             if after.empty:
                 continue
             d = np.linalg.norm(after[["court_x", "court_y"]].to_numpy() - base, axis=1)
             back = np.argmax(d < 1.0) if (d < 1.0).any() else len(d) - 1
-            recov.append(after["ts"].iloc[back] - ts)
+            recov.append(after[ts_col].iloc[back] - shot_ts)
         if recov:
             results.append({
                 "metric_id": "movement.recovery_time",
