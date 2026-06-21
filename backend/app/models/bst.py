@@ -106,11 +106,12 @@ class BSTClassifier:
             import traceback
             traceback.print_exc()
 
-    def predict_from_clips(self, clips: list) -> list:
+    def predict_from_clips(self, clips: list, batch_size: int = 32) -> list:
         """Predict stroke types from prepared BST clips.
 
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
+            batch_size: Number of clips to process in parallel (default 32)
 
         Returns:
             List of (stroke_type, confidence) tuples
@@ -120,40 +121,52 @@ class BSTClassifier:
 
         import torch
 
-        results = []
+        results = [None] * len(clips)
 
-        for clip in clips:
+        for batch_start in range(0, len(clips), batch_size):
+            batch_end = min(batch_start + batch_size, len(clips))
+            batch_clips = clips[batch_start:batch_end]
+
             try:
-                JnB = torch.from_numpy(clip['JnB']).float().unsqueeze(0).to(self.device)
-                shuttle = torch.from_numpy(clip['shuttle']).float().unsqueeze(0).to(self.device)
-                pos = torch.from_numpy(clip['pos']).float().unsqueeze(0).to(self.device)
-                video_len = torch.tensor([clip['video_len']], dtype=torch.long).to(self.device)
+                JnB = torch.from_numpy(
+                    np.stack([c['JnB'] for c in batch_clips])
+                ).float().to(self.device)
+                shuttle = torch.from_numpy(
+                    np.stack([c['shuttle'] for c in batch_clips])
+                ).float().to(self.device)
+                pos = torch.from_numpy(
+                    np.stack([c['pos'] for c in batch_clips])
+                ).float().to(self.device)
+                video_len = torch.tensor(
+                    [c['video_len'] for c in batch_clips], dtype=torch.long
+                ).to(self.device)
 
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                    probs = torch.softmax(logits, dim=1).cpu().numpy()
 
-                pred_idx = int(np.argmax(probs))
-                confidence = float(probs[pred_idx])
+                for j in range(len(batch_clips)):
+                    pred_idx = int(np.argmax(probs[j]))
+                    confidence = float(probs[j][pred_idx])
 
-                # If top prediction is "unknown", try the second-best class
-                # or fall back to rule-based shuttle trajectory classification
-                if pred_idx == 0:
-                    second_idx = int(np.argsort(probs)[-2])
-                    second_conf = float(probs[second_idx])
-                    if second_conf > 0.05:
-                        pred_idx = second_idx
-                        confidence = second_conf
-                    else:
-                        stroke_type = self._rule_based_predict(clip)
-                        results.append((stroke_type, confidence))
-                        continue
+                    if pred_idx == 0:
+                        second_idx = int(np.argsort(probs[j])[-2])
+                        second_conf = float(probs[j][second_idx])
+                        if second_conf > 0.05:
+                            pred_idx = second_idx
+                            confidence = second_conf
+                        else:
+                            results[batch_start + j] = (self._rule_based_predict(batch_clips[j]), confidence)
+                            continue
 
-                stroke_type = map_to_coach_class(pred_idx)
-                results.append((stroke_type, confidence))
+                    stroke_type = map_to_coach_class(pred_idx)
+                    results[batch_start + j] = (stroke_type, confidence)
+
             except Exception as e:
-                print(f"BST inference error: {e}")
-                results.append((self._rule_based_predict(clip), 0.5))
+                print(f"BST batch inference error: {e}")
+                for j in range(len(batch_clips)):
+                    if results[batch_start + j] is None:
+                        results[batch_start + j] = (self._rule_based_predict(batch_clips[j]), 0.5)
 
         return results
 

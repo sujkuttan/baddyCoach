@@ -99,7 +99,8 @@ class CoachEngine:
         rallies_df = analytics.get("_rallies_df")
         shots_df = analytics.get("_shots_df")
         if rallies_df is None or shots_df is None:
-            return {"avg_length": 0, "max_length": 0, "first_shot_win_rate": 0}
+            return {"avg_length": 0, "max_length": 0, "min_length": 0,
+                    "first_shot_win_rate": 0, "long_rally_pct": 0}
 
         if hasattr(rallies_df, 'iterrows'):
             rally_lengths = []
@@ -117,12 +118,16 @@ class CoachEngine:
                             first_shot_wins += 1
 
             total_rallies = len(rally_lengths)
+            long_rallies = sum(1 for l in rally_lengths if l > 8)
             return {
                 "avg_length": float(np.mean(rally_lengths)) if rally_lengths else 0,
                 "max_length": int(max(rally_lengths)) if rally_lengths else 0,
+                "min_length": int(min(rally_lengths)) if rally_lengths else 0,
                 "first_shot_win_rate": first_shot_wins / total_rallies if total_rallies > 0 else 0,
+                "long_rally_pct": long_rallies / total_rallies if total_rallies > 0 else 0,
             }
-        return {"avg_length": 0, "max_length": 0, "first_shot_win_rate": 0}
+        return {"avg_length": 0, "max_length": 0, "min_length": 0,
+                "first_shot_win_rate": 0, "long_rally_pct": 0}
 
     def _compute_court_analysis(self, analytics: dict, player_id: str) -> dict:
         court_data = analytics.get("court_analytics", {})

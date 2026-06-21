@@ -4,6 +4,24 @@ import numpy as np
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 
 
+def _infer_end_reason(stroke_type: str, confidence: float) -> str:
+    """Infer rally end reason from the last shot.
+
+    Rules:
+    - High-confidence smash/drop/kill -> winner (aggressive finishing shot)
+    - Net shot -> net (hitter hit the net)
+    - Low-confidence clear/drive/lift -> unforced_error (weak basic shot)
+    - Everything else -> forced_error (opponent won, not necessarily an error by hitter)
+    """
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.5:
+        return "winner"
+    if stroke_type in ("net_shot",):
+        return "net"
+    if stroke_type in ("clear", "drive", "lift") and confidence < 0.35:
+        return "unforced_error"
+    return "forced_error"
+
+
 class RallySegmentationStage:
     name = "rally_segmentation"
     input_keys = ["shots"]
@@ -67,9 +85,21 @@ class RallySegmentationStage:
             r_frames = shots_df[shots_df["rally_id"] == r["rally_id"]].sort_values("frame")
             if len(r_frames) == 0:
                 continue
-            last_pid = r_frames.iloc[-1].get("player_id")
-            r["winner_player_id"] = last_pid
-            r["end_reason"] = "winner"
+            last_shot = r_frames.iloc[-1]
+            last_pid = last_shot.get("player_id")
+            stroke_type = last_shot.get("stroke_type", "clear")
+            stroke_confidence = last_shot.get("stroke_confidence", 0.5)
+
+            end_reason = _infer_end_reason(stroke_type, stroke_confidence)
+            r["end_reason"] = end_reason
+
+            if end_reason == "winner":
+                r["winner_player_id"] = last_pid
+            elif end_reason in ("forced_error", "unforced_error", "net"):
+                r["winner_player_id"] = "player_2" if last_pid == "player_1" else "player_1"
+            else:
+                r["winner_player_id"] = None
+
             r["serving_player_id"] = None
             fps = 30.0
             r["start_ts"] = round(r["start_frame"] / fps, 3)

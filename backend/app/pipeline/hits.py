@@ -84,6 +84,7 @@ class HitFrameLocalizationStage:
     def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame) -> np.ndarray:
         score = np.zeros(len(shuttle_df))
         shuttle_positions = shuttle_df[["x", "y"]].values
+        shuttle_frames = shuttle_df["frame"].values
 
         for player_id in pose_df["player_id"].unique():
             player_poses = pose_df[pose_df["player_id"] == player_id]
@@ -96,7 +97,9 @@ class HitFrameLocalizationStage:
                     kps = np.array(kps.tolist())
                 if kps.shape == (17, 3):
                     wrist = (kps[9][:2] + kps[10][:2]) / 2
-                    shuttle_pos = shuttle_positions[min(frame_idx, len(shuttle_positions) - 1)]
+                    shuttle_pos_idx = np.searchsorted(shuttle_frames, frame_idx)
+                    shuttle_pos_idx = min(shuttle_pos_idx, len(shuttle_positions) - 1)
+                    shuttle_pos = shuttle_positions[shuttle_pos_idx]
                     dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
                     score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / 100.0))
 

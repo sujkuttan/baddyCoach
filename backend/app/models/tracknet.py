@@ -163,13 +163,65 @@ class TrackNetV3:
         heatmap = output.cpu().numpy()[0, 0]
         return [self._postprocess(heatmap, original_width, original_height)]
 
-    def predict_batch(self, frames: list[np.ndarray], batch_size: int = 3, original_size: tuple | None = None) -> list[dict]:
+    def predict_batch(self, frames: list[np.ndarray], batch_size: int | None = None,
+                      original_size: tuple | None = None) -> list[dict]:
         if len(frames) < 3:
             return [{"x": 0, "y": 0, "confidence": 0} for _ in frames]
 
-        results = []
-        for i in range(2, len(frames)):
-            window = frames[max(0, i-8):i+1]
-            pred = self.predict(window, original_size)
-            results.append(pred[0])
-        return results
+        if batch_size is None:
+            from app.config.gpu_batch import get_gpu_batch_config
+            batch_size = get_gpu_batch_config(self.device)["tracknet_chunk"]
+
+        original_width = original_size[0] if original_size else frames[0].shape[1]
+        original_height = original_size[1] if original_size else frames[0].shape[0]
+
+        import cv2
+        preprocessed = []
+        for frame in frames:
+            resized = cv2.resize(frame, (self.input_width, self.input_height))
+            rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+            normalized = rgb.astype(np.float32) / 255.0
+            preprocessed.append(normalized)
+
+        all_preds = [None] * len(frames)
+
+        for chunk_start in range(0, len(frames), batch_size):
+            chunk_end = min(chunk_start + batch_size, len(frames))
+            windows = []
+            for i in range(chunk_start, chunk_end):
+                window_start = max(0, i - 8)
+                window = preprocessed[window_start:i + 1]
+                if len(window) < 9:
+                    window = [window[0]] * (9 - len(window)) + window
+                else:
+                    window = window[-9:]
+                windows.append(np.stack(window))
+
+            batch_np = np.stack(windows)
+            batch_np = batch_np.reshape(len(windows), -1, self.input_height, self.input_width)
+            tensor = torch.from_numpy(batch_np).float().to(self.device)
+
+            if self.model is not None:
+                with torch.no_grad():
+                    output = self.model(tensor)
+                heatmaps = output.cpu().numpy()[:, 0]
+                for j, local_idx in enumerate(range(chunk_start, chunk_end)):
+                    hm = 1 / (1 + np.exp(-heatmaps[j]))
+                    y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
+                    conf = float(hm.max())
+                    all_preds[local_idx] = {
+                        "x": float(x_idx * original_width / self.input_width),
+                        "y": float(y_idx * original_height / self.input_height),
+                        "confidence": conf,
+                    }
+
+            del tensor
+            if self.device != "cpu":
+                import torch as _torch
+                _torch.cuda.empty_cache()
+
+        for i in range(len(all_preds)):
+            if all_preds[i] is None:
+                all_preds[i] = {"x": 0, "y": 0, "confidence": 0}
+
+        return all_preds

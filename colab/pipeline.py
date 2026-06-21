@@ -38,6 +38,30 @@ RTMOPOSE_PATH_ALT = CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-
 BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
 HRNET_PATH = CKPT_DIR / "mmpose" / "hrnet_w32_coco_256x192.onnx"
 
+
+def _get_gpu_batch_config(device: str) -> dict:
+    """Detect GPU VRAM and return optimal batch sizes per pipeline stage."""
+    tiers = [
+        (12, {"yolo_chunk": 1000, "yolo_batch": 64, "tracknet_chunk": 128, "rtmpose_chunk": 256, "bst_batch": 128}),
+        (6,  {"yolo_chunk": 500,  "yolo_batch": 32, "tracknet_chunk": 64,  "rtmpose_chunk": 128, "bst_batch": 64}),
+        (2,  {"yolo_chunk": 200,  "yolo_batch": 16, "tracknet_chunk": 16,  "rtmpose_chunk": 64,  "bst_batch": 32}),
+        (0,  {"yolo_chunk": 100,  "yolo_batch": 8,  "tracknet_chunk": 8,   "rtmpose_chunk": 32,  "bst_batch": 16}),
+    ]
+    cpu_cfg = {"yolo_chunk": 100, "yolo_batch": 8, "tracknet_chunk": 8, "rtmpose_chunk": 32, "bst_batch": 16}
+    if "cuda" not in device.lower():
+        return dict(cpu_cfg)
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return dict(cpu_cfg)
+        vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        for min_gb, cfg in tiers:
+            if vram_gb >= min_gb:
+                return dict(cfg)
+    except Exception:
+        pass
+    return dict(cpu_cfg)
+
 COURT_LENGTH = 13.4
 COURT_WIDTH = 5.18
 NET_HEIGHT = 1.55
@@ -354,7 +378,7 @@ def _export_hrnet_onnx():
 
 
 class TrackNetV3:
-    def __init__(self, model_path: str, device: str = "cuda"):
+    def __init__(self, model_path: str, device: str = "cuda", chunk_size: int = 16):
         import torch
         import torch.nn as nn
 
@@ -362,6 +386,7 @@ class TrackNetV3:
         self.model = None
         self.input_height = 288
         self.input_width = 512
+        self._tracknet_chunk = chunk_size
 
         if not Path(model_path).exists():
             return
@@ -433,7 +458,7 @@ class TrackNetV3:
             preprocessed[i] = r
         del frames
 
-        CHUNK = 16
+        CHUNK = self._tracknet_chunk
         results = [{"x": 0, "y": 0, "confidence": 0} for _ in range(len(preprocessed))]
 
         for chunk_start in range(0, len(preprocessed), CHUNK):
@@ -570,17 +595,23 @@ class CourtKeypointDetector:
 
 
 class YOLOv8Tracker:
-    def __init__(self, conf_threshold=0.3, device="cuda"):
+    def __init__(self, conf_threshold=0.3, device="cuda", yolo_chunk=200, yolo_batch=16):
         from ultralytics import YOLO
         self.model = YOLO(YOLOV8_MODEL)
         self.conf = conf_threshold
         self.device = device
+        self._yolo_chunk = yolo_chunk
+        self._yolo_batch = yolo_batch
 
-    def track_batch(self, frames, global_frame_offsets, batch_size=16, yolo_chunk=200):
+    def track_batch(self, frames, global_frame_offsets, batch_size=None, yolo_chunk=None):
         all_det = {}
         if not frames:
             return all_det
         h, w = frames[0].shape[:2]
+        if batch_size is None:
+            batch_size = self._yolo_batch
+        if yolo_chunk is None:
+            yolo_chunk = self._yolo_chunk
 
         for chunk_start in range(0, len(frames), yolo_chunk):
             chunk = frames[chunk_start:chunk_start + yolo_chunk]
@@ -611,10 +642,11 @@ class YOLOv8Tracker:
 
 
 class RTMPoseEstimator:
-    def __init__(self, model_path: str, device: str = "cuda"):
+    def __init__(self, model_path: str, device: str = "cuda", onnx_chunk: int = 64):
         self.model = None
         self.h, self.w = 256, 192
         self.model_type = "rtmpose"
+        self._onnx_chunk = onnx_chunk
         if Path(model_path).exists():
             try:
                 import onnxruntime as ort
@@ -633,7 +665,12 @@ class RTMPoseEstimator:
             print(f"  Pose model not found: {model_path}")
 
     def _preprocess(self, frame, bbox):
+        h, w = frame.shape[:2]
         x1, y1, x2, y2 = [int(v) for v in bbox]
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(x1 + 1, min(x2, w))
+        y2 = max(y1 + 1, min(y2, h))
         crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
             return None, (x1, y1, 0, 0)
@@ -689,9 +726,11 @@ class RTMPoseEstimator:
             return self._decode_hrnet(outputs, crop_info)
         return self._decode_rtmpose(outputs, crop_info)
 
-    def estimate_batch(self, crops, onnx_chunk=64):
+    def estimate_batch(self, crops, onnx_chunk=None):
         if self.model is None:
             return [np.zeros((17, 3), dtype=np.float32) for _ in crops]
+        if onnx_chunk is None:
+            onnx_chunk = self._onnx_chunk
 
         results = [np.zeros((17, 3), dtype=np.float32) for _ in crops]
         input_name = self.model.get_inputs()[0].name
@@ -809,22 +848,21 @@ def detect_court_from_frame(frame):
             
             if len(approx) == 4:
                 pts = approx.reshape(4, 2).astype(np.float64)
-                # Order: bottom-left, bottom-right, top-left, top-right
+                # Order: bottom-left, bottom-right, top-left, top-right (matches compute_homography)
                 s = pts.sum(axis=1)
                 d = np.diff(pts, axis=1).flatten()
                 corners = [
-                    pts[np.argmin(s)].tolist(),  # top-left (smallest sum)
-                    pts[np.argmin(d)].tolist(),  # top-right (smallest diff)
                     pts[np.argmax(d)].tolist(),  # bottom-left (largest diff)
                     pts[np.argmax(s)].tolist(),  # bottom-right (largest sum)
+                    pts[np.argmin(s)].tolist(),  # top-left (smallest sum)
+                    pts[np.argmin(d)].tolist(),  # top-right (smallest diff)
                 ]
     
     # ── Stage 2: HoughLinesP edge detection (fallback) ──
     if corners is None:
-        blur = cv2.GaussianBlur(gray, (5, 5), 0)
-        edges = cv2.Canny(blur, 30, 100, apertureSize=3)
-        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=80,
-                                minLineLength=min(h, w) * 0.25, maxLineGap=20)
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100,
+                                minLineLength=w * 0.2, maxLineGap=10)
         
         if lines is not None and len(lines) >= 4:
             h_lines = []
@@ -1154,7 +1192,7 @@ def stage_hits(shuttle_data, pose_data=None, player_detections=None):
     return hits
 
 
-def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda", vid_w=1280, vid_h=720, player_detections=None):
+def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="cuda", vid_w=1280, vid_h=720, player_detections=None, bst_batch_size=32):
     """Classify strokes using BST model with sequence inputs.
     
     This implementation follows the BST paper's approach:
@@ -1575,31 +1613,18 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     if model is not None:
         import torch
         
-        # Sort hit frames for smart clipping (previous-hit to next-hit)
         hit_frames_sorted = sorted([h['frame'] for h in hits_data])
         
+        all_clips = []
         for hit in hits_data:
             hit_frame = hit['frame']
-            
-            # Smart clipping: previous opponent's hit to next opponent's hit
             hit_pos = hit_frames_sorted.index(hit_frame)
+            start_frame = hit_frames_sorted[hit_pos - 1] if hit_pos > 0 else max(0, hit_frame - seq_len // 2)
+            end_frame = hit_frames_sorted[hit_pos + 1] + 2 if hit_pos < len(hit_frames_sorted) - 1 else hit_frame + seq_len // 2 + 1
             
-            if hit_pos > 0:
-                start_frame = hit_frames_sorted[hit_pos - 1]
-            else:
-                start_frame = max(0, hit_frame - seq_len // 2)
-            
-            if hit_pos < len(hit_frames_sorted) - 1:
-                end_frame = hit_frames_sorted[hit_pos + 1] + 2
-            else:
-                end_frame = hit_frame + seq_len // 2 + 1
-            
-            # Extract clip frames
             clip_frames = []
             for f in range(start_frame, end_frame):
                 frame_data = {}
-                
-                # Shuttle (normalized)
                 if len(shuttle_df) > 0:
                     s_row = shuttle_df[shuttle_df['frame'] == f]
                     if len(s_row) > 0:
@@ -1611,21 +1636,14 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 else:
                     frame_data['shuttle_x'] = 0.0
                     frame_data['shuttle_y'] = 0.0
-                
-                # Pose: look up by player_1/player_2 directly (set by per-frame tid_to_pid)
                 raw_pose = pose_by_frame.get(f, {})
-                frame_data['pose'] = {
-                    'player_1': raw_pose.get('player_1'),
-                    'player_2': raw_pose.get('player_2'),
-                }
+                frame_data['pose'] = {'player_1': raw_pose.get('player_1'), 'player_2': raw_pose.get('player_2')}
                 frame_data['det_bboxes'] = {
                     'player_1': det_bbox_lookup.get('player_1', {}).get(f),
                     'player_2': det_bbox_lookup.get('player_2', {}).get(f),
                 }
-                
                 clip_frames.append(frame_data)
             
-            # Pad/truncate to seq_len, centering on the hit frame
             if len(clip_frames) > seq_len:
                 hit_offset = hit_frame - start_frame
                 half = seq_len // 2
@@ -1638,61 +1656,57 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             while len(clip_frames) < seq_len:
                 clip_frames.append({'shuttle_x': 0.0, 'shuttle_y': 0.0, 'pose': {}})
             
-            # Prepare BST input
             JnB, shuttle_arr, pos_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
-            
-            # Convert to tensors
-            JnB_t = torch.from_numpy(JnB).float().unsqueeze(0).to(device)
-            shuttle_t = torch.from_numpy(shuttle_arr).float().unsqueeze(0).to(device)
-            pos_t = torch.from_numpy(pos_arr).float().unsqueeze(0).to(device)
-            video_len_t = torch.tensor([v_len], dtype=torch.long).to(device)
+            all_clips.append((hit, JnB, shuttle_arr, pos_arr, v_len))
+        
+        for batch_start in range(0, len(all_clips), bst_batch_size):
+            batch = all_clips[batch_start:batch_start + bst_batch_size]
+            JnB_batch = torch.from_numpy(np.stack([c[1] for c in batch])).float().to(device)
+            shuttle_batch = torch.from_numpy(np.stack([c[2] for c in batch])).float().to(device)
+            pos_batch = torch.from_numpy(np.stack([c[3] for c in batch])).float().to(device)
+            vlen_batch = torch.tensor([c[4] for c in batch], dtype=torch.long).to(device)
             if device == "cuda":
-                JnB_t = JnB_t.half()
-                shuttle_t = shuttle_t.half()
-                pos_t = pos_t.half()
+                JnB_batch = JnB_batch.half()
+                shuttle_batch = shuttle_batch.half()
+                pos_batch = pos_batch.half()
             
-            # Inference
             with torch.no_grad():
-                logits = model(JnB_t, shuttle_t, pos_t, video_len_t)
-                probs = torch.softmax(logits, dim=1).cpu().numpy()[0]
+                logits_batch = model(JnB_batch, shuttle_batch, pos_batch, vlen_batch)
+                probs_batch = torch.softmax(logits_batch, dim=1).cpu().numpy()
             
-            pred_idx = int(np.argmax(probs))
-            confidence = float(probs[pred_idx])
-            
-            # If top prediction is "unknown", try second-best or rule-based fallback
-            if pred_idx == 0:
-                second_idx = int(np.argsort(probs)[-2])
-                second_conf = float(probs[second_idx])
-                if second_conf > 0.05:
-                    pred_idx = second_idx
-                    confidence = second_conf
+            for j, (hit, *_) in enumerate(batch):
+                hit_frame = hit['frame']
+                probs = probs_batch[j]
+                pred_idx = int(np.argmax(probs))
+                confidence = float(probs[pred_idx])
+                
+                if pred_idx == 0:
+                    second_idx = int(np.argsort(probs)[-2])
+                    second_conf = float(probs[second_idx])
+                    if second_conf > 0.05:
+                        pred_idx = second_idx
+                        confidence = second_conf
+                    else:
+                        stroke_type = _rule_based_shuttle_predict(shuttle_df, hit_frame, vid_w, vid_h)
+                        shots.append({"frame": hit_frame, "hit_confidence": hit['confidence'],
+                                      "stroke_type": stroke_type, "stroke_confidence": confidence})
+                        continue
+                
+                if pred_idx == 0:
+                    stroke_type = "unknown"
+                elif 1 <= pred_idx <= 12:
+                    stroke_type = BST_CLASSES[pred_idx - 1] if pred_idx - 1 < len(BST_CLASSES) else "clear"
+                elif 13 <= pred_idx <= 24:
+                    stroke_type = BST_CLASSES[pred_idx - 13] if pred_idx - 13 < len(BST_CLASSES) else "clear"
                 else:
-                    # Rule-based shuttle trajectory fallback
-                    stroke_type = _rule_based_shuttle_predict(shuttle_df, hit_frame, vid_w, vid_h)
-                    shots.append({
-                        "frame": hit_frame,
-                        "hit_confidence": hit['confidence'],
-                        "stroke_type": stroke_type,
-                        "stroke_confidence": confidence,
-                    })
-                    continue
-            
-            # Map to simplified class
-            if pred_idx == 0:
-                stroke_type = "unknown"
-            elif 1 <= pred_idx <= 12:
-                stroke_type = BST_CLASSES[pred_idx - 1] if pred_idx - 1 < len(BST_CLASSES) else "clear"
-            elif 13 <= pred_idx <= 24:
-                stroke_type = BST_CLASSES[pred_idx - 13] if pred_idx - 13 < len(BST_CLASSES) else "clear"
-            else:
-                stroke_type = "clear"
-            
-            shots.append({
-                "frame": hit_frame,
-                "hit_confidence": hit['confidence'],
-                "stroke_type": stroke_type,
-                "stroke_confidence": confidence,
-            })
+                    stroke_type = "clear"
+                
+                shots.append({"frame": hit_frame, "hit_confidence": hit['confidence'],
+                              "stroke_type": stroke_type, "stroke_confidence": confidence})
+        
+        del JnB_batch, shuttle_batch, pos_batch, vlen_batch
+        if device == "cuda":
+            torch.cuda.empty_cache()
     else:
         # Rule-based fallback when model not available
         for hit in hits_data:
@@ -2229,18 +2243,22 @@ def stage_rally_stats(shots_data, rallies_data):
     return stats
 
 
-def stage_court_analysis(court_analytics, shots_data):
+def stage_court_analysis(court_analytics, shots_data, player_id=None):
     """Analyze court zone distribution for coaching."""
     transitions = court_analytics.get("zone_transitions", [])
     if not transitions:
         return {"front_pct": 0, "mid_pct": 0, "rear_pct": 0, "left_pct": 0, "right_pct": 0}
 
-    total = len(transitions)
-    front = sum(1 for t in transitions if "front" in t.get("zone", ""))
-    mid = sum(1 for t in transitions if "mid" in t.get("zone", ""))
-    rear = sum(1 for t in transitions if "rear" in t.get("zone", ""))
-    left = sum(1 for t in transitions if "left" in t.get("zone", ""))
-    right = sum(1 for t in transitions if "right" in t.get("zone", ""))
+    player_zones = [t.get("zone", "") for t in transitions if t.get("player_id") == player_id] if player_id else [t.get("zone", "") for t in transitions]
+    total = len(player_zones)
+    if total == 0:
+        return {"front_pct": 0, "mid_pct": 0, "rear_pct": 0, "left_pct": 0, "right_pct": 0}
+
+    front = sum(1 for z in player_zones if "front" in z)
+    mid = sum(1 for z in player_zones if "mid" in z)
+    rear = sum(1 for z in player_zones if "rear" in z)
+    left = sum(1 for z in player_zones if "left" in z)
+    right = sum(1 for z in player_zones if "right" in z)
 
     return {
         "front_pct": float(front / total),
@@ -2260,9 +2278,11 @@ def stage_coach(tactical, fitness, footwork, rallies=None, court_analytics=None,
     evidence = []
 
     rally_stats = stage_rally_stats(shots_data or [], rallies or [])
-    court_analysis = stage_court_analysis(court_analytics or {}, shots_data or [])
 
     player_ids = list(tactical.keys())
+    court_analysis = {}
+    for pid in player_ids:
+        court_analysis[pid] = stage_court_analysis(court_analytics or {}, shots_data or [], player_id=pid)
     opponent_data = {}
     for pid in player_ids:
         opp_ids = [p for p in player_ids if p != pid]
@@ -2360,7 +2380,7 @@ def stage_coach(tactical, fitness, footwork, rallies=None, court_analytics=None,
             "fitness": fitness.get(pid, {}),
             "footwork": footwork.get(pid, {}),
             "rally_stats": rally_stats,
-            "court_analysis": court_analysis,
+            "court_analysis": court_analysis.get(pid, {}),
             "opponent": opponent_data.get(pid, {}),
         }
 
@@ -2711,9 +2731,23 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     start_time = time.time()
     video_name = Path(video_path).name
 
+    gpu_cfg = _get_gpu_batch_config(device)
     print(f"=" * 60)
     print(f"  BMCA Pipeline - {video_name}")
     print(f"  Device: {device}")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            props = torch.cuda.get_device_properties(0)
+            vram_gb = props.total_mem / (1024 ** 3)
+            print(f"  GPU: {props.name} ({vram_gb:.1f} GB)")
+        else:
+            print("  GPU: CUDA requested but not available, using CPU")
+    except Exception:
+        print("  GPU: detection failed")
+    print(f"  Batch config: YOLO chunk={gpu_cfg['yolo_chunk']} batch={gpu_cfg['yolo_batch']}, "
+          f"TrackNet chunk={gpu_cfg['tracknet_chunk']}, RTMPose chunk={gpu_cfg['rtmpose_chunk']}, "
+          f"BST batch={gpu_cfg['bst_batch']}")
     print(f"=" * 60)
 
     setup_models(device, pose_model)
@@ -2784,8 +2818,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     # Initialize ML models
     print("\n  Loading ML models...")
-    tracker = YOLOv8Tracker(conf_threshold=0.7, device=device)
-    tracknet = TrackNetV3(str(TRACKNET_PATH), device=device)
+    tracker = YOLOv8Tracker(conf_threshold=0.5, device=device, yolo_chunk=gpu_cfg["yolo_chunk"], yolo_batch=gpu_cfg["yolo_batch"])
+    tracknet = TrackNetV3(str(TRACKNET_PATH), device=device, chunk_size=gpu_cfg["tracknet_chunk"])
     # Pose model selection
     pose_estimator = None
     pose_estimator_secondary = None
@@ -2793,14 +2827,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     if pose_model == "hybrid":
         if HRNET_PATH.exists():
             print(f"  Using HYBRID mode: MMPose (strokes) + RTMPose (hits)")
-            pose_estimator = RTMPoseEstimator(str(HRNET_PATH), device=device)
+            pose_estimator = RTMPoseEstimator(str(HRNET_PATH), device=device, onnx_chunk=gpu_cfg["rtmpose_chunk"])
             rtmpose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
             if not Path(rtmpose_path).exists():
                 rtmpose_dir = CKPT_DIR / "rtmpose"
                 onnx_files = list(rtmpose_dir.rglob("*.onnx"))
                 if onnx_files:
                     rtmpose_path = str(onnx_files[0])
-            pose_estimator_secondary = RTMPoseEstimator(rtmpose_path, device=device)
+            pose_estimator_secondary = RTMPoseEstimator(rtmpose_path, device=device, onnx_chunk=gpu_cfg["rtmpose_chunk"])
         else:
             print(f"  WARNING: HRNet not found, falling back to RTMPose only")
             pose_model = "rtmpose"
@@ -2808,7 +2842,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     if pose_model == "mmpose" and HRNET_PATH.exists():
         pose_path = str(HRNET_PATH)
         print(f"  Using MMPose HRNet-W32 (accurate)")
-        pose_estimator = RTMPoseEstimator(pose_path, device=device)
+        pose_estimator = RTMPoseEstimator(pose_path, device=device, onnx_chunk=gpu_cfg["rtmpose_chunk"])
     elif pose_model != "hybrid":
         pose_path = str(RTMOPOSE_PATH_ALT if RTMOPOSE_PATH_ALT.exists() else RTMOPOSE_PATH)
         if not Path(pose_path).exists():
@@ -2820,7 +2854,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             else:
                 print(f"  WARNING: No RTMPose .onnx found in {rtmpose_dir}")
         print(f"  Using RTMPose (fast)")
-        pose_estimator = RTMPoseEstimator(pose_path, device=device)
+        pose_estimator = RTMPoseEstimator(pose_path, device=device, onnx_chunk=gpu_cfg["rtmpose_chunk"])
 
     print("  Models loaded")
 
@@ -2860,7 +2894,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                                all_shuttle, all_det, all_pose, all_player_detections,
                                batch_count, total_batches,
                                pose_estimator_secondary=pose_estimator_secondary,
-                               all_pose_secondary=all_pose_secondary)
+                               all_pose_secondary=all_pose_secondary,
+                               corners=corners)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -2876,7 +2911,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                        all_shuttle, all_det, all_pose, all_player_detections,
                        batch_count, total_batches,
                        pose_estimator_secondary=pose_estimator_secondary,
-                       all_pose_secondary=all_pose_secondary)
+                       all_pose_secondary=all_pose_secondary,
+                       corners=corners)
         batch_frames = []
         batch_global_indices = []
         gc.collect()
@@ -2944,7 +2980,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             bst_pose = all_pose_secondary
         else:
             print(f"  HRNet keypoints valid ({nonzero_count}/100 non-zero)")
-    shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections)
+    shots = stage_strokes(hits, all_shuttle, bst_pose, court, device, vid_w=vid_w, vid_h=vid_h, player_detections=all_player_detections, bst_batch_size=gpu_cfg["bst_batch"])
     print(f"  Classified {len(shots)} shots")
     for shot_idx, s in enumerate(shots, 1):
         s["shot_id"] = shot_idx
@@ -3127,7 +3163,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
                    all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0,
-                   pose_estimator_secondary=None, all_pose_secondary=None):
+                   pose_estimator_secondary=None, all_pose_secondary=None,
+                   corners=None):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
@@ -3137,8 +3174,11 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 1. Player tracking (YOLOv8)
     tqdm.write(f"{tag} | YOLOv8 tracking {len(frames)} frames...")
     batch_det = tracker.track_batch(frames, 0)
-    h, w = frames[0].shape[:2]
-    court_mid_y = h * 0.5
+    if corners and len(corners) >= 4:
+        court_mid_y = (corners[0][1] + corners[2][1]) / 2
+    else:
+        h, w = frames[0].shape[:2]
+        court_mid_y = h * 0.5
     for local_idx, global_idx in enumerate(global_indices):
         dets = batch_det.get(local_idx, [])
         if len(dets) >= 2:

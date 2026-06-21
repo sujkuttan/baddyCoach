@@ -40,7 +40,8 @@ class YOLOv8Detector:
 
 
 class YOLOv8Tracker:
-    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.7, device: str = "cpu"):
+    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.7, device: str = "cpu",
+                 chunk_size: int | None = None, batch_size: int | None = None):
         self.conf_threshold = conf_threshold
         self.device = device
         self.model = None
@@ -49,11 +50,23 @@ class YOLOv8Tracker:
             self.model = YOLO(model_path)
         else:
             self.model = YOLO("yolov8s.pt")
+        if chunk_size is not None:
+            self._chunk_size = chunk_size
+        else:
+            from app.config.gpu_batch import get_gpu_batch_config
+            cfg = get_gpu_batch_config(device)
+            self._chunk_size = cfg["yolo_chunk"]
+        if batch_size is not None:
+            self._batch_size = batch_size
+        else:
+            from app.config.gpu_batch import get_gpu_batch_config
+            cfg = get_gpu_batch_config(device)
+            self._batch_size = cfg["yolo_batch"]
 
     def track_frames(self, frames: list[np.ndarray]) -> dict:
         all_detections = {}
-        chunk_size = 200
-        batch_size = 16
+        chunk_size = self._chunk_size
+        batch_size = self._batch_size
 
         for chunk_start in range(0, len(frames), chunk_size):
             chunk = frames[chunk_start:chunk_start + chunk_size]

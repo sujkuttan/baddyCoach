@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 from pathlib import Path
 from tempfile import NamedTemporaryFile
 import cv2
@@ -20,13 +21,16 @@ def create_test_video(path: Path, num_frames=30, fps=30, width=640, height=480):
     return path
 
 
+@pytest.mark.model
+@pytest.mark.integration
+@pytest.mark.memory_intensive
 def test_real_pipeline_with_models():
     """Test the full pipeline with real models (if available)."""
     from app.pipeline.video_utils import extract_frames, get_video_info
 
     tracknet_path = Path("ckpts/TrackNet_best.pt")
     if not tracknet_path.exists():
-        return
+        pytest.skip("TrackNet checkpoint not found")
 
     with NamedTemporaryFile(suffix='.mp4', delete=False) as f:
         video_path = Path(f.name)

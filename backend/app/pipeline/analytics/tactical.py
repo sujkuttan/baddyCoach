@@ -1,4 +1,4 @@
-from collections import Counter
+from collections import Counter, defaultdict
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 
@@ -24,11 +24,25 @@ class TacticalAnalyticsStage:
             stroke_sequence = player_shots["stroke_type"].tolist()
             ngrams = self._extract_ngrams(stroke_sequence, n=3)
 
+            rally_openers = Counter()
+            rally_enders = Counter()
+            rally_shots = defaultdict(list)
+            for _, shot in player_shots.iterrows():
+                rid = shot.get("rally_id")
+                if rid is not None:
+                    rally_shots[rid].append(shot["stroke_type"])
+            for rid, strokes in rally_shots.items():
+                if strokes:
+                    rally_openers[strokes[0]] += 1
+                    rally_enders[strokes[-1]] += 1
+
             tactical[player_id] = {
                 "shot_distribution": shot_distribution,
                 "total_shots": total,
                 "common_patterns": ngrams,
                 "unique_strokes": list(shot_dist.keys()),
+                "rally_openers": dict(rally_openers),
+                "rally_enders": dict(rally_enders),
             }
 
         artifacts.set("tactical_analytics", tactical)

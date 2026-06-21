@@ -1,6 +1,9 @@
 import numpy as np
+import pytest
 
 
+@pytest.mark.model
+@pytest.mark.memory_intensive
 def test_yolov8_detect_persons():
     from app.models.yolov8 import YOLOv8Detector
 
@@ -13,6 +16,8 @@ def test_yolov8_detect_persons():
     assert isinstance(detections, list)
 
 
+@pytest.mark.model
+@pytest.mark.memory_intensive
 def test_yolov8_tracker():
     from app.models.yolov8 import YOLOv8Tracker
 

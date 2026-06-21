@@ -2,10 +2,15 @@ import numpy as np
 
 
 class RTMPoseEstimator:
-    def __init__(self, model_path: str | None = None, device: str = "cpu"):
+    def __init__(self, model_path: str | None = None, device: str = "cpu", chunk_size: int | None = None):
         self.device = device
         self.model = None
         self.input_name = None
+        if chunk_size is not None:
+            self._chunk_size = chunk_size
+        else:
+            from app.config.gpu_batch import get_gpu_batch_config
+            self._chunk_size = get_gpu_batch_config(device)["rtmpose_chunk"]
         if model_path:
             import os
             if os.path.exists(model_path):
@@ -75,7 +80,7 @@ class RTMPoseEstimator:
             return [np.zeros((17, 3), dtype=np.float32) for _ in bboxes]
 
         results = []
-        chunk_size = 64
+        chunk_size = self._chunk_size
         for chunk_start in range(0, len(bboxes), chunk_size):
             chunk = bboxes[chunk_start:chunk_start + chunk_size]
             batch_tensors = np.concatenate([self._preprocess(frame, bbox) for bbox in chunk], axis=0)

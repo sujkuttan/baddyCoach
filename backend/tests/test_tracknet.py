@@ -1,12 +1,15 @@
 import numpy as np
+import pytest
 from pathlib import Path
 
 
+@pytest.mark.model
+@pytest.mark.memory_intensive
 def test_tracknet_predict_returns_position():
     from app.models.tracknet import TrackNetV3
     model_path = Path("ckpts/TrackNet_best.pt")
     if not model_path.exists():
-        return
+        pytest.skip("TrackNet checkpoint not found")
     model = TrackNetV3(str(model_path), device="cpu")
     frames = [np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8) for _ in range(3)]
     result = model.predict(frames)
@@ -17,11 +20,13 @@ def test_tracknet_predict_returns_position():
     assert 0 <= result[0]['confidence'] <= 1
 
 
+@pytest.mark.model
+@pytest.mark.memory_intensive
 def test_tracknet_predict_batch():
     from app.models.tracknet import TrackNetV3
     model_path = Path("ckpts/TrackNet_best.pt")
     if not model_path.exists():
-        return
+        pytest.skip("TrackNet checkpoint not found")
     model = TrackNetV3(str(model_path), device="cpu")
     frames = [np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8) for _ in range(6)]
     results = model.predict_batch(frames, batch_size=3)

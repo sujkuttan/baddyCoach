@@ -47,7 +47,6 @@ class FootworkAnalyticsStage:
 
         court_length = court["court_length"]
         court_width = court["court_width"]
-        base_position = np.array([court_width / 2, court_length / 2])
 
         px_per_m = _pixel_to_meter_scale(court)
 
@@ -55,6 +54,11 @@ class FootworkAnalyticsStage:
         for player_id in pose_df["player_id"].unique():
             player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
             com_trajectory = self._extract_com(player_poses)
+
+            if len(com_trajectory) > 0:
+                base_position = np.median(com_trajectory, axis=0)
+            else:
+                base_position = np.array([court_width / 2, court_length / 2])
 
             distance_px = self._compute_distance(com_trajectory)
             distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
