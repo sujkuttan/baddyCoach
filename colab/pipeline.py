@@ -2296,6 +2296,224 @@ def stage_coach(tactical, fitness, footwork, rallies=None, court_analytics=None,
             "evidence": evidence, "rally_stats": rally_stats}
 
 
+# ─── Shuttle-Coach Integration ──────────────────────────────────────────────
+
+def _shuttle_coach_recovery_time(positions_df, shots_df, player_ids):
+    """Compute recovery time metric for each player."""
+    import numpy as np
+    results = []
+    for pid in player_ids:
+        pos = positions_df[positions_df["player_id"] == pid].dropna(subset=["court_x", "court_y"]).sort_values("ts")
+        if len(pos) < 10:
+            continue
+        base = np.array([pos["court_x"].median(), pos["court_y"].median()])
+        player_shots = shots_df[shots_df["player_id"] == pid].sort_values("start_ts")
+        recov = []
+        for _, s in player_shots.iterrows():
+            ts = s.get("start_ts", s.get("frame", 0) / 30.0)
+            after = pos[pos["ts"] >= ts].head(60)
+            if after.empty:
+                continue
+            d = np.linalg.norm(after[["court_x", "court_y"]].to_numpy() - base, axis=1)
+            back = np.argmax(d < 1.0) if (d < 1.0).any() else len(d) - 1
+            recov.append(after["ts"].iloc[back] - ts)
+        if recov:
+            results.append({
+                "metric_id": "movement.recovery_time",
+                "player_id": pid,
+                "value": float(np.mean(recov)),
+                "unit": "s",
+                "sample_size": len(recov),
+                "confidence": min(1.0, len(recov) / 30),
+                "context": {"median": float(np.median(recov))}
+            })
+    return results
+
+
+def _shuttle_coach_shot_mix(shots_df, player_ids):
+    """Compute shot distribution for each player."""
+    results = []
+    for pid in player_ids:
+        s = shots_df[shots_df["player_id"] == pid]
+        if s.empty:
+            continue
+        mix = (s["stroke_type"].value_counts(normalize=True) * 100).round(1).to_dict()
+        results.append({
+            "metric_id": "shots.mix",
+            "player_id": pid,
+            "value": mix,
+            "unit": "%",
+            "sample_size": len(s),
+            "confidence": float(s["stroke_confidence"].mean()) if "stroke_confidence" in s.columns else 1.0,
+            "context": {}
+        })
+    return results
+
+
+def _shuttle_coach_error_location(rallies_df, player_ids):
+    """Compute error breakdown for each player."""
+    results = []
+    for pid in player_ids:
+        if "winner_player_id" not in rallies_df.columns:
+            continue
+        lost = rallies_df[(rallies_df["winner_player_id"].notna()) & (rallies_df["winner_player_id"] != pid)]
+        if "end_reason" in rallies_df.columns and not lost.empty:
+            reasons = (lost["end_reason"].value_counts(normalize=True) * 100).round(1).to_dict()
+        else:
+            reasons = {}
+        results.append({
+            "metric_id": "errors.location_reason",
+            "player_id": pid,
+            "value": reasons,
+            "unit": "%",
+            "sample_size": int(len(lost)),
+            "confidence": 1.0,
+            "context": {}
+        })
+    return results
+
+
+def _shuttle_coach_derive_findings(metrics):
+    """Derive coaching findings from metrics."""
+    findings = []
+    
+    # Group by metric_id
+    by_id = {}
+    for m in metrics:
+        by_id.setdefault(m["metric_id"], []).append(m)
+    
+    # Slow recovery
+    for m in by_id.get("movement.recovery_time", []):
+        if m["value"] > 0.8 and m["sample_size"] >= 15:
+            severity = min(1.0, (m["value"] - 0.8) / 0.8)
+            findings.append({
+                "code": "slow_recovery",
+                "player_id": m["player_id"],
+                "severity": severity,
+                "headline": "Slow recovery to base position",
+                "detail": f"Average recovery {m['value']:.2f}s (median {m['context'].get('median', 0):.2f}s) over {m['sample_size']} shots. Returning to base faster would reduce time spent out of position.",
+                "evidence": [m["metric_id"]],
+                "drill": "Split-step practice: bounce on toes, explode to shuttle on opponent's hit."
+            })
+    
+    # High unforced errors
+    for m in by_id.get("errors.location_reason", []):
+        if isinstance(m["value"], dict):
+            unforced = m["value"].get("unforced_error", 0)
+            if unforced > 30 and m["sample_size"] >= 10:
+                severity = min(1.0, unforced / 60)
+                findings.append({
+                    "code": "high_unforced",
+                    "player_id": m["player_id"],
+                    "severity": severity,
+                    "headline": "High share of unforced errors",
+                    "detail": f"{unforced:.0f}% of lost points are unforced ({m['sample_size']} lost rallies). Shot tolerance/consistency is the highest-leverage area.",
+                    "evidence": [m["metric_id"]],
+                    "drill": "Consistency drills: rally with partner, focus on keeping shuttle in play."
+                })
+    
+    # Low variety
+    for m in by_id.get("shots.mix", []):
+        if isinstance(m["value"], dict) and m["value"]:
+            max_shot = max(m["value"].values())
+            if max_shot > 45 and m["sample_size"] >= 20:
+                severity = (max_shot - 45) / 55
+                max_type = max(m["value"], key=m["value"].get)
+                findings.append({
+                    "code": "low_variety",
+                    "player_id": m["player_id"],
+                    "severity": severity,
+                    "headline": f"Predictable shot selection ({max_type}: {max_shot:.0f}%)",
+                    "detail": f"Dominant stroke accounts for {max_shot:.0f}% of shots. Opponents can read your patterns.",
+                    "evidence": [m["metric_id"]],
+                    "drill": "Pattern-breaking drill: after 2 identical shots, forced switch to a different stroke."
+                })
+    
+    return findings
+
+
+def _shuttle_coach_to_ui_format(findings, metrics):
+    """Map shuttle-coach findings to UI CoachPanel format."""
+    strengths = []
+    weaknesses = []
+    improvements = []
+    drills = []
+    evidence = []
+    
+    # Sort by severity
+    findings = sorted(findings, key=lambda f: f.get("severity", 0), reverse=True)
+    
+    for f in findings:
+        severity = f.get("severity", 0)
+        headline = f.get("headline", "")
+        detail = f.get("detail", "")
+        drill = f.get("drill", "")
+        player_id = f.get("player_id", "")
+        
+        # Add player prefix for clarity
+        player_prefix = f"[{'Near' if player_id == 'player_1' else 'Far'}] " if player_id else ""
+        finding_text = f"{player_prefix}{headline} — {detail}"
+        
+        if severity < 0.3:
+            strengths.append(finding_text)
+        else:
+            weaknesses.append(finding_text)
+            improvements.append(finding_text)
+            if drill:
+                drills.append(drill)
+        
+        # Add evidence
+        evidence.append({
+            "finding": finding_text,
+            "metrics": [f"{m['metric_id']}: {m['value']}" for m in metrics if m["metric_id"] in f.get("evidence", [])]
+        })
+    
+    return {
+        "strengths": strengths,
+        "weaknesses": weaknesses,
+        "top_3_improvements": improvements[:3],
+        "recommended_drills": drills[:3],
+        "evidence": evidence[:10]  # Limit evidence to prevent huge reports
+    }
+
+
+def stage_shuttle_coach(debug_dir, shots, rallies, player_detections, shuttle_data):
+    """Run shuttle-coach analysis on exported parquet files."""
+    import pandas as pd
+    
+    player_ids = sorted(set(s.get("player_id", "player_1") for s in shots))
+    
+    # Create DataFrames
+    shots_df = pd.DataFrame(shots)
+    rallies_df = pd.DataFrame(rallies)
+    positions_df = pd.DataFrame(player_detections)
+    
+    # Ensure required columns exist
+    if "start_ts" not in shots_df.columns:
+        shots_df["start_ts"] = shots_df["frame"] / 30.0
+    if "court_x" not in positions_df.columns:
+        positions_df["court_x"] = np.nan
+        positions_df["court_y"] = np.nan
+    
+    # Compute metrics
+    metrics = []
+    metrics.extend(_shuttle_coach_recovery_time(positions_df, shots_df, player_ids))
+    metrics.extend(_shuttle_coach_shot_mix(shots_df, player_ids))
+    metrics.extend(_shuttle_coach_error_location(rallies_df, player_ids))
+    
+    # Derive findings
+    findings = _shuttle_coach_derive_findings(metrics)
+    
+    # Map to UI format
+    ui_format = _shuttle_coach_to_ui_format(findings, metrics)
+    
+    return {
+        "metrics": metrics,
+        "findings": findings,
+        "ui": ui_format
+    }
+
+
 def generate_report(court, players, shuttle, pose, hits, shots, rallies,
                     court_analytics, footwork, fitness, tactical, technical, coach, fps=30):
     shot_dist = {}
@@ -2639,8 +2857,40 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                         court_analytics=court_analytics, shots_data=shots)
     print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
 
+    print("\n[15/15] Shuttle-coach advanced analytics...")
+    try:
+        shuttle_coach_result = stage_shuttle_coach(debug_dir, shots, rallies, all_player_detections, all_shuttle)
+        # Merge shuttle-coach findings with existing coach output
+        sc_ui = shuttle_coach_result["ui"]
+        # Add shuttle-coach findings to existing lists (avoid duplicates)
+        for w in sc_ui.get("weaknesses", []):
+            if w not in coach["weaknesses"]:
+                coach["weaknesses"].append(w)
+        for s in sc_ui.get("strengths", []):
+            if s not in coach["strengths"]:
+                coach["strengths"].append(s)
+        for d in sc_ui.get("recommended_drills", []):
+            if d and d not in coach["recommended_drills"]:
+                coach["recommended_drills"].append(d)
+        for e in sc_ui.get("evidence", []):
+            if e not in coach["evidence"]:
+                coach["evidence"].append(e)
+        # Update improvements
+        coach["top_3_improvements"] = coach["weaknesses"][:3]
+        print(f"  Shuttle-coach: {len(shuttle_coach_result['findings'])} findings, {len(shuttle_coach_result['metrics'])} metrics")
+    except Exception as e:
+        print(f"  Shuttle-coach skipped: {e}")
+        shuttle_coach_result = None
+
     report = generate_report(court, players_data, all_shuttle, all_pose, hits, shots, rallies,
                             court_analytics, footwork, fitness, tactical, technical, coach, fps=video_fps)
+    
+    # Add shuttle-coach data to report
+    if shuttle_coach_result:
+        report["shuttle_coach"] = {
+            "metrics": shuttle_coach_result["metrics"],
+            "findings": shuttle_coach_result["findings"]
+        }
 
     output = Path(output_path)
     output.write_text(json.dumps(report, indent=2, default=str))
