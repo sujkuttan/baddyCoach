@@ -2495,6 +2495,11 @@ def stage_shuttle_coach(debug_dir, shots, rallies, player_detections, shuttle_da
         positions_df["court_x"] = np.nan
         positions_df["court_y"] = np.nan
     
+    # Convert side to player_id if needed (Colab uses 'side', backend uses 'player_id')
+    if "player_id" not in positions_df.columns and "side" in positions_df.columns:
+        side_map = {"near": "player_1", "far": "player_2"}
+        positions_df["player_id"] = positions_df["side"].map(side_map).fillna("player_1")
+    
     # Compute metrics
     metrics = []
     metrics.extend(_shuttle_coach_recovery_time(positions_df, shots_df, player_ids))
