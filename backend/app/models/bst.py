@@ -141,7 +141,7 @@ class BSTClassifier:
                 if pred_idx == 0:
                     second_idx = int(np.argsort(probs)[-2])
                     second_conf = float(probs[second_idx])
-                    if second_conf > 0.10:
+                    if second_conf > 0.05:
                         pred_idx = second_idx
                         confidence = second_conf
                     else:

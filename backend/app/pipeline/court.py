@@ -19,6 +19,52 @@ COURT_MODEL = {
 COURT_ASPECT_RATIO = 13.4 / 5.18  # ≈ 2.587
 
 
+def _detect_court_color_line(frame: np.ndarray):
+    """Detect court using color segmentation + HoughLinesP. Returns [bl, br, tl, tr] or None."""
+    import cv2
+    h, w = frame.shape[:2]
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    green_mask = cv2.inRange(hsv, np.array([35, 40, 40]), np.array([85, 255, 255]))
+    blue_mask = cv2.inRange(hsv, np.array([100, 40, 40]), np.array([130, 255, 255]))
+    floor_mask = cv2.bitwise_or(green_mask, blue_mask)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kernel)
+    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel)
+    contours, _ = cv2.findContours(floor_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        largest = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(largest) > w * h * 0.10:
+            epsilon = 0.02 * cv2.arcLength(largest, True)
+            approx = cv2.approxPolyDP(largest, epsilon, True)
+            if len(approx) == 4:
+                pts = approx.reshape(4, 2).astype(np.float64)
+                s = pts.sum(axis=1)
+                d = np.diff(pts, axis=1).flatten()
+                return [
+                    pts[np.argmax(d)].tolist(),
+                    pts[np.argmin(d)].tolist(),
+                    pts[np.argmin(s)].tolist(),
+                    pts[np.argmax(s)].tolist(),
+                ]
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    edges = cv2.Canny(gray, 50, 150)
+    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=w * 0.2, maxLineGap=10)
+    if lines is not None and len(lines) >= 4:
+        lines_flat = lines.reshape(-1, 4)
+        s = lines_flat[:, 0] + lines_flat[:, 1]
+        d = lines_flat[:, 0] - lines_flat[:, 1]
+        sorted_by_sum = lines_flat[np.argsort(s)]
+        sorted_by_diff = lines_flat[np.argsort(d)]
+        corners = [
+            sorted_by_diff[-1][:2].tolist(),
+            sorted_by_diff[0][2:].tolist(),
+            sorted_by_sum[0][:2].tolist(),
+            sorted_by_sum[-1][2:].tolist(),
+        ]
+        return corners
+    return None
+
+
 # ─── Court Keypoint Detector (court_kpRCNN) ────────────────────────────────
 
 class CourtKeypointDetector:
@@ -94,11 +140,15 @@ class CourtKeypointDetector:
         return [kps[4], kps[5], kps[0], kps[1]]
 
     def detect_with_fallback(self, frame: np.ndarray) -> list[list[int]]:
-        """Detect corners with fallback chain: model → proportional."""
+        """Detect corners with fallback chain: model → color+line → proportional."""
         corners = self.detect_corners(frame)
         if corners is not None:
             return corners
-        # Proportional fallback based on typical broadcast framing
+
+        corners = _detect_court_color_line(frame)
+        if corners is not None:
+            return corners
+
         h, w = frame.shape[:2]
         mx = int(w * 0.08)
         return [

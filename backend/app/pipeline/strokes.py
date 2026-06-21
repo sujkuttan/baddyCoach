@@ -214,15 +214,34 @@ class StrokeClassificationStage:
 
         shots = []
         previous_shots = []
+        hit_frames_sorted = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
 
-            # Center clip around the actual hit frame
-            start_frame = max(0, frame - SEQ_LEN // 2)
-            end_frame = frame + SEQ_LEN // 2
+            hit_pos = hit_frames_sorted.index(frame)
+            if hit_pos > 0:
+                start_frame = hit_frames_sorted[hit_pos - 1]
+            else:
+                start_frame = max(0, frame - SEQ_LEN // 2)
+
+            if hit_pos < len(hit_frames_sorted) - 1:
+                end_frame = hit_frames_sorted[hit_pos + 1] + 2
+            else:
+                end_frame = frame + SEQ_LEN // 2 + 1
 
             clip_frames = list(range(start_frame, end_frame))
+
+            if len(clip_frames) > SEQ_LEN:
+                hit_offset = frame - start_frame
+                half = SEQ_LEN // 2
+                clip_start = max(0, hit_offset - half)
+                clip_end = clip_start + SEQ_LEN
+                if clip_end > len(clip_frames):
+                    clip_end = len(clip_frames)
+                    clip_start = max(0, clip_end - SEQ_LEN)
+                clip_frames = clip_frames[clip_start:clip_end]
+
             while len(clip_frames) < SEQ_LEN:
                 clip_frames.append(clip_frames[-1] if clip_frames else frame)
             clip_frames = clip_frames[:SEQ_LEN]
@@ -248,6 +267,26 @@ class StrokeClassificationStage:
                 "frame": frame,
                 "stroke_confidence": confidence,
             })
+
+        if len(shots) > 2:
+            for i in range(len(shots)):
+                if shots[i]["stroke_confidence"] >= 0.25 or shots[i]["stroke_type"] == "unknown":
+                    continue
+                neighbors = []
+                for j in range(max(0, i - 2), min(len(shots), i + 3)):
+                    if j != i and shots[j]["stroke_type"] != "unknown":
+                        neighbors.append(shots[j]["stroke_type"])
+                if neighbors:
+                    from collections import Counter
+                    majority = Counter(neighbors).most_common(1)[0]
+                    if majority[0] != shots[i]["stroke_type"] and majority[1] >= 2:
+                        shots[i]["stroke_type"] = majority[0]
+                        shots[i]["stroke_confidence"] = 0.3
+
+        fps = 30.0
+        for i, s in enumerate(shots):
+            s["shot_id"] = i + 1
+            s["start_ts"] = round(s["frame"] / fps, 3)
 
         shots_df = pd.DataFrame(shots)
         artifacts.set_parquet("shots", shots_df)

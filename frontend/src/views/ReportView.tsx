@@ -36,7 +36,7 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical' | 'fitness'>('overview');
-  const [selectedPlayer, setSelectedPlayer] = useState<string>('');
+  const [selectedPlayer, setSelectedPlayer] = useState<string>('player_1');
   const videoRef = useRef<VideoPlayerHandle>(null);
 
   useEffect(() => {
@@ -59,6 +59,38 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   }, [jobId, reportData]);
 
   const players = useMemo(() => report ? getPlayers(report) : [], [report]);
+
+  const shots = useMemo(() => {
+    const raw = report?.shots || [];
+    return raw.map((s: any) => ({
+      ...s,
+      timestamp: s.timestamp ?? s.start_ts ?? (s.frame != null ? s.frame / 30 : 0),
+      stroke_type: s.stroke_type || s.shot_type || 'unknown',
+      confidence: s.confidence ?? s.shot_conf ?? 0,
+    }));
+  }, [report?.shots]);
+
+  const filterByPlayer = (items: string[]): string[] => {
+    return items.filter(text => {
+      if (text.startsWith('[player_1]') || text.startsWith('[Near]')) return selectedPlayer === 'player_1';
+      if (text.startsWith('[player_2]') || text.startsWith('[Far]')) return selectedPlayer === 'player_2';
+      return true;
+    });
+  };
+
+  const stripPrefix = (items: string[]): string[] => items.map(t => t.replace(/^\[(player_\d+|Near|Far)\]\s*/, ''));
+  const filteredStrengths = useMemo(() => stripPrefix(filterByPlayer(report?.strengths || [])), [report?.strengths, selectedPlayer]);
+  const filteredWeaknesses = useMemo(() => stripPrefix(filterByPlayer(report?.weaknesses || [])), [report?.weaknesses, selectedPlayer]);
+  const filteredImprovements = useMemo(() => stripPrefix(filterByPlayer(report?.top_3_improvements || [])), [report?.top_3_improvements, selectedPlayer]);
+  const filteredDrills = useMemo(() => stripPrefix(filterByPlayer(report?.recommended_drills || [])), [report?.recommended_drills, selectedPlayer]);
+  const filteredEvidence = useMemo(() => {
+    return (report?.evidence || []).filter((e: any) => {
+      const finding = e.finding || '';
+      if (finding.startsWith('[player_1]') || finding.startsWith('[Near]')) return selectedPlayer === 'player_1';
+      if (finding.startsWith('[player_2]') || finding.startsWith('[Far]')) return selectedPlayer === 'player_2';
+      return true;
+    }).map((e: any) => ({ ...e, finding: (e.finding || '').replace(/^\[(player_\d+|Near|Far)\]\s*/, '') }));
+  }, [report?.evidence, selectedPlayer]);
 
   if (loading) {
     return (
@@ -88,7 +120,6 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
   const commonPatterns = report.tactical?.[selectedPlayer]?.common_patterns || [];
   const technicalAssessments = report.technical?.[selectedPlayer] || null;
   const rallies = report.rallies || [];
-  const shots = report.shots || [];
 
   return (
     <div className="min-h-screen court-pattern">
@@ -255,11 +286,11 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                 </div>
                 <div className="p-6">
                   <CoachPanel
-                    strengths={report.strengths || []}
-                    weaknesses={report.weaknesses || []}
-                    improvements={report.top_3_improvements || []}
-                    drills={report.recommended_drills || []}
-                    evidence={report.evidence || []}
+                    strengths={filteredStrengths}
+                    weaknesses={filteredWeaknesses}
+                    improvements={filteredImprovements}
+                    drills={filteredDrills}
+                    evidence={filteredEvidence}
                     rallyStats={report.rally_stats}
                   />
                 </div>

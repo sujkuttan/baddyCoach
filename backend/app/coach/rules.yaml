@@ -150,7 +150,7 @@ rules:
       operator: "<"
       threshold: 100000
       min_shots: tactical.total_shots >= 15
-    recommendation: "Court coverage is limited ({fitness.total_distance:.0f} units). Work on movement to reach more shots."
+    recommendation: "Court coverage is limited ({fitness.total_distance:.0f} m). Work on movement to reach more shots."
     category: weakness
     drill: "6-corner footwork: shadow movement to all court positions."
     context_fields: ["fitness.total_distance"]
@@ -161,7 +161,7 @@ rules:
       operator: ">"
       threshold: 300000
       min_shots: tactical.total_shots >= 15
-    recommendation: "Excellent court coverage ({fitness.total_distance:.0f} units) — you cover the full court effectively."
+    recommendation: "Excellent court coverage ({fitness.total_distance:.0f} m) — you cover the full court effectively."
     category: strength
     context_fields: ["fitness.total_distance"]
 

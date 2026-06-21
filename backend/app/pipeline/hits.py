@@ -45,6 +45,15 @@ class HitFrameLocalizationStage:
                 "confidence": float(combined[idx]),
             })
 
+        if len(hits) > 1:
+            deduped = [hits[0]]
+            for h in hits[1:]:
+                if h["frame"] - deduped[-1]["frame"] >= 5:
+                    deduped.append(h)
+                elif h["confidence"] > deduped[-1]["confidence"]:
+                    deduped[-1] = h
+            hits = deduped
+
         hits_data = pd.DataFrame(hits)
         artifacts.set_parquet("hits", hits_data)
 
@@ -86,7 +95,7 @@ class HitFrameLocalizationStage:
                 if kps.ndim == 1:
                     kps = np.array(kps.tolist())
                 if kps.shape == (17, 3):
-                    wrist = kps[9][:2] if kps[9][2] > 0.5 else kps[10][:2]
+                    wrist = (kps[9][:2] + kps[10][:2]) / 2
                     shuttle_pos = shuttle_positions[min(frame_idx, len(shuttle_positions) - 1)]
                     dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
                     score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / 100.0))
@@ -108,7 +117,9 @@ class HitFrameLocalizationStage:
                 if kps.ndim == 1:
                     kps = np.array(kps.tolist())
                 if prev_kps is not None and kps.shape == (17, 3) and prev_kps.shape == (17, 3):
-                    arm_velocity = np.sqrt(np.sum((kps[9][:2] - prev_kps[9][:2])**2))
+                    wrist = (kps[9][:2] + kps[10][:2]) / 2
+                    prev_wrist = (prev_kps[9][:2] + prev_kps[10][:2]) / 2
+                    arm_velocity = np.sqrt(np.sum((wrist - prev_wrist)**2))
                     if int(row["frame"]) < n_frames:
                         score[int(row["frame"])] = arm_velocity
                 prev_kps = kps

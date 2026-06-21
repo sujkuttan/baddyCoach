@@ -84,44 +84,77 @@ class PoseEstimationStage:
         return self._estimate_with_estimator(frames, artifacts, estimator)
 
     def _estimate_with_estimator(self, frames: list[np.ndarray], artifacts: ArtifactStore, estimator) -> list[dict]:
-        """Run pose estimation with given estimator."""
-        players = artifacts.get("players")
-        if not players:
+        """Run pose estimation with given estimator, using same-side fallback."""
+        players_data = artifacts.get("players")
+        if not players_data:
             return []
 
-        player_list = players.get("players", [])
+        player_list = players_data.get("players", [])
         if not player_list:
             return []
 
+        side_map = {p["id"]: p.get("side", "near") for p in player_list}
+        det_lookup = {}
+        for p in player_list:
+            pid = p["id"]
+            det_lookup[pid] = {d["frame"]: d["bbox"] for d in p.get("detections", [])}
+
         pose_data = []
         for frame_idx, frame in enumerate(frames):
+            crops_for_frame = []
+
             for player in player_list:
                 player_id = player["id"]
+                bbox = det_lookup.get(player_id, {}).get(frame_idx)
 
-                # Find detection for this specific frame
-                bbox = None
-                for det in player.get("detections", []):
-                    if det.get("frame") == frame_idx:
-                        bbox = det.get("bbox")
-                        break
                 if bbox is None:
-                    # Fallback: use closest detection in time
-                    dets = player.get("detections", [])
-                    if dets:
-                        closest = min(dets, key=lambda d: abs(d.get("frame", 0) - frame_idx))
-                        bbox = closest.get("bbox", (100, 100, 300, 400))
-                    else:
-                        bbox = (100, 100, 300, 400)
+                    bbox = self._find_fallback_bbox(
+                        frame_idx, player_id, side_map, det_lookup, range_limit=10
+                    )
 
-                keypoints = estimator.estimate(frame, bbox)
+                if bbox is None:
+                    pose_data.append({
+                        "frame": frame_idx,
+                        "player_id": player_id,
+                        "keypoints": np.zeros((17, 3), dtype=np.float32).tolist(),
+                    })
+                    continue
 
-                pose_data.append({
-                    "frame": frame_idx,
-                    "player_id": player_id,
-                    "keypoints": keypoints.tolist(),
-                })
+                crops_for_frame.append((player_id, bbox))
+
+            if crops_for_frame:
+                bboxes = [c[1] for c in crops_for_frame]
+                keypoints_list = estimator.estimate_batch(frame, bboxes)
+                for (player_id, _), kps in zip(crops_for_frame, keypoints_list):
+                    pose_data.append({
+                        "frame": frame_idx,
+                        "player_id": player_id,
+                        "keypoints": kps.tolist(),
+                    })
 
         return pose_data
+
+    @staticmethod
+    def _find_fallback_bbox(frame_idx: int, player_id: str, side_map: dict,
+                            det_lookup: dict, range_limit: int = 10):
+        """Find fallback bbox: same-side first, then any side."""
+        my_side = side_map.get(player_id, "near")
+        same_side_pids = [pid for pid, s in side_map.items() if s == my_side and pid != player_id]
+        other_pids = [pid for pid, s in side_map.items() if s != my_side]
+
+        for delta in range(1, range_limit + 1):
+            for pid in same_side_pids:
+                dets = det_lookup.get(pid, {})
+                for offset in [frame_idx + delta, frame_idx - delta]:
+                    if offset in dets:
+                        return dets[offset]
+            for pid in other_pids:
+                dets = det_lookup.get(pid, {})
+                for offset in [frame_idx + delta, frame_idx - delta]:
+                    if offset in dets:
+                        return dets[offset]
+
+        return None
 
     def _store_data(self, artifacts: ArtifactStore, pose_data: list[dict]) -> StageResult:
         """Store pose estimation data."""

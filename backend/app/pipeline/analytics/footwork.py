@@ -3,6 +3,27 @@ import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 
+COURT_WIDTH_M = 5.18
+COURT_LENGTH_M = 13.4
+
+
+def _pixel_to_meter_scale(court: dict) -> float:
+    """Estimate pixels-per-meter from court corner pixel coordinates.
+
+    Uses the average of near-side and far-side pixel widths (court is 5.18m wide).
+    Falls back to 1.0 if corners unavailable.
+    """
+    corners = court.get("corners_pixel", [])
+    if len(corners) < 4:
+        return 1.0
+    bl, br, tl, tr = corners[:4]
+    near_w = np.sqrt((br[0] - bl[0]) ** 2 + (br[1] - bl[1]) ** 2)
+    far_w = np.sqrt((tr[0] - tl[0]) ** 2 + (tr[1] - tl[1]) ** 2)
+    avg_px = (near_w + far_w) / 2.0
+    if avg_px < 1.0:
+        return 1.0
+    return avg_px / COURT_WIDTH_M
+
 
 class FootworkAnalyticsStage:
     name = "footwork_analytics"
@@ -28,16 +49,19 @@ class FootworkAnalyticsStage:
         court_width = court["court_width"]
         base_position = np.array([court_width / 2, court_length / 2])
 
+        px_per_m = _pixel_to_meter_scale(court)
+
         metrics = {}
         for player_id in pose_df["player_id"].unique():
             player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
             com_trajectory = self._extract_com(player_poses)
 
-            distance = self._compute_distance(com_trajectory)
+            distance_px = self._compute_distance(com_trajectory)
+            distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
             recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position) if shots_df is not None else []
 
             metrics[player_id] = {
-                "distance_covered": float(distance),
+                "distance_covered": float(distance_m),
                 "recovery_times": recovery_times,
                 "avg_recovery": float(np.mean(recovery_times)) if recovery_times else 0,
             }

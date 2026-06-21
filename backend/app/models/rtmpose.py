@@ -1,111 +1,86 @@
 import numpy as np
-from pathlib import Path
 
 
 class RTMPoseEstimator:
-    def __init__(self, model_path: str | None = None, device: str = "cuda"):
+    def __init__(self, model_path: str | None = None, device: str = "cpu"):
         self.device = device
         self.model = None
-        self.input_height = 256
-        self.input_width = 192
+        self.input_name = None
+        if model_path:
+            import os
+            if os.path.exists(model_path):
+                import onnxruntime as ort
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"] if "cuda" in device.lower() else ["CPUExecutionProvider"]
+                self.model = ort.InferenceSession(model_path, providers=providers)
+                self.input_name = self.model.get_inputs()[0].name
 
-        if model_path and Path(model_path).exists():
-            import onnxruntime as ort
-            providers = ['CPUExecutionProvider']
-            if 'cuda' in device:
-                providers.insert(0, 'CUDAExecutionProvider')
-            self.model = ort.InferenceSession(model_path, providers=providers)
-
-    def _preprocess(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
-        """Crop and preprocess person region.
-
-        Args:
-            frame: Full video frame (H, W, C)
-            bbox: Bounding box (x1, y1, x2, y2)
-
-        Returns:
-            Preprocessed tensor (1, C, H, W)
-        """
+    @staticmethod
+    def _preprocess(frame: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
         x1, y1, x2, y2 = bbox
-        crop = frame[y1:y2, x1:x2]
+        h, w = frame.shape[:2]
+        x1 = max(0, min(x1, w - 1))
+        y1 = max(0, min(y1, h - 1))
+        x2 = max(x1 + 1, min(x2, w))
+        y2 = max(y1 + 1, min(y2, h))
 
+        crop = frame[y1:y2, x1:x2]
         if crop.size == 0:
-            return np.zeros((1, 3, self.input_height, self.input_width), dtype=np.float32)
+            return np.zeros((1, 3, 256, 192), dtype=np.float32)
 
         import cv2
-        resized = cv2.resize(crop, (self.input_width, self.input_height))
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
-        normalized = rgb.astype(np.float32) / 255.0
-
+        resized = cv2.resize(crop, (192, 256))
+        rgb = resized[:, :, ::-1].astype(np.float32) / 255.0
         mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
         std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
-        normalized = (normalized - mean) / std
+        rgb = (rgb - mean) / std
+        return rgb.transpose(2, 0, 1)[np.newaxis]
 
-        tensor = normalized.transpose(2, 0, 1)[np.newaxis, ...]
-        return tensor
+    def _postprocess(self, outputs, bbox, frame_shape):
+        output = outputs[0]
+        if output.ndim == 4:
+            output = output[0]
 
-    def _postprocess(
-        self,
-        outputs: list[np.ndarray],
-        bbox: tuple[int, int, int, int],
-        frame_shape: tuple
-    ) -> np.ndarray:
-        """Convert model outputs to keypoints.
-
-        Handles both:
-        - simcc format: [simcc_x (1,17,W*2), simcc_y (1,17,H*2)]
-        - direct format: (1, 17, 3) keypoints
-
-        Returns:
-            Keypoints array (17, 3) with (x, y, confidence)
-        """
-        x1, y1, x2, y2 = bbox
-        bbox_width = x2 - x1
-        bbox_height = y2 - y1
-
-        if len(outputs) == 2:
-            # RTMPose simcc model: argmax to get peak positions
-            simcc_x = outputs[0][0]  # (17, W*2)
-            simcc_y = outputs[1][0]  # (17, H*2)
-            x_coords = np.argmax(simcc_x, axis=1) / 2.0
-            y_coords = np.argmax(simcc_y, axis=1) / 2.0
-            x_conf = np.max(simcc_x, axis=1)
-            y_conf = np.max(simcc_y, axis=1)
-            conf = (x_conf + y_conf) / 2.0
-            keypoints = np.zeros((17, 3), dtype=np.float32)
-            keypoints[:, 0] = x1 + x_coords * (bbox_width / self.input_width)
-            keypoints[:, 1] = y1 + y_coords * (bbox_height / self.input_height)
-            keypoints[:, 2] = 1.0 / (1.0 + np.exp(-conf))
+        n_outputs = len(outputs)
+        if n_outputs == 1:
+            keypoints = output.reshape(17, 3)
         else:
-            output = outputs[0]
-            if len(output.shape) == 3:
-                keypoints = output[0]
-            elif len(output.shape) == 4:
-                keypoints = output[0, 0]
-            else:
-                keypoints = output.reshape(17, 3)
-            keypoints[:, 0] = x1 + keypoints[:, 0] * bbox_width
-            keypoints[:, 1] = y1 + keypoints[:, 1] * bbox_height
+            output2 = outputs[1]
+            if output2.ndim == 4:
+                output2 = output2[0]
+            keypoints = np.concatenate([output, output2], axis=-1).reshape(17, -1)[:, :3]
 
-        return keypoints
+        x1, y1, x2, y2 = bbox
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 1 or bh < 1:
+            return np.zeros((17, 3), dtype=np.float32)
+
+        keypoints[:, 0] = keypoints[:, 0] / 256.0 * bw + x1
+        keypoints[:, 1] = keypoints[:, 1] / 192.0 * bh + y1
+
+        if keypoints.shape[1] > 2:
+            keypoints[:, 2] = 1.0 / (1.0 + np.exp(-keypoints[:, 2]))
+
+        return keypoints.astype(np.float32)
 
     def estimate(self, frame: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
-        """Estimate pose for a single person."""
         if self.model is None:
-            return np.random.rand(17, 3).astype(np.float32)
+            return np.zeros((17, 3), dtype=np.float32)
 
         input_tensor = self._preprocess(frame, bbox)
         outputs = self.model.run(None, {"input": input_tensor})
         return self._postprocess(outputs, bbox, frame.shape[:2])
 
     def estimate_batch(self, frame: np.ndarray, bboxes: list[tuple[int, int, int, int]]) -> list[np.ndarray]:
-        """Estimate pose for multiple persons."""
         if self.model is None:
-            return [np.random.rand(17, 3).astype(np.float32) for _ in bboxes]
+            return [np.zeros((17, 3), dtype=np.float32) for _ in bboxes]
 
         results = []
-        for bbox in bboxes:
-            input_tensor = self._preprocess(frame, bbox)
-            outputs = self.model.run(None, {"input": input_tensor})
-            results.append(self._postprocess(outputs, bbox, frame.shape[:2]))
+        chunk_size = 64
+        for chunk_start in range(0, len(bboxes), chunk_size):
+            chunk = bboxes[chunk_start:chunk_start + chunk_size]
+            batch_tensors = np.concatenate([self._preprocess(frame, bbox) for bbox in chunk], axis=0)
+            outputs = self.model.run(None, {self.input_name: batch_tensors})
+            for i, bbox in enumerate(chunk):
+                per_output = [o[i:i+1] for o in outputs]
+                results.append(self._postprocess(per_output, bbox, frame.shape[:2]))
         return results

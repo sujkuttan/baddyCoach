@@ -1,6 +1,3 @@
-import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-
 import numpy as np
 from dataclasses import dataclass
 
@@ -23,12 +20,12 @@ class YOLOv8Detector:
         if model_path:
             self.model = YOLO(model_path)
         else:
-            self.model = YOLO("yolov8n.pt")
+            self.model = YOLO("yolov8s.pt")
 
     def detect_persons(self, frame: np.ndarray, frame_idx: int) -> list[Detection]:
         if self.model is None:
             return []
-        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False, device="cpu")
+        results = self.model(frame, classes=[0], conf=self.conf_threshold, verbose=False, device=self.device)
         detections = []
         for r in results:
             for box in r.boxes:
@@ -43,7 +40,7 @@ class YOLOv8Detector:
 
 
 class YOLOv8Tracker:
-    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.5, device: str = "cpu"):
+    def __init__(self, model_path: str | None = None, conf_threshold: float = 0.7, device: str = "cpu"):
         self.conf_threshold = conf_threshold
         self.device = device
         self.model = None
@@ -51,38 +48,55 @@ class YOLOv8Tracker:
         if model_path:
             self.model = YOLO(model_path)
         else:
-            self.model = YOLO("yolov8n.pt")
+            self.model = YOLO("yolov8s.pt")
 
     def track_frames(self, frames: list[np.ndarray]) -> dict:
-        """Track persons across multiple frames."""
         all_detections = {}
+        chunk_size = 200
+        batch_size = 16
 
-        for frame_idx, frame in enumerate(frames):
+        for chunk_start in range(0, len(frames), chunk_size):
+            chunk = frames[chunk_start:chunk_start + chunk_size]
             results = self.model.track(
-                frame,
+                chunk,
                 classes=[0],
                 conf=self.conf_threshold,
                 verbose=False,
                 persist=True,
-                device="cpu"
+                batch=batch_size,
+                stream=True,
+                device=self.device,
             )
 
-            frame_detections = []
-            for r in results:
+            for local_idx, r in enumerate(results):
+                frame_idx = chunk_start + local_idx
+                frame_detections = []
                 if r.boxes is not None and r.boxes.id is not None:
+                    frame_area = frames[frame_idx].shape[0] * frames[frame_idx].shape[1]
+                    dets = []
                     for i, box in enumerate(r.boxes):
                         x1, y1, x2, y2 = box.xyxy[0].tolist()
                         conf = box.conf[0].item()
                         track_id = int(box.id[0].item()) if box.id is not None else None
-
-                        frame_detections.append(Detection(
+                        bbox_area = (x2 - x1) * (y2 - y1)
+                        if bbox_area < frame_area * 0.001 or bbox_area > frame_area * 0.5:
+                            continue
+                        dets.append(Detection(
                             frame=frame_idx,
                             bbox=(int(x1), int(y1), int(x2), int(y2)),
                             confidence=conf,
                             track_id=track_id,
                         ))
+                    dets.sort(key=lambda d: d.confidence, reverse=True)
+                    dets = dets[:2]
+                    frame_detections = dets
 
-            all_detections[frame_idx] = frame_detections
+                all_detections[frame_idx] = frame_detections
+
+            import gc, torch
+            if hasattr(torch, 'cuda') and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            gc.collect()
 
         return {
             "frames": all_detections,
@@ -90,7 +104,6 @@ class YOLOv8Tracker:
         }
 
     def _extract_tracks(self, all_detections: dict) -> dict:
-        """Extract track trajectories from per-frame detections."""
         tracks = {}
         for frame_idx, detections in all_detections.items():
             for det in detections:

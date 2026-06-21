@@ -26,6 +26,15 @@ class CourtPositionAnalyticsStage:
         shuttle_df = artifacts.get_parquet("shuttle")
         shots_df = artifacts.get_parquet("shots")
 
+        vid_w, vid_h = 1280, 720
+        video_res = artifacts.get("video_resolution")
+        if video_res:
+            vid_w = float(video_res.get("width", vid_w))
+            vid_h = float(video_res.get("height", vid_h))
+        elif shuttle_df is not None and len(shuttle_df) > 0:
+            vid_w = max(float(shuttle_df["x"].max()), 640)
+            vid_h = max(float(shuttle_df["y"].max()), 480)
+
         zone_transitions = []
         if shuttle_df is not None and shots_df is not None:
             for _, shot in shots_df.iterrows():
@@ -34,7 +43,7 @@ class CourtPositionAnalyticsStage:
                 if len(shuttle_row) > 0:
                     x = float(shuttle_row.iloc[0]["x"])
                     y = float(shuttle_row.iloc[0]["y"])
-                    zone = self._get_zone(x, y, court_width, court_length)
+                    zone = self._get_zone(x, y, vid_w, vid_h)
                     zone_transitions.append({
                         "frame": frame,
                         "zone": zone,
@@ -60,7 +69,7 @@ class CourtPositionAnalyticsStage:
         )
 
     @staticmethod
-    def _get_zone(x: float, y: float, width: float, length: float) -> str:
-        col = min(int(x / (width / 3)), 2)
-        row = min(int(y / (length / 3)), 2)
+    def _get_zone(x: float, y: float, width: float, height: float) -> str:
+        col = min(int(x / width * 3), 2)
+        row = min(int(y / height * 3), 2)
         return ZONE_NAMES[row * 3 + col]

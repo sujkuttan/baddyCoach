@@ -137,13 +137,13 @@ RULES = [
 
     {"name": "distance_low",
      "check": {"field": "fitness.total_distance", "operator": "<", "threshold": 100000, "min_shots": "tactical.total_shots >= 15"},
-     "recommendation": "Court coverage is limited ({fitness.total_distance:.0f} units). Work on movement to reach more shots.",
+     "recommendation": "Court coverage is limited ({fitness.total_distance:.0f} m). Work on movement to reach more shots.",
      "category": "weakness", "drill": "6-corner footwork: shadow movement to all court positions.",
      "context_fields": ["fitness.total_distance"]},
 
     {"name": "distance_high",
      "check": {"field": "fitness.total_distance", "operator": ">", "threshold": 300000, "min_shots": "tactical.total_shots >= 15"},
-     "recommendation": "Excellent court coverage ({fitness.total_distance:.0f} units) — you cover the full court effectively.",
+     "recommendation": "Excellent court coverage ({fitness.total_distance:.0f} m) — you cover the full court effectively.",
      "category": "strength", "context_fields": ["fitness.total_distance"]},
 
     # ─── Footwork Rules ────────────────────────────────────────
@@ -1081,22 +1081,76 @@ def stage_court_detection(corners):
             "court_length": COURT_LENGTH, "court_width": COURT_WIDTH, "net_height": NET_HEIGHT}
 
 
-def stage_hits(shuttle_data):
+def stage_hits(shuttle_data, pose_data=None, player_detections=None):
     shuttle_df = pd.DataFrame(shuttle_data)
     if len(shuttle_df) == 0:
         return []
     x, y = shuttle_df["x"].values, shuttle_df["y"].values
     dx = np.diff(x, prepend=x[0])
-    dy = np.diff(y, prepend=y[0])
+    dy = np.diff(y, prepend=x[0] if False else y[0])
     angle = np.arctan2(dy, dx)
     traj_score = np.abs(np.diff(angle, prepend=angle[0])) / (np.pi + 1e-6)
     speed = np.sqrt(dx**2 + dy**2)
-    peaks, _ = find_peaks(speed, distance=3)
+    peaks, _ = find_peaks(speed, distance=5)
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
-    combined = 0.5 * (traj_score / (traj_score.max() + 1e-6)) + 0.5 * (speed_score / (speed_score.max() + 1e-6))
-    threshold = np.percentile(combined, 95)
-    hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in np.where(combined > threshold)[0]]
+
+    # Signal 3: shuttle-player proximity (wrist-to-shuttle distance)
+    proximity_score = np.zeros(len(shuttle_df))
+    if pose_data:
+        for row in pose_data:
+            f = row.get("frame", -1)
+            idx = int(np.searchsorted(shuttle_df["frame"].values, f))
+            if idx >= len(shuttle_df) or shuttle_df.iloc[idx]["x"] == 0:
+                continue
+            kps = np.array(row["keypoints"].tolist()) if hasattr(row["keypoints"], 'tolist') else np.array(row["keypoints"])
+            if kps.shape == (17, 3):
+                wrist = (kps[9][:2] + kps[10][:2]) / 2
+                s_x, s_y = shuttle_df.iloc[idx]["x"], shuttle_df.iloc[idx]["y"]
+                dist = np.sqrt((wrist[0] - s_x)**2 + (wrist[1] - s_y)**2)
+                proximity_score[idx] = max(proximity_score[idx], 1.0 / (1.0 + dist / 100.0))
+
+    # Signal 4: arm swing peaks (wrist velocity), per-player
+    swing_score = np.zeros(len(shuttle_df))
+    if pose_data:
+        from collections import defaultdict
+        by_player = defaultdict(list)
+        for row in pose_data:
+            by_player[row.get("player_id", "")].append(row)
+        for pid, rows in by_player.items():
+            prev_wrist = None
+            for row in rows:
+                f = row.get("frame", -1)
+                kps = np.array(row["keypoints"].tolist()) if hasattr(row["keypoints"], 'tolist') else np.array(row["keypoints"])
+                if kps.shape == (17, 3):
+                    wrist = (kps[9][:2] + kps[10][:2]) / 2
+                    if prev_wrist is not None:
+                        idx = int(np.searchsorted(shuttle_df["frame"].values, f))
+                        if 0 <= idx < len(shuttle_df):
+                            swing_score[idx] = max(swing_score[idx], np.sqrt(np.sum((wrist - prev_wrist)**2)))
+                    prev_wrist = wrist
+
+    def _norm(s):
+        mx = s.max()
+        return s / (mx + 1e-6) if mx > 0 else s
+
+    combined = (0.4 * _norm(traj_score) + 0.3 * _norm(speed_score) +
+                0.2 * _norm(proximity_score) + 0.1 * _norm(swing_score))
+    threshold = np.percentile(combined, 85)
+    hit_indices = np.where(combined > threshold)[0]
+
+    hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in hit_indices]
+
+    # Dedup: merge hits within 5 frames of each other
+    if len(hits) > 1:
+        deduped = [hits[0]]
+        for h in hits[1:]:
+            if h["frame"] - deduped[-1]["frame"] >= 5:
+                deduped.append(h)
+            elif h["confidence"] > deduped[-1]["confidence"]:
+                deduped[-1] = h
+        hits = deduped
+
     return hits
 
 
@@ -1609,7 +1663,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             if pred_idx == 0:
                 second_idx = int(np.argsort(probs)[-2])
                 second_conf = float(probs[second_idx])
-                if second_conf > 0.10:
+                if second_conf > 0.05:
                     pred_idx = second_idx
                     confidence = second_conf
                 else:
@@ -1681,7 +1735,24 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 "stroke_type": stroke_type,
                 "stroke_confidence": confidence,
             })
-    
+
+    # Post-classification smoothing: if a shot has low confidence and
+    # its neighbors agree on a different class, adopt the neighbors' class.
+    if len(shots) > 2:
+        for i in range(len(shots)):
+            if shots[i]["stroke_confidence"] >= 0.25 or shots[i]["stroke_type"] == "unknown":
+                continue
+            neighbors = []
+            for j in range(max(0, i - 2), min(len(shots), i + 3)):
+                if j != i and shots[j]["stroke_type"] != "unknown":
+                    neighbors.append(shots[j]["stroke_type"])
+            if neighbors:
+                from collections import Counter
+                majority = Counter(neighbors).most_common(1)[0]
+                if majority[0] != shots[i]["stroke_type"] and majority[1] >= 2:
+                    shots[i]["stroke_type"] = majority[0]
+                    shots[i]["stroke_confidence"] = 0.3
+
     return shots
 
 
@@ -1800,20 +1871,22 @@ def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
     y_vals = y_vals[valid]
     dy = np.diff(y_vals)
     dx = x_vals[valid][1:] - x_vals[valid][:-1] if len(x_vals[valid]) > 1 else np.array([0.0])
-    speed = np.mean(np.sqrt(dx**2 + dy**2))
+    speed_vals = np.sqrt(dx**2 + dy**2)
+    mean_speed = np.mean(speed_vals)
+    max_speed = np.max(speed_vals) if len(speed_vals) > 0 else 0
     mean_dy = float(np.mean(dy))
     end_y = float(y_vals[-1])
-    if speed > 0.15 and mean_dy > 0.05:
+    if max_speed > 0.15 and mean_dy > 0.05:
         return "smash"
-    elif speed < 0.03:
+    elif mean_speed < 0.03:
         return "net_shot"
-    elif mean_dy < -0.03 and speed > 0.05:
+    elif mean_dy < -0.03 and mean_speed > 0.05:
         return "clear"
-    elif speed > 0.08 and abs(mean_dy) < 0.02:
+    elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
         return "drive"
-    elif mean_dy > 0.02 and speed > 0.03:
+    elif mean_dy > 0.02 and mean_speed > 0.03:
         return "lift"
-    elif end_y > 0.7 and speed < 0.06:
+    elif end_y > 0.7 and mean_speed < 0.06:
         return "drop"
     else:
         return "clear"
@@ -1892,11 +1965,24 @@ def stage_court_position(shuttle_data, shots_data, frame_width=1280, frame_heigh
     return {"zone_transitions": transitions, "court_dimensions": {"length": COURT_LENGTH, "width": COURT_WIDTH}}
 
 
-def stage_footwork(pose_data, shots_data):
+def stage_footwork(pose_data, shots_data, court_data=None):
     metrics = {}
     pose_df = pd.DataFrame(pose_data) if pose_data else pd.DataFrame()
     if len(pose_df) == 0:
         return metrics
+
+    # Compute pixel-to-meter scale from court corners
+    px_per_m = 1.0
+    if court_data and "corners_pixel" in court_data:
+        corners = court_data["corners_pixel"]
+        if len(corners) >= 4:
+            bl, br, tl, tr = corners[:4]
+            near_w = np.sqrt((br[0] - bl[0])**2 + (br[1] - bl[1])**2)
+            far_w = np.sqrt((tr[0] - tl[0])**2 + (tr[1] - tl[1])**2)
+            avg_px = (near_w + far_w) / 2.0
+            if avg_px > 1.0:
+                px_per_m = avg_px / 5.18  # court width in meters
+
     for pid in pose_df["player_id"].unique():
         player = pose_df[pose_df["player_id"] == pid].sort_values("frame")
         com_points = []
@@ -1907,9 +1993,35 @@ def stage_footwork(pose_data, shots_data):
                 kps = np.array([np.array(x) for x in kps])
             if kps.shape == (17, 3) and np.any(kps != 0):
                 com_points.append((kps[11][:2] + kps[12][:2]) / 2)
-        dist = sum(np.sqrt(np.sum((np.array(com_points[i+1]) - np.array(com_points[i]))**2))
+        dist_px = sum(np.sqrt(np.sum((np.array(com_points[i+1]) - np.array(com_points[i]))**2))
                    for i in range(len(com_points)-1)) if len(com_points) > 1 else 0
-        metrics[pid] = {"distance_covered": float(dist), "recovery_times": [], "avg_recovery": 0}
+        dist_m = dist_px / px_per_m if px_per_m > 0 else dist_px
+
+        # Compute recovery times (backend parity)
+        recovery_times = []
+        base_position = np.median(np.array(com_points), axis=0) if com_points else np.zeros(2)
+        base_m = base_position / px_per_m if px_per_m > 0 else base_position
+        shots_for_pid = [s for s in shots_data if s.get("player_id") == pid]
+        for shot in shots_for_pid:
+            shot_frame = int(shot.get("frame", 0))
+            after_frames = [r for r in player.to_dict('records') if int(r["frame"]) > shot_frame][:30]
+            after_com = []
+            for r in after_frames:
+                kps_raw = r["keypoints"]
+                kps = np.array(kps_raw.tolist()) if hasattr(kps_raw, 'tolist') else np.array(kps_raw)
+                if kps.ndim == 1:
+                    kps = np.array([np.array(x) for x in kps])
+                if kps.shape == (17, 3) and np.any(kps != 0):
+                    after_com.append((kps[11][:2] + kps[12][:2]) / 2)
+            if after_com:
+                after_com_m = np.array(after_com) / px_per_m if px_per_m > 0 else np.array(after_com)
+                dists = np.sqrt(np.sum((after_com_m - base_m) ** 2, axis=1))
+                returned = np.where(dists < 0.3)[0]
+                if len(returned) > 0:
+                    recovery_times.append(float(returned[0]))
+
+        avg_recovery = float(np.mean(recovery_times)) if recovery_times else 0
+        metrics[pid] = {"distance_covered": float(dist_m), "recovery_times": recovery_times, "avg_recovery": avg_recovery}
     return metrics
 
 
@@ -1962,6 +2074,7 @@ def stage_fitness(footwork_data, rallies_data, shots_data):
                        "fatigue_trend": fatigue_trend, "avg_recovery": fw.get("avg_recovery", 0),
                        "total_distance": fw.get("distance_covered", 0),
                        "peak_intensity": peak_intensity, "late_rally_fatigue": late_fatigue,
+                       "intensity_std": float(np.std(intensities)) if intensities else 0,
                        "rally_count": len(intensities)}
     return fitness
 
@@ -1992,7 +2105,7 @@ def stage_tactical(shots_data):
 
         patterns = Counter()
         for i in range(len(seq) - 2):
-            pattern = f"{seq[i]} -> {seq[i+1]} -> {seq[i+2]}"
+            pattern = f"{seq[i]} \u2192 {seq[i+1]} \u2192 {seq[i+2]}"
             patterns[pattern] += 1
         tactical[pid]["common_patterns"] = [
             {"pattern": p, "count": c} for p, c in patterns.most_common(5)
@@ -2815,7 +2928,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     # Analytics stages (CPU only, lightweight)
     print("\n[6/14] Hit frame localization...")
-    hits = stage_hits(all_shuttle)
+    hits = stage_hits(all_shuttle, pose_data=all_pose)
     print(f"  Found {len(hits)} hits")
     pd.DataFrame(hits).to_parquet(debug_dir / "hits.parquet", index=False)
     print(f"    hits.parquet ({len(hits)} rows)")
@@ -2892,7 +3005,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print("\n[10/14] Footwork analytics...")
     # Use RTMPose for footwork/fitness (better movement tracking)
     footwork_pose = all_pose_secondary if all_pose_secondary else all_pose
-    footwork = stage_footwork(footwork_pose, shots)
+    footwork = stage_footwork(footwork_pose, shots, court_data=court)
     print("  Done")
 
     print("\n[11/14] Fitness analytics...")

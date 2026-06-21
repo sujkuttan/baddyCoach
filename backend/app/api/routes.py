@@ -105,9 +105,30 @@ def run_pipeline(job_id: str):
         "fitness_analytics": store.get("fitness_analytics") or {},
         "tactical_analytics": store.get("tactical_analytics") or {},
         "footwork_analytics": store.get("footwork_analytics") or {},
+        "court_analytics": store.get("court_analytics") or {},
+        "_rallies_df": store.get_parquet("rallies"),
+        "_shots_df": store.get_parquet("shots"),
     }
     engine = CoachEngine()
-    report = engine.generate(analytics, player_id="player_1")
+    all_players = set(list(analytics["tactical_analytics"].keys()) + list(analytics["fitness_analytics"].keys()))
+    if not all_players:
+        all_players = {"player_1"}
+
+    report = {
+        "strengths": [], "weaknesses": [], "top_3_improvements": [],
+        "recommended_drills": [], "evidence": [], "rally_stats": None,
+    }
+    for pid in sorted(all_players):
+        result = engine.generate(analytics, player_id=pid)
+        report["strengths"].extend(result["strengths"])
+        report["weaknesses"].extend(result["weaknesses"])
+        report["top_3_improvements"].extend(result["top_3_improvements"])
+        report["recommended_drills"].extend(result["recommended_drills"])
+        report["evidence"].extend(result["evidence"])
+        if result.get("rally_stats") and report["rally_stats"] is None:
+            report["rally_stats"] = result["rally_stats"]
+
+    store.set("report", report)
 
     from app.report.generator import ReportGenerator
     ReportGenerator().generate(job_dir)

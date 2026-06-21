@@ -82,43 +82,38 @@ class PlayerTrackingStage:
         detections: list[dict],
         court_mid_y: float
     ) -> StageResult:
-        """Process detections and assign players to sides."""
+        """Process detections and assign players to sides.
+
+        Uses relative comparison: the detection with larger center_y is 'near',
+        smaller center_y is 'far'. This is robust to camera angles where both
+        players' bboxes may be on the same side of the court midline.
+        """
         if not detections:
             return StageResult.from_error("No player detections provided")
 
-        players = {}
+        from collections import defaultdict
+        by_frame = defaultdict(list)
         for det in detections:
-            bbox = det["bbox"]
-            center_y = (bbox[1] + bbox[3]) / 2
-            side = "near" if center_y > court_mid_y else "far"
+            by_frame[det["frame"]].append(det)
 
-            track_id = det.get("track_id")
-            matched = False
+        players = {}
+        for frame_dets in by_frame.values():
+            if len(frame_dets) < 2:
+                if len(frame_dets) == 1:
+                    d = frame_dets[0]
+                    center_y = (d["bbox"][1] + d["bbox"][3]) / 2
+                    side = "near" if center_y >= court_mid_y else "far"
+                    self._add_to_player(players, d, side)
+                continue
 
-            if track_id is not None:
-                for pid, player in players.items():
-                    if player.get("track_id") == track_id:
-                        player["detections"].append(det)
-                        matched = True
-                        break
+            sorted_dets = sorted(frame_dets, key=lambda d: (d["bbox"][1] + d["bbox"][3]) / 2, reverse=True)
+            near_det = sorted_dets[0]
+            far_det = sorted_dets[1]
+            self._add_to_player(players, near_det, "near")
+            self._add_to_player(players, far_det, "far")
 
-            if not matched:
-                for pid, player in players.items():
-                    last_bbox = player["detections"][-1]["bbox"]
-                    iou = self._compute_iou(bbox, last_bbox)
-                    if iou > 0.3 and player["side"] == side:
-                        player["detections"].append(det)
-                        matched = True
-                        break
-
-            if not matched:
-                pid = f"player_{len(players) + 1}"
-                players[pid] = {
-                    "id": pid,
-                    "side": side,
-                    "track_id": track_id,
-                    "detections": [det],
-                }
+        if not players:
+            return StageResult.from_error("No player detections grouped")
 
         players_data = {
             "players": [
@@ -136,6 +131,33 @@ class PlayerTrackingStage:
             artifacts={"players": artifacts.path("players")},
             metadata={"player_count": len(players)}
         )
+
+    @staticmethod
+    def _add_to_player(players: dict, det: dict, side: str):
+        track_id = det.get("track_id")
+
+        if track_id is not None:
+            for pid, player in players.items():
+                if player.get("track_id") == track_id:
+                    player["detections"].append(det)
+                    return
+
+        for pid, player in players.items():
+            if player["side"] != side:
+                continue
+            last_bbox = player["detections"][-1]["bbox"]
+            iou = PlayerTrackingStage._compute_iou(det["bbox"], last_bbox)
+            if iou > 0.3:
+                player["detections"].append(det)
+                return
+
+        pid = f"player_{len(players) + 1}"
+        players[pid] = {
+            "id": pid,
+            "side": side,
+            "track_id": track_id,
+            "detections": [det],
+        }
 
     @staticmethod
     def _compute_iou(bbox1: tuple, bbox2: tuple) -> float:
