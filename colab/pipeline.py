@@ -1820,11 +1820,19 @@ def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
 
 
 def _infer_end_reason(stroke_type, confidence):
-    if stroke_type in ("smash", "drop") and confidence >= 0.6:
+    """Infer rally end reason from the last shot.
+    
+    Rules:
+    - High-confidence smash/drop/kill → winner (aggressive finishing shot)
+    - Net shot → net (hitter hit the net)
+    - Low-confidence clear/drive → unforced_error (weak basic shot)
+    - Everything else → forced_error (opponent won, not necessarily an error by hitter)
+    """
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.5:
         return "winner"
     if stroke_type in ("net_shot",):
         return "net"
-    if stroke_type in ("clear", "drive") and confidence < 0.4:
+    if stroke_type in ("clear", "drive", "lift") and confidence < 0.35:
         return "unforced_error"
     return "forced_error"
 
@@ -2832,7 +2840,16 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                 last_shot.get("stroke_type", "clear"),
                 last_shot.get("stroke_confidence", 0.5),
             )
-            rally["winner_player_id"] = last_shot.get("player_id") if rally["end_reason"] == "winner" else None
+            last_hitter = last_shot.get("player_id", "player_1")
+            # Winner detection: if the rally ended with an error, opponent won.
+            # Only mark hitter as winner for actual winning shots (smash/drop with high conf).
+            if rally["end_reason"] == "winner":
+                rally["winner_player_id"] = last_hitter
+            elif rally["end_reason"] in ("forced_error", "unforced_error", "net"):
+                # Hitter made an error — opponent wins
+                rally["winner_player_id"] = "player_2" if last_hitter == "player_1" else "player_1"
+            else:
+                rally["winner_player_id"] = None
         else:
             rally["winner_player_id"] = None
             rally["end_reason"] = "unknown"
