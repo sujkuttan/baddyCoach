@@ -27,6 +27,7 @@ def run_pipeline(job_id: str):
     from app.coach.engine import CoachEngine
     from app.storage.artifacts import ArtifactStore
     from app.api.websocket import ws_manager
+    from app.pipeline.shared.utils import get_video_info
 
     job = job_manager.get_job(job_id)
     if not job:
@@ -34,7 +35,6 @@ def run_pipeline(job_id: str):
 
     job_dir = settings.job_dir(job_id)
     store = ArtifactStore(job_dir)
-    config = StageConfig(gpu_enabled=False)
 
     # Get pose_model and sample_rate from job (set by process endpoint)
     pose_model = job.get("pose_model", "rtmpose")
@@ -49,16 +49,21 @@ def run_pipeline(job_id: str):
     def emit_progress(event):
         ws_manager.broadcast_sync(job_id, event)
 
-    # Get video resolution and extract frames
+    # Get video info (resolution, actual FPS) and extract frames
     video_path = job.get("video_path", "")
     if video_path and Path(video_path).exists():
-        vid_w, vid_h = _get_video_resolution(video_path)
+        vid_w, vid_h, video_fps = get_video_info(video_path)
+        video_fps = int(video_fps) if video_fps > 0 else 30
         store.set("video_resolution", {"width": vid_w, "height": vid_h})
-        # Use sample_rate from job, default to 3 (10fps)
-        sample_interval = sample_rate if sample_rate > 0 else 3
+        # Use sample_rate from job, default to 3 (~10fps for 30fps source)
+        sample_interval = sample_rate if sample_rate > 0 else max(1, int(video_fps / 10))
+        effective_fps = video_fps / sample_interval
         frames = _extract_frames(video_path, sample_interval=sample_interval)
     else:
         frames = []
+        effective_fps = 30.0
+
+    config = StageConfig(gpu_enabled=False, processing_fps=max(1, int(effective_fps)))
 
     # Extract a sample frame for court detection
     court_frame = None
