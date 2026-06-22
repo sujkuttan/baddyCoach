@@ -123,6 +123,7 @@ class TrackNetV3:
                 import traceback
                 traceback.print_exc()
                 self.model = None
+                print("WARNING: TrackNetV3 uses a custom UNet (in_channels=27, num_classes=8), not the published VGG-style TrackNetV3. Official TrackNet_best.pt weights will NOT load.")
         else:
             print(f"TrackNetV3 model file not found: {model_path}")
 
@@ -169,7 +170,8 @@ class TrackNetV3:
         with torch.no_grad():
             output = self.model(tensor)
 
-        heatmap = output.cpu().numpy()[0, 0]
+        # Use max across all 8 output channels to capture any shuttle signal
+        heatmap = output.cpu().numpy()[0].max(axis=0)
         return [self._postprocess(heatmap, original_width, original_height)]
 
     def predict_batch(self, frames: list[np.ndarray], batch_size: int | None = None,
@@ -213,7 +215,8 @@ class TrackNetV3:
             if self.model is not None:
                 with torch.no_grad():
                     output = self.model(tensor)
-                heatmaps = output.cpu().numpy()[:, 0]
+                # Use max across all 8 output channels instead of just channel 0
+                heatmaps = output.cpu().numpy().max(axis=1)
                 for j, local_idx in enumerate(range(chunk_start, chunk_end)):
                     hm = 1 / (1 + np.exp(-heatmaps[j]))
                     y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)

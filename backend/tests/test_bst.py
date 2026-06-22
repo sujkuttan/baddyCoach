@@ -14,10 +14,11 @@ def test_bst_predict_returns_class():
         'video_len': 30,
     }
     
-    stroke_type, confidence = classifier.predict_single(clip)
+    stroke_type, confidence, raw_class_id = classifier.predict_single(clip)
 
     assert stroke_type in COACH_STROKE_CLASSES or stroke_type == "unknown"
     assert 0 <= confidence <= 1
+    assert isinstance(raw_class_id, int)
 
 
 def test_bst_normalize_shuttle():

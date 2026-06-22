@@ -52,6 +52,11 @@ class ReportGenerator:
         data_quality = self._generate_data_quality_report(artifacts)
         report["data_quality"] = data_quality
 
+        # Add per-stage timings
+        stage_timings = artifacts.get("stage_timings")
+        if stage_timings:
+            report["stage_timings"] = stage_timings
+
         rallies_df = artifacts.get_parquet("rallies")
         if rallies_df is not None:
             report["rallies"] = rallies_df.to_dict(orient="records")
@@ -76,26 +81,65 @@ class ReportGenerator:
         
         # Check for synthetic detections
         players_data = artifacts.get("players") or {}
-        if players_data.get("is_synthetic", False):
+        synthetic_players = [p for p in players_data.get("players", []) if p.get("is_synthetic")]
+        if synthetic_players:
+            all_synthetic = len(synthetic_players) == len(players_data.get("players", []))
             quality_flags.append({
                 "type": "synthetic_data",
-                "severity": "high",
-                "message": "Player detections were synthetically generated due to YOLO failure"
+                "severity": "high" if all_synthetic else "medium",
+                "message": (
+                    "All player detections were synthetically generated (YOLO failed to detect players)"
+                    if all_synthetic else
+                    f"{len(synthetic_players)} player(s) have synthetic detections mixed in"
+                ),
+                "all_synthetic": all_synthetic,
             })
         
         # Check for rule-based stroke classification
         shots_df = artifacts.get_parquet("shots")
         if shots_df is not None and len(shots_df) > 0:
-            rule_based_shots = shots_df[shots_df['is_rule_based'] == True]
-            if len(rule_based_shots) > 0:
-                quality_flags.append({
-                    "type": "rule_based_classification",
-                    "severity": "medium",
-                    "message": f"{len(rule_based_shots)} strokes classified using rule-based fallback (BST model unavailable)"
-                })
+            if 'is_rule_based' in shots_df.columns:
+                rule_based_shots = shots_df[shots_df['is_rule_based'] == True]
+                if len(rule_based_shots) > 0:
+                    pct = len(rule_based_shots) / len(shots_df) * 100
+                    quality_flags.append({
+                        "type": "rule_based_classification",
+                        "severity": "high" if pct > 50 else "medium",
+                        "message": f"{len(rule_based_shots)}/{len(shots_df)} ({pct:.0f}%) strokes used rule-based fallback (BST model unavailable or returned unknown)",
+                        "pct_rule_based": round(pct, 1),
+                    })
         
+        # Check for BST model availability
+        bst_path = artifacts.get("bst_model_path")
+        if bst_path is None:
+            quality_flags.append({
+                "type": "bst_model_missing",
+                "severity": "medium",
+                "message": "BST model checkpoint not found — all strokes may use rule-based fallback",
+            })
+        
+        # Check court validity
+        court = artifacts.get("court") or {}
+        if not court.get("valid", True):
+            quality_flags.append({
+                "type": "invalid_court",
+                "severity": "high",
+                "message": "Court detection failed — analytics depending on homography may be inaccurate",
+            })
+        
+        # Compute a meaningful 0-100 score
+        base_score = 100
+        for flag in quality_flags:
+            if flag["severity"] == "high":
+                base_score -= 30
+            elif flag["severity"] == "medium":
+                base_score -= 15
+            elif flag["severity"] == "low":
+                base_score -= 5
+        data_quality_score = max(0, base_score)
+
         return {
-            "data_quality_score": len(quality_flags),  # Simple scoring
+            "data_quality_score": data_quality_score,
             "flags": quality_flags,
             "warnings": [flag["message"] for flag in quality_flags]
         }

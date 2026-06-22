@@ -86,8 +86,8 @@ class PlayerAttributionStage:
 
         # Fill remaining unassigned shots with alternation heuristic
         unassigned = shots_df["player_id"].isna()
-        if unassigned.any():
-                for _, rally in rallies_df.iterrows():
+        if unassigned.any() and rallies_df is not None and len(rallies_df) > 0:
+            for _, rally in rallies_df.iterrows():
                     start_f = int(rally["start_frame"])
                     end_f = int(rally["end_frame"])
                     rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)

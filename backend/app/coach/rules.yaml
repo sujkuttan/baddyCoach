@@ -148,7 +148,7 @@ rules:
     check:
       field: fitness.total_distance
       operator: "<"
-      threshold: 100000
+      threshold: 500
       min_shots: tactical.total_shots >= 15
     recommendation: "Court coverage is limited ({fitness.total_distance:.0f} m). Work on movement to reach more shots."
     category: weakness
@@ -159,7 +159,7 @@ rules:
     check:
       field: fitness.total_distance
       operator: ">"
-      threshold: 300000
+      threshold: 1500
       min_shots: tactical.total_shots >= 15
     recommendation: "Excellent court coverage ({fitness.total_distance:.0f} m) — you cover the full court effectively."
     category: strength
@@ -171,7 +171,7 @@ rules:
       field: footwork.avg_recovery
       operator: ">"
       threshold: 1.5
-    recommendation: "Recovery to base takes {footwork.avg_recovery:.1f} frames on average. Work on split-step timing."
+    recommendation: "Recovery to base takes {footwork.avg_recovery:.1f} s on average. Work on split-step timing."
     category: weakness
     drill: "Split-step practice: bounce on toes, explode to shuttle on opponent's hit."
     context_fields: ["footwork.avg_recovery"]
@@ -182,7 +182,7 @@ rules:
       operator: "<"
       threshold: 0.5
       min_shots: tactical.total_shots >= 10
-    recommendation: "Quick recovery ({footwork.avg_recovery:.1f} frames) — you reset well between shots."
+    recommendation: "Quick recovery ({footwork.avg_recovery:.1f} s) — you reset well between shots."
     category: strength
     context_fields: ["footwork.avg_recovery"]
 
@@ -241,6 +241,28 @@ rules:
     drill: "Counter-attack drills: practice attacking from rear court."
     context_fields: ["court_analysis.rear_pct"]
 
+  - name: left_bias
+    check:
+      field: court_analysis.left_pct
+      operator: ">"
+      threshold: 0.65
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Strong bias to left court ({court_analysis.left_pct:.1%}) — opponents will exploit the open right side."
+    category: weakness
+    drill: "Cover-the-gap: partner feeds to all corners, focus on returning to center after each shot."
+    context_fields: ["court_analysis.left_pct", "court_analysis.right_pct"]
+
+  - name: right_bias
+    check:
+      field: court_analysis.right_pct
+      operator: ">"
+      threshold: 0.65
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Strong bias to right court ({court_analysis.right_pct:.1%}) — opponents will exploit the open left side."
+    category: weakness
+    drill: "Cover-the-gap: partner feeds to all corners, focus on returning to center after each shot."
+    context_fields: ["court_analysis.left_pct", "court_analysis.right_pct"]
+
   - name: balanced_court
     check:
       field: court_analysis.front_pct
@@ -250,6 +272,50 @@ rules:
     recommendation: "Good court balance — front court presence at {court_analysis.front_pct:.1%} keeps opponents guessing."
     category: strength
     context_fields: ["court_analysis.front_pct"]
+
+  # ─── Pattern & Sequence Rules ────────────────────────────
+  - name: predictable_pattern
+    check:
+      field: tactical.pattern_repetition
+      operator: ">"
+      threshold: 3
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Your most common sequence '{tactical.top_pattern}' occurs {tactical.pattern_repetition} times. Opponents who notice will anticipate your shots."
+    category: weakness
+    drill: "Randomization drill: call shot type just before hitting — forces conscious variation."
+    context_fields: ["tactical.top_pattern", "tactical.pattern_repetition"]
+
+  - name: rally_opener_pattern
+    check:
+      field: tactical.top_opener
+      operator: "!="
+      value: ""
+      min_shots: tactical.total_shots >= 10
+    recommendation: "You typically open rallies with a {tactical.top_opener}. Vary your opening shot to prevent opponents from setting early."
+    category: weakness
+    drill: "Opening variation: practice 3 different rally starts (serve, clear, drop)."
+    context_fields: ["tactical.top_opener"]
+
+  - name: rally_ender_strength
+    check:
+      field: tactical.top_ender
+      operator: "!="
+      value: ""
+      min_shots: tactical.total_shots >= 10
+    recommendation: "Your rallies often end with a {tactical.top_ender}. If this is a strong shot, great — if not, work on finishing patterns."
+    category: insight
+    context_fields: ["tactical.top_ender"]
+
+  - name: pattern_diversity_low
+    check:
+      field: tactical.unique_strokes_count
+      operator: "<"
+      threshold: 4
+      min_shots: tactical.total_shots >= 20
+    recommendation: "You only use {tactical.unique_strokes_count} distinct shot types. Expanding your shot repertoire makes you unpredictable."
+    category: weakness
+    drill: "Shot library: practice adding 2 new shot types to your game."
+    context_fields: ["tactical.unique_strokes_count"]
 
   # ─── Comparison Rules (player vs opponent) ─────────────────
   - name: opponent_smash_weak

@@ -41,6 +41,8 @@ class PlayerTrackingStage:
 
         if frames:
             detections = self._run_yolov8(frames)
+            if detections:
+                detections = self._filter_by_court_region(detections, court_corners)
             if not detections:
                 detections = self._generate_synthetic_detections(frames, court_mid_y)
             return self._process_detections(artifacts, detections, court_mid_y)
@@ -69,6 +71,33 @@ class PlayerTrackingStage:
                 })
 
         return detections
+
+    def _filter_by_court_region(self, detections: list[dict], court_corners: list) -> list[dict]:
+        """Filter detections to keep only those near the court area.
+
+        Uses court corner pixel coordinates to define a court bounding box
+        with margin, filtering out detections (umpire, audience) far from court.
+        """
+        if not court_corners or len(court_corners) < 4:
+            return detections
+        xs = [c[0] for c in court_corners[:4]]
+        ys = [c[1] for c in court_corners[:4]]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        margin_x = (max_x - min_x) * 0.3
+        margin_y = (max_y - min_y) * 0.3
+        court_min_x = min_x - margin_x
+        court_max_x = max_x + margin_x
+        court_min_y = min_y - margin_y
+        court_max_y = max_y + margin_y
+        filtered = []
+        for det in detections:
+            bbox = det["bbox"]
+            cx = (bbox[0] + bbox[2]) / 2
+            cy = (bbox[1] + bbox[3]) / 2
+            if court_min_x <= cx <= court_max_x and court_min_y <= cy <= court_max_y:
+                filtered.append(det)
+        return filtered if filtered else detections
 
     def _generate_synthetic_detections(self, frames: list[np.ndarray], court_mid_y: float) -> list[dict]:
         """Generate synthetic player detections when YOLOv8 fails."""

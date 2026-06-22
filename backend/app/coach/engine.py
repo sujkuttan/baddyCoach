@@ -26,10 +26,28 @@ class CoachEngine:
         tactical = analytics.get("tactical_analytics", {}).get(player_id, {})
         fitness = analytics.get("fitness_analytics", {}).get(player_id, {})
         footwork = analytics.get("footwork_analytics", {}).get(player_id, {})
+        shuttle_metrics = analytics.get("shuttle_coach_metrics", {})
 
         if tactical:
             shot_dist = tactical.get("shot_distribution", {})
             tactical["max_shot_percentage"] = max(shot_dist.values()) if shot_dist else 0
+
+            # Extract common patterns for rule evaluation
+            patterns = tactical.get("common_patterns", [])
+            top_pattern = patterns[0]["pattern"] if patterns else None
+            tactical["top_pattern"] = top_pattern
+            tactical["pattern_repetition"] = patterns[0]["count"] if patterns else 0
+
+            # Rally opener/ender insights
+            openers = tactical.get("rally_openers", {})
+            enders = tactical.get("rally_enders", {})
+            top_opener = max(openers, key=openers.get) if openers else None
+            top_ender = max(enders, key=enders.get) if enders else None
+            tactical["top_opener"] = top_opener
+            tactical["top_ender"] = top_ender
+
+            # Unique stroke count
+            tactical["unique_strokes_count"] = len(tactical.get("unique_strokes", []))
 
         player_analytics = {
             "tactical": tactical,
@@ -83,6 +101,13 @@ class CoachEngine:
                             weaknesses.append(rec_with_player)
             except Exception:
                 continue
+
+        # Add shuttle_coach metric-based findings if available
+        if shuttle_metrics:
+            self._add_shuttle_coach_findings(
+                shuttle_metrics, player_id, strengths, weaknesses,
+                improvements, drills, evidence
+            )
 
         rally_stats_dict = rally_stats if rally_stats.get("avg_length", 0) > 0 else None
 
@@ -171,6 +196,31 @@ class CoachEngine:
             "clear_pct": dist.get("clear", 0),
             "total_shots": total,
         }
+
+    def _add_shuttle_coach_findings(self, metrics: dict, player_id: str,
+                                     strengths: list, weaknesses: list,
+                                     improvements: list, drills: list,
+                                     evidence: list):
+        """Add findings from shuttle_coach metrics (shot effectiveness, errors)."""
+        # Shot effectiveness
+        effectiveness = metrics.get("shots.effectiveness", {})
+        if isinstance(effectiveness, dict):
+            weak_shots = {k: v for k, v in effectiveness.items() if isinstance(v, (int, float)) and v < 0.35}
+            for shot_type, rate in weak_shots.items():
+                msg = f"[{player_id}] {shot_type} effectiveness is low ({rate:.0%} win rate). Work on converting these into rally winners."
+                if msg not in weaknesses:
+                    weaknesses.append(msg)
+                    improvements.append(msg)
+                    drills.append(f"{shot_type} finishing drill: practice 20 {shot_type}s with target placement.")
+
+        # Recovery time
+        recovery = metrics.get("movement.recovery_time")
+        if isinstance(recovery, (int, float)) and recovery > 0.8:
+            msg = f"[{player_id}] Average recovery time is {recovery:.1f}s. Slower recovery gives opponents time to attack."
+            if msg not in weaknesses:
+                weaknesses.append(msg)
+                improvements.append(msg)
+                drills.append("Recovery footwork: 10x (hit shot → sprint to base → split step).")
 
     @staticmethod
     def _format_recommendation(template: str, analytics: dict) -> str:

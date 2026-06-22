@@ -99,43 +99,65 @@ def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
         return "clear"
 
 
+def _detect_handedness(kps: np.ndarray) -> str:
+    """Detect handedness from pose keypoints.
+
+    Uses wrist keypoint confidence (index 2) and relative position:
+    the playing hand typically has higher confidence and is raised higher
+    during overhead strokes. Left = COCO index 9, Right = COCO index 10.
+    """
+    left_conf = kps[9, 2] if kps.shape[1] > 2 else 0.5
+    right_conf = kps[10, 2] if kps.shape[1] > 2 else 0.5
+    # During a smash/clear, the playing wrist is typically above the shoulder
+    left_above = kps[9, 1] < kps[5, 1] if kps[9, 1] != 0 and kps[5, 1] != 0 else False
+    right_above = kps[10, 1] < kps[6, 1] if kps[10, 1] != 0 and kps[6, 1] != 0 else False
+    if left_above and not right_above:
+        return "left"
+    if right_above and not left_above:
+        return "right"
+    return "right" if right_conf >= left_conf else "left"
+
+
 def _evaluate_shot(stroke_type: str, kps: np.ndarray) -> float:
-    """Evaluate shot quality using pose keypoints."""
+    """Evaluate shot quality using pose keypoints with handedness awareness."""
     if kps.shape != (17, 3):
         return 0.5
-    if stroke_type in ("smash", "clear"):
+
+    handedness = _detect_handedness(kps)
+    if handedness == "left":
         shoulder = kps[5][:2]
+        elbow = kps[7][:2]
         wrist = kps[9][:2]
+        knee = kps[13][:2]
+        hip = kps[11][:2]
+        ankle = kps[15][:2]
+    else:
+        shoulder = kps[6][:2]
+        elbow = kps[8][:2]
+        wrist = kps[10][:2]
+        knee = kps[14][:2]
+        hip = kps[12][:2]
+        ankle = kps[16][:2]
+
+    if stroke_type in ("smash", "clear"):
         height_diff = shoulder[1] - wrist[1]
         return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
     elif stroke_type == "net_shot":
-        knee = kps[13][:2]
-        hip = kps[11][:2]
         lunge_depth = abs(knee[1] - hip[1])
         return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
     elif stroke_type == "drive":
-        elbow = kps[7][:2]
-        wrist = kps[9][:2]
         arm_extension = abs(wrist[0] - elbow[0])
         return min(1.0, max(0.0, arm_extension / 60.0 + 0.2))
     elif stroke_type == "lift":
-        shoulder = kps[5][:2]
-        wrist = kps[9][:2]
         height_diff = shoulder[1] - wrist[1]
         return min(1.0, max(0.0, height_diff / 120.0 + 0.4))
     elif stroke_type == "drop":
-        shoulder = kps[5][:2]
-        wrist = kps[9][:2]
         height_diff = shoulder[1] - wrist[1]
         return min(1.0, max(0.0, height_diff / 150.0 + 0.3))
     elif stroke_type == "block":
-        wrist = kps[9][:2]
-        hip = kps[11][:2]
         compactness = abs(wrist[1] - hip[1])
         return min(1.0, max(0.0, compactness / 50.0 + 0.2))
     elif stroke_type == "rush":
-        knee = kps[13][:2]
-        ankle = kps[15][:2]
         lunge = abs(knee[1] - ankle[1])
         return min(1.0, max(0.0, lunge / 40.0 + 0.3))
     return 0.5

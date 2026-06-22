@@ -21,11 +21,33 @@ REQUIRED = {
     "shots": ["rally_id", "player_id"],
     "hits": ["frame"],  # rally_id optional (Colab doesn't always have it)
     "shuttle": ["frame"],
-    "player_detections": ["frame", "player_id"],
     "pose": ["frame", "player_id"],
 }
 
 OPTIONAL_TABLES = {"pose"}
+
+
+def _convert_backend_players_json(base: Path) -> pd.DataFrame | None:
+    """Convert backend's players.json to the expected player_detections format."""
+    players_json = base / "players.json"
+    if not players_json.exists():
+        return None
+    import json
+    with open(players_json) as f:
+        data = json.load(f)
+    rows = []
+    for player in data.get("players", []):
+        pid = player["id"]
+        for det in player.get("detections", []):
+            rows.append({
+                "frame": det["frame"],
+                "player_id": pid,
+                "bbox": det["bbox"],
+                "confidence": det.get("confidence", 0.5),
+            })
+    if not rows:
+        return None
+    return pd.DataFrame(rows)
 
 
 def load_match(data_dir: Path) -> dict[str, pd.DataFrame]:
@@ -38,6 +60,12 @@ def load_match(data_dir: Path) -> dict[str, pd.DataFrame]:
     for pq in base.glob("*.parquet"):
         name = pq.stem
         tables[name] = pd.read_parquet(pq)
+
+    # Try to convert backend players.json to player_detections format
+    if "player_detections" not in tables:
+        pdf = _convert_backend_players_json(base)
+        if pdf is not None:
+            tables["player_detections"] = pdf
 
     for table_name, aliases in COLUMN_ALIASES.items():
         if table_name not in tables:

@@ -66,9 +66,18 @@ def _check_high_unforced(results: list[MetricResult]) -> list[Finding]:
 
 
 def derive_findings(results_by_id: dict[str, list[MetricResult]]) -> list[Finding]:
+    """Derive findings from metrics grouped by metric_id.
+
+    results_by_id is keyed by metric_id (e.g. 'movement.recovery_time'),
+    with values being lists of MetricResult (one per player).
+    """
     findings: list[Finding] = []
-    for player_id, results in results_by_id.items():
-        findings.extend(_check_slow_recovery(results))
-        findings.extend(_check_weak_shots(results))
-        findings.extend(_check_high_unforced(results))
+    # Flatten all results into a single list for evaluation
+    all_results = []
+    for results in results_by_id.values():
+        all_results.extend(results)
+
+    findings.extend(_check_slow_recovery(all_results))
+    findings.extend(_check_weak_shots(all_results))
+    findings.extend(_check_high_unforced(all_results))
     return findings

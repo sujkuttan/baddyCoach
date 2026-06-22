@@ -63,7 +63,7 @@ def run_pipeline(job_id: str):
         frames = []
         effective_fps = 30.0
 
-    config = StageConfig(gpu_enabled=False, processing_fps=max(1, int(effective_fps)))
+    config = StageConfig(gpu_enabled=settings.gpu_enabled, processing_fps=max(1, int(effective_fps)))
 
     # Extract a sample frame for court detection
     court_frame = None
@@ -114,6 +114,22 @@ def run_pipeline(job_id: str):
         "_rallies_df": store.get_parquet("rallies"),
         "_shots_df": store.get_parquet("shots"),
     }
+
+    # Try to get shuttle_coach metrics for richer coaching
+    shuttle_metrics = {}
+    try:
+        from app.shuttle_coach.engine import analyze
+        sc_result = analyze(str(job_dir))
+        for m in sc_result.get("metrics", []):
+            pid = m.get("player_id", "player_1")
+            mid = m.get("metric_id", "")
+            val = m.get("value")
+            if pid not in shuttle_metrics:
+                shuttle_metrics[pid] = {}
+            shuttle_metrics[pid][mid] = val
+    except Exception:
+        pass
+
     engine = CoachEngine()
     all_players = set(list(analytics["tactical_analytics"].keys()) + list(analytics["fitness_analytics"].keys()))
     if not all_players:
@@ -124,7 +140,9 @@ def run_pipeline(job_id: str):
         "recommended_drills": [], "evidence": [], "rally_stats": None,
     }
     for pid in sorted(all_players):
-        result = engine.generate(analytics, player_id=pid)
+        player_analytics = dict(analytics)
+        player_analytics["shuttle_coach_metrics"] = shuttle_metrics.get(pid, {})
+        result = engine.generate(player_analytics, player_id=pid)
         report["strengths"].extend(result["strengths"])
         report["weaknesses"].extend(result["weaknesses"])
         report["top_3_improvements"].extend(result["top_3_improvements"])
@@ -133,7 +151,21 @@ def run_pipeline(job_id: str):
         if result.get("rally_stats") and report["rally_stats"] is None:
             report["rally_stats"] = result["rally_stats"]
 
+    # Try to generate Gemini narration (rule-aware) and add to report
+    narration_text = _generate_narration(job_id, store, report)
+    if narration_text:
+        report["narration"] = narration_text
+
     store.set("report", report)
+
+    # Save cross-session progress data
+    try:
+        from app.storage.progress import save_player_session
+        for pid in sorted(all_players):
+            player_data = {k: v.get(pid, {}) for k, v in analytics.items() if isinstance(v, dict) and pid in v}
+            save_player_session(pid, job_id, player_data)
+    except Exception:
+        pass
 
     from app.report.generator import ReportGenerator
     ReportGenerator().generate(job_dir)
@@ -182,6 +214,44 @@ def _transcode_to_h264(input_path: str, output_path: str) -> bool:
         return False
 
 
+def _generate_narration(job_id: str, store, rule_report: dict | None = None) -> str | None:
+    """Generate Gemini narration for the main coaching report.
+
+    Incorporates rule-based findings as context so Gemini can reference them.
+    """
+    import os
+    api_key = os.environ.get("GEMINI_API_KEY") or settings.gemini_api_key
+    if not api_key:
+        return None
+    try:
+        from app.shuttle_coach.engine import analyze, narrate
+        result = analyze(str(settings.job_dir(job_id)))
+        metrics = result.get("metrics", [])
+        if not metrics:
+            return None
+
+        # Build a question that includes the rule-based findings as context
+        strengths_text = ""
+        weaknesses_text = ""
+        if rule_report:
+            ss = rule_report.get("strengths", [])
+            ws = rule_report.get("weaknesses", [])
+            strengths_text = "Strengths detected: " + "; ".join(ss[:3]) if ss else ""
+            weaknesses_text = "Areas to improve: " + "; ".join(ws[:3]) if ws else ""
+
+        question = (
+            "Provide a concise coaching summary of this badminton match. "
+            "Highlight key strengths and areas for improvement. "
+            "Be specific and actionable. "
+        )
+        if strengths_text or weaknesses_text:
+            question += f"\n\nRule-based analysis context:\n{strengths_text}\n{weaknesses_text}"
+
+        return narrate(question, metrics, api_key)
+    except Exception:
+        return None
+
+
 @router.get("/health")
 async def health_check():
     return {"status": "ok"}
@@ -195,6 +265,30 @@ async def upload_video(file: UploadFile = File(...)):
     ext = file.filename.rsplit(".", 1)[-1].lower()
     if ext not in settings.supported_formats:
         raise HTTPException(400, f"Unsupported format: {ext}")
+
+    # Validate file size (max 500MB)
+    MAX_SIZE = 500 * 1024 * 1024
+    content = await file.read()
+    if len(content) > MAX_SIZE:
+        raise HTTPException(400, f"File too large: {len(content)} bytes (max {MAX_SIZE} bytes)")
+    if len(content) == 0:
+        raise HTTPException(400, "Empty file")
+
+    # Validate content is a video via magic bytes
+    MAGIC_BYTES = {
+        b"\x00\x00\x00\x18ftypmp4": "mp4",
+        b"\x00\x00\x00\x20ftyp": "mp4",
+        b"\x00\x00\x00\x1cftyp": "mp4",
+        b"\x1a\x45\xdf\xa3": "mkv/webm",
+        b"\x52\x49\x46\x46": "avi",
+    }
+    is_valid = False
+    for magic, fmt in MAGIC_BYTES.items():
+        if content[:len(magic)] == magic:
+            is_valid = True
+            break
+    if not is_valid and not (content[:3] == b"\x00\x00\x00" and b"ftyp" in content[:32]):
+        is_valid = True  # lenient — accept unknown containers
 
     job_id = job_manager.create_job(video_path="", filename=file.filename)
 
