@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 
 
 class FitnessAnalyticsStage:
@@ -30,7 +31,8 @@ class FitnessAnalyticsStage:
                     ]
                     
                     duration_frames = rally["end_frame"] - rally["start_frame"]
-                    duration_seconds = max(duration_frames / 30, 0.1)
+                    fps = float(config.processing_fps or 30.0)
+                    duration_seconds = max(duration_frames / fps, 0.1)
                     intensity = len(rally_shots) / duration_seconds
                     rally_intensities.append(float(intensity))
 
@@ -52,6 +54,8 @@ class FitnessAnalyticsStage:
                 "late_rally_fatigue": late_rally_fatigue,
                 "rally_count": len(rally_intensities),
             }
+
+        logger.info(f"Computed fitness analytics for {len(fitness)} players")
 
         artifacts.set("fitness_analytics", fitness)
 

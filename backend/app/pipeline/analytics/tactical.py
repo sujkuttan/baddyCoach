@@ -1,6 +1,7 @@
 from collections import Counter, defaultdict
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 
 
 class TacticalAnalyticsStage:
@@ -44,6 +45,8 @@ class TacticalAnalyticsStage:
                 "rally_openers": dict(rally_openers),
                 "rally_enders": dict(rally_enders),
             }
+
+        logger.info(f"Computed tactical analytics for {len(tactical)} players")
 
         artifacts.set("tactical_analytics", tactical)
 

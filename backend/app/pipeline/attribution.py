@@ -61,18 +61,32 @@ class PlayerAttributionStage:
                     return None
             return None
 
-        # Try to use BST Top/Bottom predictions for attribution
-        bst_predictions = artifacts.get("bst_predictions")
-        if bst_predictions:
-            # Use BST Top/Bottom predictions for attribution
-            for frame, pred in bst_predictions.items():
-                if pred.startswith("Top_"):
-                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_1"  # Near player
-                elif pred.startswith("Bottom_"):
-                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_2"  # Far player
-        else:
-            # Fallback to alternation heuristic if BST predictions not available
-            if rallies_df is not None and len(rallies_df) > 0:
+        # Initialize player_id column if it doesn't exist
+        if "player_id" not in shots_df.columns:
+            shots_df["player_id"] = None
+
+        # Try to use BST shuttleset_class_id for Top/Bottom attribution
+        if "shuttleset_class_id" in shots_df.columns:
+            for idx, shot in shots_df.iterrows():
+                class_id = shot.get("shuttleset_class_id", 0)
+                if class_id <= 0:
+                    continue
+                if 1 <= class_id <= 12:
+                    # Top_* -> far player (Top of frame = far side)
+                    for p in players_data.get("players", []):
+                        if p.get("side") == "far":
+                            shots_df.at[idx, "player_id"] = p["id"]
+                            break
+                elif 13 <= class_id <= 24:
+                    # Bottom_* -> near player (Bottom of frame = near side)
+                    for p in players_data.get("players", []):
+                        if p.get("side") == "near":
+                            shots_df.at[idx, "player_id"] = p["id"]
+                            break
+
+        # Fill remaining unassigned shots with alternation heuristic
+        unassigned = shots_df["player_id"].isna()
+        if unassigned.any():
                 for _, rally in rallies_df.iterrows():
                     start_f = int(rally["start_frame"])
                     end_f = int(rally["end_frame"])
@@ -92,17 +106,16 @@ class PlayerAttributionStage:
                     for i, idx in enumerate(rally_shots.index):
                         shots_df.at[idx, "player_id"] = players_list[i % 2]
         
-        # Try to use tracking data for attribution
+        # Try to use tracking data for unassigned shots
         tracked_players = artifacts.get("tracked_players")
         if tracked_players:
-            # Use tracking data to determine player positions
             for frame, players in tracked_players.items():
                 if len(players) >= 2:
-                    # Sort players by y-coordinate (vertical position)
-                    sorted_players = sorted(players, key=lambda p: p["bbox"][1], reverse=True)
-                    # The player with higher y-coordinate is "near" (player_1)
-                    # The player with lower y-coordinate is "far" (player_2)
-                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_1" if sorted_players[0]["bbox"][1] > court_mid_y else "player_2"
+                    idx_mask = (shots_df["frame"] == frame) & shots_df["player_id"].isna()
+                    if idx_mask.any():
+                        sorted_players = sorted(players, key=lambda p: p["bbox"][1], reverse=True)
+                        assigned = "player_1" if sorted_players[0]["bbox"][1] > court_mid_y else "player_2"
+                        shots_df.loc[idx_mask, "player_id"] = assigned
 
         # Fill in remaining shots that weren't assigned by BST predictions
         for idx, shot in shots_df.iterrows():

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.strokes import StrokeClassificationStage
+from app.pipeline import StrokeClassificationStage
 
 
 def test_stroke_classification_labels_shots(tmp_job_dir):

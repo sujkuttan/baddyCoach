@@ -104,18 +104,27 @@ class TrackNetV3:
         self.input_width = 512
 
         if model_path and Path(model_path).exists():
-            checkpoint = torch.load(model_path, map_location=device)
-            if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                state_dict = checkpoint['model']
-            elif isinstance(checkpoint, dict):
-                state_dict = checkpoint
-            else:
-                state_dict = checkpoint
+            try:
+                checkpoint = torch.load(model_path, map_location=device)
+                if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                    state_dict = checkpoint['model']
+                elif isinstance(checkpoint, dict):
+                    state_dict = checkpoint
+                else:
+                    state_dict = checkpoint
 
-            self.model = TrackNetV3Model()
-            self.model.load_state_dict(state_dict)
-            self.model.to(device)
-            self.model.eval()
+                self.model = TrackNetV3Model()
+                self.model.load_state_dict(state_dict)
+                self.model.to(device)
+                self.model.eval()
+                print(f"TrackNetV3 loaded successfully from {model_path}")
+            except Exception as e:
+                print(f"TrackNetV3 load error: {e}")
+                import traceback
+                traceback.print_exc()
+                self.model = None
+        else:
+            print(f"TrackNetV3 model file not found: {model_path}")
 
     def _preprocess(self, frames: list[np.ndarray]) -> np.ndarray:
         import cv2
@@ -142,12 +151,12 @@ class TrackNetV3:
 
     def predict(self, frames: list[np.ndarray], original_size: tuple | None = None) -> list[dict]:
         if self.model is None or len(frames) < 3:
-            h = frames[0].shape[0] if frames else 720
-            w = frames[0].shape[1] if frames else 1280
-            return [{"x": 0, "y": 0, "confidence": 0}]
-
-        original_width = original_size[0] if original_size else frames[0].shape[1]
-        original_height = original_size[1] if original_size else frames[0].shape[0]
+            raise RuntimeError("TrackNetV3 model not loaded or insufficient frames")
+        
+        h = frames[0].shape[0] if frames else 720
+        w = frames[0].shape[1] if frames else 1280
+        original_width = original_size[0] if original_size else w
+        original_height = original_size[1] if original_size else h
 
         # Use last 9 frames if available, otherwise pad with copies
         if len(frames) >= 9:
@@ -166,7 +175,7 @@ class TrackNetV3:
     def predict_batch(self, frames: list[np.ndarray], batch_size: int | None = None,
                       original_size: tuple | None = None) -> list[dict]:
         if len(frames) < 3:
-            return [{"x": 0, "y": 0, "confidence": 0} for _ in frames]
+            raise RuntimeError("TrackNetV3 requires at least 3 frames for prediction")
 
         if batch_size is None:
             from app.config.gpu_batch import get_gpu_batch_config
@@ -214,6 +223,8 @@ class TrackNetV3:
                         "y": float(y_idx * original_height / self.input_height),
                         "confidence": conf,
                     }
+            else:
+                raise RuntimeError("TrackNetV3 model not loaded")
 
             del tensor
             if self.device != "cpu":
@@ -222,6 +233,6 @@ class TrackNetV3:
 
         for i in range(len(all_preds)):
             if all_preds[i] is None:
-                all_preds[i] = {"x": 0, "y": 0, "confidence": 0}
+                raise RuntimeError(f"TrackNetV3 failed to predict for frame {i}")
 
         return all_preds

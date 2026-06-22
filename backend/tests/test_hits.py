@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.hits import HitFrameLocalizationStage
+from app.pipeline import HitFrameLocalizationStage
 
 
 def test_hit_detection_finds_trajectory_changes(tmp_job_dir):

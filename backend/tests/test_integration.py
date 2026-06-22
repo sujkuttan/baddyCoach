@@ -3,14 +3,14 @@ import pandas as pd
 from pathlib import Path
 
 from app.pipeline.base import StageConfig
-from app.pipeline.court import CourtDetectionStage
-from app.pipeline.players import PlayerTrackingStage
-from app.pipeline.shuttle import ShuttleTrackingStage
-from app.pipeline.pose import PoseEstimationStage
-from app.pipeline.hits import HitFrameLocalizationStage
-from app.pipeline.strokes import StrokeClassificationStage
-from app.pipeline.attribution import PlayerAttributionStage
-from app.pipeline.rallies import RallySegmentationStage
+from app.pipeline import CourtDetectionStage
+from app.pipeline import PlayerTrackingStage
+from app.pipeline import ShuttleTrackingStage
+from app.pipeline import PoseEstimationStage
+from app.pipeline import HitFrameLocalizationStage
+from app.pipeline import StrokeClassificationStage
+from app.pipeline import PlayerAttributionStage
+from app.pipeline import RallySegmentationStage
 from app.pipeline.analytics.court_position import CourtPositionAnalyticsStage
 from app.pipeline.analytics.footwork import FootworkAnalyticsStage
 from app.pipeline.analytics.fitness import FitnessAnalyticsStage

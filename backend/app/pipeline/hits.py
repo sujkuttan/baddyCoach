@@ -3,6 +3,7 @@ import pandas as pd
 from scipy.signal import find_peaks
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 
 
 class HitFrameLocalizationStage:
@@ -56,6 +57,8 @@ class HitFrameLocalizationStage:
 
         hits_data = pd.DataFrame(hits)
         artifacts.set_parquet("hits", hits_data)
+
+        logger.info(f"Localized {len(hits)} hit frames from {len(shuttle_df)} shuttle samples")
 
         return StageResult.success(
             artifacts={"hits": artifacts.path("hits")},

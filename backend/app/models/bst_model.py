@@ -210,7 +210,7 @@ class CrossTransformerLayer(nn.Module):
 class BST_CG(nn.Module):
     """BST-CG: Badminton Stroke-type Transformer with Clean Gate.
     - PPF: Pose Position Fusion
-    - Adding Clean Gate
+    - Clean Gate for shuttle token denoising
     """
     def __init__(
         self, in_dim, seq_len, n_class=35, n_people=2,
@@ -345,6 +345,99 @@ class BST_CG(nn.Module):
 
         p1_conclusion = p1_cls + p1_shuttle_cls
         p2_conclusion = p2_cls + p2_shuttle_cls
+
+        x = torch.cat((p1_conclusion, p2_conclusion, shuttle_cls), dim=1)
+        x = self.mlp_head(x)
+        return x
+
+
+class BST_CG_AP(BST_CG):
+    """BST-CG-AP: Adds AimPlayer (player-aware weighting) on top of BST-CG.
+
+    AimPlayer uses cosine similarity between each player's shuttle CLS token
+    to determine which player the stroke should be attributed to, then weights
+    the final conclusions accordingly.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cos_sim = nn.CosineSimilarity(dim=1)
+
+    def forward(
+        self,
+        JnB: Tensor,
+        shuttle: Tensor,
+        pos: Tensor,
+        video_len: Tensor
+    ):
+        b, t, n, in_dim = JnB.shape
+        JnB = JnB.permute(0, 2, 3, 1).reshape(b * n, in_dim, t)
+
+        pos = self.mlp_positions(pos)
+        pos_impact = pos.permute(0, 2, 3, 1).reshape(b * n, in_dim, t)
+
+        JnB = JnB * pos_impact + JnB
+
+        JnB = self.tcn_pose(JnB)
+        JnB = JnB.view(b, n, -1, t).transpose(-2, -1)
+
+        shuttle = shuttle.transpose(1, 2).contiguous()
+        shuttle = self.tcn_shuttle(shuttle)
+        shuttle = shuttle.unsqueeze(1).transpose(-2, -1)
+
+        x = torch.cat((JnB, shuttle), dim=1)
+        _, n, _, d = x.shape
+
+        class_token_tem = self.learned_token_tem.view(1, 1, -1).expand(b * n, -1, -1)
+        x = x.view(b * n, t, d)
+        x = torch.cat((class_token_tem, x), dim=1) + self.embedding_tem
+
+        range_t = torch.arange(0, 1 + t, device=x.device).unsqueeze(0).expand(b, -1)
+        video_len = video_len.unsqueeze(-1)
+        mask = range_t < (1 + video_len)
+        mask_n = mask.repeat_interleave(n, dim=0)
+
+        x = self.pre_dropout(x)
+        x = self.encoder_tem(x, mask_n)
+        x = x.view(b, n, 1 + t, d)
+
+        p1, p2, shuttle = map(lambda ts: ts.squeeze(1), x.chunk(3, dim=1))
+
+        p1_cls, p2_cls, shuttle_cls = \
+            p1[:, 0].contiguous(), p2[:, 0].contiguous(), shuttle[:, 0].contiguous()
+
+        p1 = p1[:, 1:].contiguous() + self.embedding_cross
+        p2 = p2[:, 1:].contiguous() + self.embedding_cross
+        shuttle = shuttle[:, 1:].contiguous() + self.embedding_cross
+
+        cross_mask = mask[:, 1:].contiguous()
+        p1_shuttle = self.cross_trans(p1, shuttle, cross_mask)
+        p2_shuttle = self.cross_trans(p2, shuttle, cross_mask)
+
+        class_token_inter = self.learned_token_inter.view(1, 1, -1).expand(b, -1, -1)
+        p1_shuttle = torch.cat((class_token_inter, p1_shuttle), dim=1) + self.embedding_inter
+        p2_shuttle = torch.cat((class_token_inter, p2_shuttle), dim=1) + self.embedding_inter
+
+        p1_shuttle = self.encoder_inter(p1_shuttle, mask)
+        p2_shuttle = self.encoder_inter(p2_shuttle, mask)
+
+        p1_shuttle_cls = p1_shuttle[:, 0, :].contiguous()
+        p2_shuttle_cls = p2_shuttle[:, 0, :].contiguous()
+
+        # Clean Gate
+        info_need_clean = torch.minimum(p1_shuttle_cls, p2_shuttle_cls)
+        dirt = self.mlp_clean(info_need_clean)
+        shuttle_cls = shuttle_cls - dirt
+
+        p1_conclusion = p1_cls + p1_shuttle_cls
+        p2_conclusion = p2_cls + p2_shuttle_cls
+
+        # AimPlayer: cosine similarity weighted player contribution
+        p1_shuttle_sim = self.cos_sim(p1_shuttle_cls, shuttle_cls)
+        p2_shuttle_sim = self.cos_sim(p2_shuttle_cls, shuttle_cls)
+        alpha = (p1_shuttle_sim - p2_shuttle_sim + 2.0) / 4.0
+        p1_conclusion = alpha.view(b, 1) * p1_conclusion
+        p2_conclusion = (1.0 - alpha.view(b, 1)) * p2_conclusion
 
         x = torch.cat((p1_conclusion, p2_conclusion, shuttle_cls), dim=1)
         x = self.mlp_head(x)

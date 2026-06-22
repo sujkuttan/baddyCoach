@@ -48,6 +48,10 @@ class ReportGenerator:
         if coach:
             report.update(coach)
 
+        # Add data quality section
+        data_quality = self._generate_data_quality_report(artifacts)
+        report["data_quality"] = data_quality
+
         rallies_df = artifacts.get_parquet("rallies")
         if rallies_df is not None:
             report["rallies"] = rallies_df.to_dict(orient="records")
@@ -65,3 +69,33 @@ class ReportGenerator:
         report_path.write_text(json.dumps(report, indent=2, default=str))
 
         return report
+
+    def _generate_data_quality_report(self, artifacts: ArtifactStore) -> dict:
+        """Generate data quality report for the pipeline run."""
+        quality_flags = []
+        
+        # Check for synthetic detections
+        players_data = artifacts.get("players") or {}
+        if players_data.get("is_synthetic", False):
+            quality_flags.append({
+                "type": "synthetic_data",
+                "severity": "high",
+                "message": "Player detections were synthetically generated due to YOLO failure"
+            })
+        
+        # Check for rule-based stroke classification
+        shots_df = artifacts.get_parquet("shots")
+        if shots_df is not None and len(shots_df) > 0:
+            rule_based_shots = shots_df[shots_df['is_rule_based'] == True]
+            if len(rule_based_shots) > 0:
+                quality_flags.append({
+                    "type": "rule_based_classification",
+                    "severity": "medium",
+                    "message": f"{len(rule_based_shots)} strokes classified using rule-based fallback (BST model unavailable)"
+                })
+        
+        return {
+            "data_quality_score": len(quality_flags),  # Simple scoring
+            "flags": quality_flags,
+            "warnings": [flag["message"] for flag in quality_flags]
+        }

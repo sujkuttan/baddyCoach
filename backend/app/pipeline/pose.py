@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 
 
 class PoseEstimationStage:
@@ -32,7 +33,11 @@ class PoseEstimationStage:
         return StageResult.from_error("No frames or pose data provided")
 
     def _run_pose(self, frames: list[np.ndarray], artifacts: ArtifactStore) -> list[dict]:
-        """Run pose estimation based on configured model."""
+        """Run pose estimation based on configured model.
+
+        Model loading is local to this stage (not via shared.models.setup_models)
+        to keep the colab pipeline's self-contained model loading approach intact.
+        """
         from app.config.settings import settings
 
         pose_model = settings.pose_model
@@ -168,6 +173,8 @@ class PoseEstimationStage:
 
         df = pd.DataFrame(records)
         artifacts.set_parquet("pose", df)
+
+        logger.info(f"Stored {len(df)} pose records across {df['player_id'].nunique()} players")
 
         return StageResult.success(
             artifacts={"pose": artifacts.path("pose")},

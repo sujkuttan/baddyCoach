@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
+from app.pipeline.shared.logging import logger
 
 ZONE_NAMES = [
     "front_left", "front_center", "front_right",
@@ -24,8 +26,8 @@ class CourtPositionAnalyticsStage:
         if not court.get("valid", False):
             return StageResult.from_error("Court detection is invalid, cannot compute court position analytics")
 
-        court_length = court["court_length"]
-        court_width = court["court_width"]
+        court_length = court.get("court_length", COURT_LENGTH)
+        court_width = court.get("court_width", COURT_WIDTH)
 
         shuttle_df = artifacts.get_parquet("shuttle")
         shots_df = artifacts.get_parquet("shots")
@@ -52,10 +54,8 @@ class CourtPositionAnalyticsStage:
                     
                     # Convert pixel coordinates to court coordinates using homography
                     if homography is not None:
-                        # Convert pixel to court coordinates
-                        pixel_pos = np.array([x, y, 1])
-                        court_pos = np.linalg.inv(homography) @ pixel_pos
-                        court_x, court_y = court_pos[:2]
+                        H = np.array(homography)
+                        court_x, court_y = image_to_court(H, (x, y))
                         
                         # Use court coordinates for zone calculation
                         zone = self._get_zone_from_court(court_x, court_y, court_length, court_width)
@@ -78,6 +78,8 @@ class CourtPositionAnalyticsStage:
         }
 
         artifacts.set("court_analytics", analytics_data)
+
+        logger.info(f"Computed court position analytics: {len(zone_transitions)} zone transitions across {len(set(t['player_id'] for t in zone_transitions))} players")
 
         return StageResult.success(
             artifacts={"court_analytics": artifacts.path("court_analytics")},

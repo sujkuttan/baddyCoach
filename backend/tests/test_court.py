@@ -1,6 +1,6 @@
 import numpy as np
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.court import CourtDetectionStage, CourtKeypointDetector
+from app.pipeline import CourtDetectionStage, CourtKeypointDetector
 
 
 def test_court_detection_with_known_corners(tmp_job_dir):

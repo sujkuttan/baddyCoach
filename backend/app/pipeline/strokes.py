@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
 
 BONE_PAIRS = [
     (0,1),(0,2),(1,2),(1,3),(2,4),
@@ -81,6 +81,7 @@ def _build_clip(
     seq_len: int,
     player_sides: dict | None = None,
     player_detections: dict | None = None,
+    homography: np.ndarray | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -88,9 +89,13 @@ def _build_clip(
     1. Joints normalized by bbox diagonal + center_align (range [-0.X, 0.X])
     2. Bones computed as endpoint differences
     3. Shuttle normalized by video resolution (range [0, 1])
-    4. Position = feet midpoint in court-normalized coords (range [0, 1])
+    4. Position = feet midpoint in court-normalized coords via homography
 
     Player ordering: p_idx=0 is ALWAYS the "far" player, p_idx=1 is "near".
+
+    When homography is provided, positions are projected to court coordinates
+    then normalized by court dimensions (matching BST official preprocessing).
+    Falls back to pixel-normalized positions when homography is unavailable.
     """
     n_frames = len(frames)
     joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
@@ -152,8 +157,13 @@ def _build_clip(
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
                 feet_y = max(coords[15, 1], coords[16, 1])
-                pos[t, p_idx, 0] = feet_x / vid_w
-                pos[t, p_idx, 1] = feet_y / vid_h
+                if homography is not None:
+                    court_x, court_y = image_to_court(homography, (feet_x, feet_y))
+                    pos[t, p_idx, 0] = court_x / court_length if court_length > 0 else 0
+                    pos[t, p_idx, 1] = court_y / court_width if court_width > 0 else 0
+                else:
+                    pos[t, p_idx, 0] = feet_x / vid_w
+                    pos[t, p_idx, 1] = feet_y / vid_h
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     for i in range(2):
@@ -190,6 +200,7 @@ class StrokeClassificationStage:
 
         court_length = court.get("court_length", COURT_LENGTH)
         court_width = court.get("court_width", COURT_WIDTH)
+        homography = np.array(court["homography"]) if court.get("homography") is not None else None
 
         vid_w, vid_h = 1280, 720
         video_res = artifacts.get("video_resolution")
@@ -250,18 +261,20 @@ class StrokeClassificationStage:
                 vid_w, vid_h, court_length, court_width,
                 seq_len=classifier.seq_len,
                 player_sides=player_sides, player_detections=player_list,
+                homography=homography,
             )
 
-            stroke_type, confidence = classifier.predict_single(clip)
+            stroke_type, confidence, raw_class_id = classifier.predict_single(clip)
 
-            # Add flag if prediction is rule-based (fallback)
-            is_rule_based = classifier.model is None  # BST failed to load
+            # Track if prediction is rule-based (fallback) vs BST model
+            is_rule_based = classifier.model is None
 
             shot = {
                 "frame": frame,
                 "hit_confidence": float(hit["confidence"]),
                 "stroke_type": stroke_type,
                 "stroke_confidence": confidence,
+                "shuttleset_class_id": raw_class_id,
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
@@ -288,7 +301,7 @@ class StrokeClassificationStage:
                         shots[i]["stroke_type"] = majority[0]
                         shots[i]["stroke_confidence"] = 0.3
 
-        fps = 30.0
+        fps = float(config.processing_fps or 30.0)
         for i, s in enumerate(shots):
             s["shot_id"] = i + 1
             s["start_ts"] = round(s["frame"] / fps, 3)

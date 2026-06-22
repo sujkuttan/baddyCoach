@@ -1,6 +1,6 @@
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.rallies import RallySegmentationStage, _is_rally_ending_shot, _infer_end_reason
+from app.pipeline import RallySegmentationStage, _is_rally_ending_shot, _infer_end_reason
 
 
 def test_rally_segmentation_groups_shots(tmp_job_dir):

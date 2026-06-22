@@ -59,8 +59,8 @@ class RTMPoseEstimator:
         if bw < 1 or bh < 1:
             return np.zeros((17, 3), dtype=np.float32)
 
-        keypoints[:, 0] = keypoints[:, 0] / 256.0 * bw + x1
-        keypoints[:, 1] = keypoints[:, 1] / 192.0 * bh + y1
+        keypoints[:, 0] = keypoints[:, 0] / 192.0 * bw + x1
+        keypoints[:, 1] = keypoints[:, 1] / 256.0 * bh + y1
 
         if keypoints.shape[1] > 2:
             keypoints[:, 2] = 1.0 / (1.0 + np.exp(-keypoints[:, 2]))
@@ -72,7 +72,7 @@ class RTMPoseEstimator:
             return np.zeros((17, 3), dtype=np.float32)
 
         input_tensor = self._preprocess(frame, bbox)
-        outputs = self.model.run(None, {"input": input_tensor})
+        outputs = self.model.run(None, {self.input_name: input_tensor})
         return self._postprocess(outputs, bbox, frame.shape[:2])
 
     def estimate_batch(self, frame: np.ndarray, bboxes: list[tuple[int, int, int, int]]) -> list[np.ndarray]:

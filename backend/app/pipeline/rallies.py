@@ -123,7 +123,7 @@ class RallySegmentationStage:
             r["end_reason"] = end_reason
 
             r["serving_player_id"] = None
-            fps = 30.0
+            fps = float(config.processing_fps or 30.0)
             r["start_ts"] = round(r["start_frame"] / fps, 3)
             r["end_ts"] = round(r["end_frame"] / fps, 3)
             r["match_id"] = None

@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.pose import PoseEstimationStage
+from app.pipeline import PoseEstimationStage
 
 
 def test_pose_estimation_stores_keypoints(tmp_job_dir):

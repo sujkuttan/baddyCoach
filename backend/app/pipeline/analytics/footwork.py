@@ -2,9 +2,11 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
+from app.pipeline.shared.logging import logger
 
-COURT_WIDTH_M = 5.18
-COURT_LENGTH_M = 13.4
+COURT_WIDTH_M = COURT_WIDTH
+COURT_LENGTH_M = COURT_LENGTH
 
 
 def _pixel_to_meter_scale(court: dict) -> float:
@@ -64,13 +66,16 @@ class FootworkAnalyticsStage:
             homography = court.get("homography")
             distance_px = self._compute_distance(com_trajectory, homography)
             distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
-            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, px_per_m) if shots_df is not None else []
+            fps = float(config.processing_fps or 30.0)
+            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, px_per_m, fps) if shots_df is not None else []
 
             metrics[player_id] = {
                 "distance_covered": float(distance_m),
                 "recovery_times": recovery_times,
                 "avg_recovery": float(np.mean(recovery_times)) if recovery_times else 0,
             }
+
+        logger.info(f"Computed footwork analytics for {len(metrics)} players")
 
         artifacts.set("footwork_analytics", metrics)
 
@@ -103,16 +108,17 @@ class FootworkAnalyticsStage:
         
         # Convert pixel coordinates to court coordinates using homography
         if homography is not None:
+            H = np.array(homography)
             court_trajectory = []
             for point in com_trajectory:
-                pixel_pos = np.array([point[0], point[1], 1])
-                court_pos = np.linalg.inv(homography) @ pixel_pos
-                court_trajectory.append(court_pos[:2])
-            filtered = [court_trajectory[0]]
-            for i in range(1, len(court_trajectory)):
-                jump = np.sqrt(np.sum((court_trajectory[i] - court_trajectory[i-1])**2))
-                if jump < 500:  # Still filter out large jumps
-                    filtered.append(court_trajectory[i])
+                court_x, court_y = image_to_court(H, point)
+                court_trajectory.append((court_x, court_y))
+            court_pts = [np.array(pt) for pt in court_trajectory]
+            filtered = [court_pts[0]]
+            for i in range(1, len(court_pts)):
+                jump = np.sqrt(np.sum((court_pts[i] - filtered[-1])**2))
+                if jump < 500:
+                    filtered.append(court_pts[i])
             if len(filtered) < 2:
                 return 0.0
             filtered = np.array(filtered)
@@ -134,7 +140,7 @@ class FootworkAnalyticsStage:
             return float(np.sum(distances))
 
     @staticmethod
-    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float) -> list[float]:
+    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float, fps: float = 30.0) -> list[float]:
         recovery_times = []
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
@@ -157,6 +163,7 @@ class FootworkAnalyticsStage:
             distances = np.sqrt(np.sum((com_points - base_position) ** 2, axis=1))
             returned = np.where(distances < threshold_px)[0]
             if len(returned) > 0:
-                recovery_times.append(float(returned[0]))
+                # Convert frame count to seconds
+                recovery_times.append(float(returned[0]) / fps)
 
         return recovery_times

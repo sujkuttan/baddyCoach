@@ -1,8 +1,8 @@
-import pandas as pd
 import numpy as np
-from pathlib import Path
+import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 
 
 class ShuttleTrackingStage:
@@ -33,7 +33,11 @@ class ShuttleTrackingStage:
         return StageResult.from_error("No frames or shuttle data provided")
 
     def _run_tracknet(self, frames: list[np.ndarray]) -> list[dict]:
-        """Run TrackNetV3 on video frames."""
+        """Run TrackNetV3 on video frames.
+
+        Model loading stays local to this stage (not via shared.models.setup_models)
+        to keep the colab pipeline's self-contained model loading approach intact.
+        """
         from app.models.tracknet import TrackNetV3
         from app.config.settings import settings
 
@@ -66,6 +70,8 @@ class ShuttleTrackingStage:
         artifacts.set_parquet("shuttle", df)
 
         avg_conf = df["confidence"].mean()
+        logger.info(f"Stored {len(df)} shuttle tracking rows (avg_conf={avg_conf:.2f})")
+
         return StageResult.success(
             artifacts={"shuttle": artifacts.path("shuttle")},
             metadata={

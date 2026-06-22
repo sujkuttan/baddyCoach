@@ -31,6 +31,13 @@ try:
     from .strokes import StrokeClassificationStage
     from .attribution import PlayerAttributionStage
     from .rallies import RallySegmentationStage
+    from .analytics import (
+        CourtPositionAnalyticsStage,
+        FitnessAnalyticsStage,
+        FootworkAnalyticsStage,
+        TacticalAnalyticsStage,
+        TechnicalAnalyticsStage,
+    )
 except (ImportError, Exception):
     CourtDetectionStage = None
     CourtKeypointDetector = None
@@ -41,6 +48,11 @@ except (ImportError, Exception):
     StrokeClassificationStage = None
     PlayerAttributionStage = None
     RallySegmentationStage = None
+    CourtPositionAnalyticsStage = None
+    FitnessAnalyticsStage = None
+    FootworkAnalyticsStage = None
+    TacticalAnalyticsStage = None
+    TechnicalAnalyticsStage = None
 
 # Export key components
 __all__ = [
@@ -98,4 +110,9 @@ __all__ = [
     'StrokeClassificationStage',
     'PlayerAttributionStage',
     'RallySegmentationStage',
+    'CourtPositionAnalyticsStage',
+    'FitnessAnalyticsStage',
+    'FootworkAnalyticsStage',
+    'TacticalAnalyticsStage',
+    'TechnicalAnalyticsStage',
 ]

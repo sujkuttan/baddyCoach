@@ -62,6 +62,19 @@ class YOLOv8Tracker:
             from app.config.gpu_batch import get_gpu_batch_config
             cfg = get_gpu_batch_config(device)
             self._batch_size = cfg["yolo_batch"]
+        
+        # Try to use ByteTrack or BoT-SORT for better tracking
+        self.tracker = None
+        try:
+            from bot_sort import BoTSORT
+            self.tracker = BoTSORT(model_path or "yolov8s.pt", device=device, track_high_thresh=0.6)
+        except ImportError:
+            try:
+                from byte_tracker import ByteTrack
+                self.tracker = ByteTrack(model_path or "yolov8s.pt", device=device, track_high_thresh=0.6)
+            except ImportError:
+                # Fallback to YOLO's tracking
+                pass
 
     def track_frames(self, frames: list[np.ndarray]) -> dict:
         all_detections = {}

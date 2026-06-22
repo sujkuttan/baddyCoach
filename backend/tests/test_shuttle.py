@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.shuttle import ShuttleTrackingStage
+from app.pipeline import ShuttleTrackingStage
 
 
 def test_shuttle_tracking_stores_parquet(tmp_job_dir):

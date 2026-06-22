@@ -1,6 +1,6 @@
 """BST classifier for stroke classification.
 
-Integrates the official BST_CG model from:
+Integrates the official BST_CG / BST_CG_AP model from:
 https://github.com/Va6lue/BST-Badminton-Stroke-type-Transformer
 """
 
@@ -31,12 +31,27 @@ def map_to_coach_class(shuttleset_class_id: int) -> str:
     elif 1 <= shuttleset_class_id <= 12:
         return COACH_STROKE_CLASSES[shuttleset_class_id - 1]
     elif 13 <= shuttleset_class_id <= 24:
-        return COACH_STROKE_CLASSES[shuttleset_class_id - 13]
+        base_class = COACH_STROKE_CLASSES[shuttleset_class_id - 13]
+        return f"Bottom_{base_class}"
     return "unknown"
 
 
+def get_shuttleset_class_info(class_id: int) -> tuple:
+    """Return (stroke_type, side) from ShuttleSet class ID.
+
+    side is 'top', 'bottom', or None for unknown.
+    """
+    if class_id == 0:
+        return "unknown", None
+    elif 1 <= class_id <= 12:
+        return COACH_STROKE_CLASSES[class_id - 1], "top"
+    elif 13 <= class_id <= 24:
+        return COACH_STROKE_CLASSES[class_id - 13], "bottom"
+    return "unknown", None
+
+
 class BSTClassifier:
-    """BST classifier using the official BST_CG model.
+    """BST classifier using the official BST_CG / BST_CG_AP model.
 
     Supports loading from the official weight files and inference
     with proper preprocessing.
@@ -45,17 +60,17 @@ class BSTClassifier:
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
         self.device = device
         self.model = None
-        self.seq_len = 30
+        self.seq_len = None
         self.classes = COACH_STROKE_CLASSES
 
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
 
     def _load_model(self, path: str):
-        """Load BST_CG model from checkpoint."""
+        """Load BST_CG or BST_CG_AP model from checkpoint."""
         try:
             import torch
-            from app.models.bst_model import BST_CG
+            from app.models.bst_model import BST_CG, BST_CG_AP
 
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
@@ -67,8 +82,9 @@ class BSTClassifier:
 
             # Detect dimensions from state_dict
             in_dim = 72
-            seq_len = self.seq_len
+            seq_len = None
             n_classes = 25
+            has_ap = False
 
             for k, v in state_dict.items():
                 if 'tcn_pose.net.0.weight' in k:
@@ -77,30 +93,36 @@ class BSTClassifier:
                     n_classes = v.shape[0]
                 if 'embedding_tem' in k:
                     seq_len = v.shape[1] - 1
+                if 'cos_sim' in k:
+                    has_ap = True
 
-            has_positions = any('mlp_positions' in k for k in state_dict)
-
-            if has_positions:
-                model = BST_CG(
-                    in_dim=in_dim,
-                    seq_len=seq_len,
-                    n_class=n_classes,
-                    d_model=100,
-                    d_head=128,
-                    n_head=6,
-                    depth_tem=2,
-                    depth_inter=1,
-                )
-            else:
-                print(f"BST checkpoint missing mlp_positions, cannot load")
+            if seq_len is None:
+                print("BST checkpoint missing embedding_tem, cannot determine seq_len")
                 return
 
-            model.load_state_dict(state_dict)
+            has_positions = any('mlp_positions' in k for k in state_dict)
+            if not has_positions:
+                print("BST checkpoint missing mlp_positions, cannot load")
+                return
+
+            model_class = BST_CG_AP if has_ap else BST_CG
+            model = model_class(
+                in_dim=in_dim,
+                seq_len=seq_len,
+                n_class=n_classes,
+                d_model=100,
+                d_head=128,
+                n_head=6,
+                depth_tem=2,
+                depth_inter=1,
+            )
+
+            model.load_state_dict(state_dict, strict=False)
             model.to(self.device).eval()
 
             self.model = model
             self.seq_len = seq_len
-            print(f"BST_CG loaded: in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+            print(f"BST loaded: class={model_class.__name__}, in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
         except Exception as e:
             print(f"BST load error: {e}")
             import traceback
@@ -111,13 +133,13 @@ class BSTClassifier:
 
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
-            batch_size: Number of clips to process in parallel (default 32)
+            batch_size: Number of clips to process in parallel
 
         Returns:
-            List of (stroke_type, confidence) tuples
+            List of (stroke_type, confidence, raw_class_id) tuples
         """
         if self.model is None:
-            return [(self._rule_based_predict(clip), 0.5) for clip in clips]
+            return [(self._rule_based_predict(clip), 0.5, 0) for clip in clips]
 
         import torch
 
@@ -156,28 +178,35 @@ class BSTClassifier:
                             pred_idx = second_idx
                             confidence = second_conf
                         else:
-                            results[batch_start + j] = (self._rule_based_predict(batch_clips[j]), confidence)
+                            fallback = self._rule_based_predict(batch_clips[j])
+                            results[batch_start + j] = (fallback, confidence, 0)
                             continue
 
                     stroke_type = map_to_coach_class(pred_idx)
-                    results[batch_start + j] = (stroke_type, confidence)
+                    results[batch_start + j] = (stroke_type, confidence, pred_idx)
 
             except Exception as e:
                 print(f"BST batch inference error: {e}")
                 for j in range(len(batch_clips)):
                     if results[batch_start + j] is None:
-                        results[batch_start + j] = (self._rule_based_predict(batch_clips[j]), 0.5)
+                        fallback = self._rule_based_predict(batch_clips[j])
+                        results[batch_start + j] = (fallback, 0.5, 0)
 
         return results
 
     def predict_single(self, clip: dict) -> tuple:
-        """Predict stroke type for a single clip."""
+        """Predict stroke type for a single clip.
+
+        Returns:
+            (stroke_type, confidence, raw_class_id)
+        """
         results = self.predict_from_clips([clip])
-        return results[0] if results else ("unknown", 0.0)
+        return results[0] if results else ("unknown", 0.0, 0)
 
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory."""
-        shuttle = clip.get('shuttle', np.zeros((30, 2)))
+        seq_len = self.seq_len if self.seq_len is not None else 30
+        shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
 
         if len(shuttle) < 2:
             return "clear"
