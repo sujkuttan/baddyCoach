@@ -19,6 +19,10 @@ class CourtPositionAnalyticsStage:
         court = artifacts.get("court")
         if court is None:
             return StageResult.from_error("Court data required")
+        
+        # Check if court is valid
+        if not court.get("valid", False):
+            return StageResult.from_error("Court detection is invalid, cannot compute court position analytics")
 
         court_length = court["court_length"]
         court_width = court["court_width"]
@@ -36,6 +40,8 @@ class CourtPositionAnalyticsStage:
             vid_h = max(float(shuttle_df["y"].max()), 480)
 
         zone_transitions = []
+        homography = court.get("homography")
+        
         if shuttle_df is not None and shots_df is not None:
             for _, shot in shots_df.iterrows():
                 frame = int(shot["frame"])
@@ -43,7 +49,20 @@ class CourtPositionAnalyticsStage:
                 if len(shuttle_row) > 0:
                     x = float(shuttle_row.iloc[0]["x"])
                     y = float(shuttle_row.iloc[0]["y"])
-                    zone = self._get_zone(x, y, vid_w, vid_h)
+                    
+                    # Convert pixel coordinates to court coordinates using homography
+                    if homography is not None:
+                        # Convert pixel to court coordinates
+                        pixel_pos = np.array([x, y, 1])
+                        court_pos = np.linalg.inv(homography) @ pixel_pos
+                        court_x, court_y = court_pos[:2]
+                        
+                        # Use court coordinates for zone calculation
+                        zone = self._get_zone_from_court(court_x, court_y, court_length, court_width)
+                    else:
+                        # Fallback to pixel-based zone calculation
+                        zone = self._get_zone(x, y, vid_w, vid_h)
+                    
                     zone_transitions.append({
                         "frame": frame,
                         "zone": zone,
@@ -72,4 +91,11 @@ class CourtPositionAnalyticsStage:
     def _get_zone(x: float, y: float, width: float, height: float) -> str:
         col = min(int(x / width * 3), 2)
         row = min(int(y / height * 3), 2)
+        return ZONE_NAMES[row * 3 + col]
+
+    @staticmethod
+    def _get_zone_from_court(court_x: float, court_y: float, court_length: float, court_width: float) -> str:
+        # Convert court coordinates to zone indices
+        col = min(int(court_x / court_length * 3), 2)
+        row = min(int(court_y / court_width * 3), 2)
         return ZONE_NAMES[row * 3 + col]

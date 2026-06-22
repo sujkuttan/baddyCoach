@@ -2,56 +2,40 @@ import pandas as pd
 import numpy as np
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
 
 
-def _infer_end_reason(stroke_type: str, confidence: float) -> str:
-    """Infer rally end reason from the last shot.
-
-    Rules:
-    - High-confidence smash/drop/kill -> winner (aggressive finishing shot)
-    - Net shot -> net (hitter hit the net)
-    - Low-confidence clear/drive/lift -> unforced_error (weak basic shot)
-    - Everything else -> forced_error (opponent won, not necessarily an error by hitter)
+def _compute_rally_winner_after_attribution(rally_df, shots_df):
+    """Compute rally winner after player attribution is complete.
+    
+    This function recomputes rally winners based on player attribution
+    instead of relying on the last shot's player_id from before attribution.
     """
-    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.5:
-        return "winner"
-    if stroke_type in ("net_shot",):
-        return "net"
-    if stroke_type in ("clear", "drive", "lift") and confidence < 0.35:
-        return "unforced_error"
-    return "forced_error"
-
-
-def _is_rally_ending_shot(stroke_type: str, confidence: float, next_gap: int) -> bool:
-    """Determine if a shot likely ended the rally.
-
-    Uses stroke type, confidence, AND the gap to the next shot as signals.
-    A shot is considered rally-ending if:
-    1. It's followed by a gap > 45 frames (primary signal)
-    2. It's a high-confidence winner (smash/drop/kill with conf >= 0.6) AND gap > 25 frames
-    3. It's a net shot AND gap > 15 frames (net shots often end rallies quickly)
-
-    Args:
-        stroke_type: The classified stroke type
-        confidence: BST model confidence for this stroke
-        next_gap: Frame gap to the next shot (0 if this is the last shot)
-
-    Returns:
-        True if this shot likely ended the rally
-    """
-    # Large gap always indicates rally end
-    if next_gap > 45:
-        return True
-
-    # High-confidence aggressive shots with moderate gap
-    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.6 and next_gap > 25:
-        return True
-
-    # Net shots with small gap (shuttle hit the net = point over quickly)
-    if stroke_type in ("net_shot",) and next_gap > 15:
-        return True
-
-    return False
+    # Get all shots in this rally
+    rally_shots = shots_df[shots_df['frame'].between(rally_df['start_frame'], rally_df['end_frame'])].sort_values("frame")
+    
+    if len(rally_shots) == 0:
+        return None
+    
+    # Get the last shot
+    last_shot = rally_shots.iloc[-1]
+    last_pid = last_shot.get("player_id")
+    stroke_type = last_shot.get("stroke_type", "clear")
+    stroke_confidence = last_shot.get("stroke_confidence", 0.5)
+    
+    # Infer end reason
+    end_reason = _infer_end_reason(stroke_type, stroke_confidence)
+    
+    # Compute winner based on end reason and player attribution
+    if end_reason == "winner":
+        winner_player_id = last_pid
+    elif end_reason in ("forced_error", "unforced_error", "net"):
+        # The opponent won
+        winner_player_id = "player_2" if last_pid == "player_1" else "player_1"
+    else:
+        winner_player_id = None
+    
+    return winner_player_id
 
 
 class RallySegmentationStage:
@@ -126,20 +110,17 @@ class RallySegmentationStage:
             r_frames = shots_df[shots_df["rally_id"] == r["rally_id"]].sort_values("frame")
             if len(r_frames) == 0:
                 continue
+            
+            # Compute rally winner after player attribution is complete
+            winner_player_id = _compute_rally_winner_after_attribution(r, shots_df)
+            r["winner_player_id"] = winner_player_id
+            
+            # Infer end reason from last shot
             last_shot = r_frames.iloc[-1]
-            last_pid = last_shot.get("player_id")
             stroke_type = last_shot.get("stroke_type", "clear")
             stroke_confidence = last_shot.get("stroke_confidence", 0.5)
-
             end_reason = _infer_end_reason(stroke_type, stroke_confidence)
             r["end_reason"] = end_reason
-
-            if end_reason == "winner":
-                r["winner_player_id"] = last_pid
-            elif end_reason in ("forced_error", "unforced_error", "net"):
-                r["winner_player_id"] = "player_2" if last_pid == "player_1" else "player_1"
-            else:
-                r["winner_player_id"] = None
 
             r["serving_player_id"] = None
             fps = 30.0

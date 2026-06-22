@@ -1,11 +1,17 @@
 import numpy as np
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.players import PlayerTrackingStage
+from app.pipeline import PlayerTrackingStage
 
 
 def test_player_tracking_assigns_near_far(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
+
+    court_data = {
+        "valid": True,
+        "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)],
+    }
+    store.set("court", court_data)
 
     # Mock detection results: two players, one near (y > 300), one far (y < 300)
     detections = [

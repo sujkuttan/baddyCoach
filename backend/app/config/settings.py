@@ -1,8 +1,8 @@
 from pathlib import Path
-from pydantic import BaseModel
+from pydantic_settings import BaseSettings
 
 
-class Settings(BaseModel):
+class Settings(BaseSettings):
     data_dir: Path = Path("data")
     jobs_dir: Path = Path("data/jobs")
     max_video_length_seconds: int = 3600
@@ -19,8 +19,14 @@ class Settings(BaseModel):
     yolov8_model_path: Path | None = None
     rtmpose_model_path: Path | None = Path("ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx")
     hrnet_model_path: Path | None = Path("ckpts/mmpose/hrnet_w32_coco_256x192.onnx")
-    bst_model_path: Path | None = Path("BST/weight/bst_CG_JnB_bone_merged.pt")
+    bst_model_path: Path | None = Path("ckpts/bst/bst_CG_AP.pt")
     pose_model: str = "rtmpose"  # rtmpose, mmpose, hybrid
+    
+    # Environment variables
+    gemini_api_key: str | None = None
+    fps: float = 30.0
+    court_length: float = 13.4
+    court_width: float = 5.18
 
     def job_dir(self, job_id: str) -> Path:
         path = self.jobs_dir / job_id

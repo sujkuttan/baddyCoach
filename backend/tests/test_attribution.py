@@ -1,12 +1,20 @@
 import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline.attribution import PlayerAttributionStage
+from app.pipeline import PlayerAttributionStage
 
 
 def test_attribution_assigns_player_to_shots(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
+
+    court_data = {
+        "valid": True,
+        "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)],
+        "court_length": 13.4,
+        "court_width": 5.18,
+    }
+    store.set("court", court_data)
 
     shots_df = pd.DataFrame({
         "frame": [0, 10, 20],

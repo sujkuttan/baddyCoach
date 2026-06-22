@@ -60,9 +60,11 @@ class FootworkAnalyticsStage:
             else:
                 base_position = np.array([court_width / 2, court_length / 2])
 
-            distance_px = self._compute_distance(com_trajectory)
+            # Convert pixel coordinates to court coordinates using homography
+            homography = court.get("homography")
+            distance_px = self._compute_distance(com_trajectory, homography)
             distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
-            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position) if shots_df is not None else []
+            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, px_per_m) if shots_df is not None else []
 
             metrics[player_id] = {
                 "distance_covered": float(distance_m),
@@ -95,28 +97,52 @@ class FootworkAnalyticsStage:
         return np.array(com_points) if com_points else np.zeros((0, 2))
 
     @staticmethod
-    def _compute_distance(com_trajectory: np.ndarray) -> float:
+    def _compute_distance(com_trajectory: np.ndarray, homography: np.ndarray | None = None) -> float:
         if len(com_trajectory) < 2:
             return 0.0
-        # Filter out identity switches: large jumps (>500px) indicate pose switching between players
-        filtered = [com_trajectory[0]]
-        for i in range(1, len(com_trajectory)):
-            jump = np.sqrt(np.sum((com_trajectory[i] - com_trajectory[i-1])**2))
-            if jump < 500:
-                filtered.append(com_trajectory[i])
-        if len(filtered) < 2:
-            return 0.0
-        filtered = np.array(filtered)
-        diffs = np.diff(filtered, axis=0)
-        distances = np.sqrt(np.sum(diffs**2, axis=1))
-        return float(np.sum(distances))
+        
+        # Convert pixel coordinates to court coordinates using homography
+        if homography is not None:
+            court_trajectory = []
+            for point in com_trajectory:
+                pixel_pos = np.array([point[0], point[1], 1])
+                court_pos = np.linalg.inv(homography) @ pixel_pos
+                court_trajectory.append(court_pos[:2])
+            filtered = [court_trajectory[0]]
+            for i in range(1, len(court_trajectory)):
+                jump = np.sqrt(np.sum((court_trajectory[i] - court_trajectory[i-1])**2))
+                if jump < 500:  # Still filter out large jumps
+                    filtered.append(court_trajectory[i])
+            if len(filtered) < 2:
+                return 0.0
+            filtered = np.array(filtered)
+            diffs = np.diff(filtered, axis=0)
+            distances = np.sqrt(np.sum(diffs**2, axis=1))
+            return float(np.sum(distances))
+        else:
+            # Fallback to pixel-based distance calculation
+            filtered = [com_trajectory[0]]
+            for i in range(1, len(com_trajectory)):
+                jump = np.sqrt(np.sum((com_trajectory[i] - com_trajectory[i-1])**2))
+                if jump < 500:
+                    filtered.append(com_trajectory[i])
+            if len(filtered) < 2:
+                return 0.0
+            filtered = np.array(filtered)
+            diffs = np.diff(filtered, axis=0)
+            distances = np.sqrt(np.sum(diffs**2, axis=1))
+            return float(np.sum(distances))
 
     @staticmethod
-    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray) -> list[float]:
+    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float) -> list[float]:
         recovery_times = []
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
-            after_shots = pose_df[pose_df["frame"] > frame].head(30)
+            player_id = shot.get("player_id")
+            
+            # Only compute recovery for the player who hit the shot
+            player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
+            after_shots = player_poses[player_poses["frame"] > frame].head(30)
             if len(after_shots) == 0:
                 continue
 
@@ -124,9 +150,12 @@ class FootworkAnalyticsStage:
             if len(com_points) == 0:
                 continue
 
+            # Convert threshold from meters to pixels
+            threshold_m = 0.3
+            threshold_px = threshold_m * px_per_m
+            
             distances = np.sqrt(np.sum((com_points - base_position) ** 2, axis=1))
-            threshold = 0.3
-            returned = np.where(distances < threshold)[0]
+            returned = np.where(distances < threshold_px)[0]
             if len(returned) > 0:
                 recovery_times.append(float(returned[0]))
 

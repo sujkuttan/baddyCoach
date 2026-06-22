@@ -1,0 +1,215 @@
+"""
+Utility functions shared by both colab and backend pipelines.
+"""
+
+import cv2
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from typing import List, Tuple, Dict, Any, Optional
+
+from .court import (
+    COURT_LENGTH, COURT_WIDTH, NET_HEIGHT, COURT_MODEL,
+    _detect_court_color_line, _correct_court_points,
+    _validate_court_geometry, compute_homography, image_to_court,
+    HomographySmoother, make_undistorter,
+    foot_midpoint_from_pose, foot_point_from_bbox,
+)
+
+
+def get_video_info(video_path: str) -> Tuple[int, int, float]:
+    """Get video information (width, height, fps)."""
+    cap = cv2.VideoCapture(video_path)
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    cap.release()
+    return width, height, fps
+
+
+def frame_generator(video_path: str, sample_interval: int = 3, target_fps: int = 10) -> List[np.ndarray]:
+    """Generate frames from video with specified sampling interval."""
+    cap = cv2.VideoCapture(video_path)
+    frames = []
+    frame_count = 0
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            break
+        if frame_count % sample_interval == 0:
+            frames.append(frame)
+        frame_count += 1
+    cap.release()
+    return frames
+
+
+def detect_court_from_frame(frame: np.ndarray) -> Optional[List[Tuple[int, int]]]:
+    """Detect court corners from a single frame."""
+    corners = _detect_court_color_line(frame)
+    if corners is None:
+        return None
+    return _correct_court_points(corners)
+
+
+def compute_court_homography(corners_pixel: List[List[int]]) -> Optional[np.ndarray]:
+    """Compute homography mapping image pixels to court metres (legacy wrapper).
+
+    corners_pixel: list of 4 points [bl, br, tl, tr] in image space
+    Returns: 3x3 homography matrix (image -> court metres)
+    """
+    H, _ = compute_homography(corners_pixel)
+    return H
+
+
+# ─── Stroke classification helpers ───────────────────────────────────────────
+
+def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
+    """Classify stroke from shuttle trajectory when BST predicts unknown."""
+    if shuttle_df is None or len(shuttle_df) == 0:
+        return "clear"
+    window = shuttle_df[(shuttle_df['frame'] >= frame - 5) & (shuttle_df['frame'] <= frame + 5)]
+    if len(window) < 2:
+        return "clear"
+    y_vals = window['y'].values / vid_h
+    x_vals = window['x'].values / vid_w
+    valid = (x_vals != 0) | (y_vals != 0)
+    if valid.sum() < 2:
+        return "clear"
+    y_vals = y_vals[valid]
+    dy = np.diff(y_vals)
+    dx = x_vals[valid][1:] - x_vals[valid][:-1] if len(x_vals[valid]) > 1 else np.array([0.0])
+    speed_vals = np.sqrt(dx**2 + dy**2)
+    mean_speed = np.mean(speed_vals)
+    max_speed = np.max(speed_vals) if len(speed_vals) > 0 else 0
+    mean_dy = float(np.mean(dy))
+    end_y = float(y_vals[-1])
+    if max_speed > 0.15 and mean_dy > 0.05:
+        return "smash"
+    elif mean_speed < 0.03:
+        return "net_shot"
+    elif mean_dy < -0.03 and mean_speed > 0.05:
+        return "clear"
+    elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
+        return "drive"
+    elif mean_dy > 0.04 and mean_speed > 0.05 and end_y > 0.5:
+        return "lift"
+    elif end_y > 0.7 and mean_speed < 0.06:
+        return "drop"
+    else:
+        return "clear"
+
+
+def _evaluate_shot(stroke_type: str, kps: np.ndarray) -> float:
+    """Evaluate shot quality using pose keypoints."""
+    if kps.shape != (17, 3):
+        return 0.5
+    if stroke_type in ("smash", "clear"):
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
+    elif stroke_type == "net_shot":
+        knee = kps[13][:2]
+        hip = kps[11][:2]
+        lunge_depth = abs(knee[1] - hip[1])
+        return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
+    elif stroke_type == "drive":
+        elbow = kps[7][:2]
+        wrist = kps[9][:2]
+        arm_extension = abs(wrist[0] - elbow[0])
+        return min(1.0, max(0.0, arm_extension / 60.0 + 0.2))
+    elif stroke_type == "lift":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 120.0 + 0.4))
+    elif stroke_type == "drop":
+        shoulder = kps[5][:2]
+        wrist = kps[9][:2]
+        height_diff = shoulder[1] - wrist[1]
+        return min(1.0, max(0.0, height_diff / 150.0 + 0.3))
+    elif stroke_type == "block":
+        wrist = kps[9][:2]
+        hip = kps[11][:2]
+        compactness = abs(wrist[1] - hip[1])
+        return min(1.0, max(0.0, compactness / 50.0 + 0.2))
+    elif stroke_type == "rush":
+        knee = kps[13][:2]
+        ankle = kps[15][:2]
+        lunge = abs(knee[1] - ankle[1])
+        return min(1.0, max(0.0, lunge / 40.0 + 0.3))
+    return 0.5
+
+
+# ─── Rally segmentation helpers ──────────────────────────────────────────────
+
+def _infer_end_reason(stroke_type: str, confidence: float) -> str:
+    """Infer rally end reason from the last shot.
+
+    Rules:
+    - High-confidence smash/drop/kill -> winner (aggressive finishing shot)
+    - Net shot -> net (hitter hit the net)
+    - Low-confidence clear/drive/lift -> unforced_error (weak basic shot)
+    - Everything else -> forced_error (opponent won, not necessarily an error by hitter)
+    """
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.5:
+        return "winner"
+    if stroke_type in ("net_shot",):
+        return "net"
+    if stroke_type in ("clear", "drive", "lift") and confidence < 0.35:
+        return "unforced_error"
+    return "forced_error"
+
+
+def _is_rally_ending_shot(stroke_type: str, confidence: float, next_gap: int) -> bool:
+    """Determine if a shot likely ended the rally.
+
+    Uses stroke type, confidence, AND the gap to the next shot as signals.
+    A shot is considered rally-ending if:
+    1. It's followed by a gap > 45 frames (primary signal)
+    2. It's a high-confidence winner (smash/drop/kill with conf >= 0.6) AND gap > 25 frames
+    3. It's a net shot AND gap > 15 frames (net shots often end rallies quickly)
+    """
+    if next_gap > 45:
+        return True
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.6 and next_gap > 25:
+        return True
+    if stroke_type in ("net_shot",) and next_gap > 15:
+        return True
+    return False
+
+
+# ─── Rally statistics helper ─────────────────────────────────────────────────
+
+def stage_rally_stats(shots_data: list, rallies_data: list) -> dict:
+    """Compute rally-level statistics for coaching."""
+    from collections import Counter
+
+    stats = {"avg_length": 0, "max_length": 0, "min_length": 0,
+             "first_shot_win_rate": 0, "long_rally_pct": 0}
+    if not rallies_data or not shots_data:
+        return stats
+
+    lengths = [r["shot_count"] for r in rallies_data]
+    stats["avg_length"] = float(np.mean(lengths))
+    stats["max_length"] = int(np.max(lengths))
+    stats["min_length"] = int(np.min(lengths))
+
+    shots_df = pd.DataFrame(shots_data)
+    rallies_df = pd.DataFrame(rallies_data)
+    first_shot_wins = 0
+    total_rallies = len(rallies_df)
+
+    for _, rally in rallies_df.iterrows():
+        rally_shots = shots_df[shots_df["rally_id"] == rally["rally_id"]].sort_values("frame")
+        if len(rally_shots) == 0:
+            continue
+        winner = rally.get("winner_player_id")
+        if winner and rally_shots.iloc[0].get("player_id") == winner:
+            first_shot_wins += 1
+
+    stats["first_shot_win_rate"] = first_shot_wins / total_rallies if total_rallies > 0 else 0
+    long_rallies = sum(1 for l in lengths if l > 10)
+    stats["long_rally_pct"] = long_rallies / len(lengths) if lengths else 0
+
+    return stats

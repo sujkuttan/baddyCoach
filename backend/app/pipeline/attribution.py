@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.court import image_to_court, foot_midpoint_from_pose, foot_point_from_bbox
+from app.pipeline.shared.court import (
+    image_to_court, foot_midpoint_from_pose, foot_point_from_bbox,
+    COURT_LENGTH, COURT_WIDTH,
+)
 
 
 class PlayerAttributionStage:
@@ -23,6 +26,10 @@ class PlayerAttributionStage:
 
         if players_data is None:
             return StageResult.from_error("Player data required for attribution")
+
+        # Check if court is valid
+        if not court.get("valid", False):
+            return StageResult.from_error("Court detection is invalid, cannot perform attribution")
 
         court_corners = court.get("corners_pixel", [])
         if court_corners and len(court_corners) >= 3:
@@ -54,26 +61,50 @@ class PlayerAttributionStage:
                     return None
             return None
 
-        if rallies_df is not None and len(rallies_df) > 0:
-            for _, rally in rallies_df.iterrows():
-                start_f = int(rally["start_frame"])
-                end_f = int(rally["end_frame"])
-                rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)
-                rally_shots = shots_df[rally_mask].sort_values("frame")
-                if len(rally_shots) == 0:
-                    continue
+        # Try to use BST Top/Bottom predictions for attribution
+        bst_predictions = artifacts.get("bst_predictions")
+        if bst_predictions:
+            # Use BST Top/Bottom predictions for attribution
+            for frame, pred in bst_predictions.items():
+                if pred.startswith("Top_"):
+                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_1"  # Near player
+                elif pred.startswith("Bottom_"):
+                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_2"  # Far player
+        else:
+            # Fallback to alternation heuristic if BST predictions not available
+            if rallies_df is not None and len(rallies_df) > 0:
+                for _, rally in rallies_df.iterrows():
+                    start_f = int(rally["start_frame"])
+                    end_f = int(rally["end_frame"])
+                    rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)
+                    rally_shots = shots_df[rally_mask].sort_values("frame")
+                    if len(rally_shots) == 0:
+                        continue
 
-                first_frame = int(rally_shots.iloc[0]["frame"])
-                first_player = _shuttle_direction_at(first_frame)
-                if first_player is None:
-                    y_at = shuttle_y_map.get(first_frame)
-                    first_player = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+                    first_frame = int(rally_shots.iloc[0]["frame"])
+                    first_player = _shuttle_direction_at(first_frame)
+                    if first_player is None:
+                        y_at = shuttle_y_map.get(first_frame)
+                        first_player = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
 
-                second_player = "player_2" if first_player == "player_1" else "player_1"
-                players_list = [first_player, second_player]
-                for i, idx in enumerate(rally_shots.index):
-                    shots_df.at[idx, "player_id"] = players_list[i % 2]
+                    second_player = "player_2" if first_player == "player_1" else "player_1"
+                    players_list = [first_player, second_player]
+                    for i, idx in enumerate(rally_shots.index):
+                        shots_df.at[idx, "player_id"] = players_list[i % 2]
+        
+        # Try to use tracking data for attribution
+        tracked_players = artifacts.get("tracked_players")
+        if tracked_players:
+            # Use tracking data to determine player positions
+            for frame, players in tracked_players.items():
+                if len(players) >= 2:
+                    # Sort players by y-coordinate (vertical position)
+                    sorted_players = sorted(players, key=lambda p: p["bbox"][1], reverse=True)
+                    # The player with higher y-coordinate is "near" (player_1)
+                    # The player with lower y-coordinate is "far" (player_2)
+                    shots_df.loc[shots_df["frame"] == frame, "player_id"] = "player_1" if sorted_players[0]["bbox"][1] > court_mid_y else "player_2"
 
+        # Fill in remaining shots that weren't assigned by BST predictions
         for idx, shot in shots_df.iterrows():
             if pd.isna(shot.get("player_id")):
                 result = _shuttle_direction_at(int(shot["frame"]))
@@ -97,8 +128,8 @@ class PlayerAttributionStage:
                             try:
                                 cx, cy = image_to_court(H, foot)
                                 # Clamp to court bounds
-                                cx = max(0.0, min(13.4, cx))
-                                cy = max(0.0, min(5.18, cy))
+                                cx = max(0.0, min(COURT_LENGTH, cx))
+                                cy = max(0.0, min(COURT_WIDTH, cy))
                                 shots_df.at[idx, "court_x"] = round(cx, 3)
                                 shots_df.at[idx, "court_y"] = round(cy, 3)
                             except Exception:

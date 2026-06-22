@@ -8,7 +8,7 @@ def test_court_zones_computed(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
-    court_data = {"court_length": 13.4, "court_width": 5.18}
+    court_data = {"court_length": 13.4, "court_width": 5.18, "valid": True}
     store.set("court", court_data)
 
     shots_df = pd.DataFrame({

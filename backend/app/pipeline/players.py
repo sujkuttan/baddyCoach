@@ -2,6 +2,7 @@ import numpy as np
 from pathlib import Path
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT
 
 
 class PlayerTrackingStage:
@@ -22,6 +23,13 @@ class PlayerTrackingStage:
         If detections provided, uses pre-computed data.
         """
         court = artifacts.get("court")
+        if court is None:
+            return StageResult.from_error("Court data required")
+        
+        # Check if court is valid
+        if not court.get("valid", False):
+            return StageResult.from_error("Court detection is invalid, cannot track players")
+
         court_corners = court.get("corners_pixel", []) if court else []
         if court_corners:
             court_mid_y = (court_corners[0][1] + court_corners[2][1]) / 2
@@ -71,8 +79,10 @@ class PlayerTrackingStage:
             bbox_near = [int(w * 0.3), int(court_mid_y + 20), int(w * 0.3 + 100), int(court_mid_y + 180)]
             bbox_far = [int(w * 0.6), int(court_mid_y - 180), int(w * 0.6 + 100), int(court_mid_y - 20)]
 
-            detections.append({"frame": i, "bbox": bbox_near, "confidence": 0.5, "track_id": 1})
-            detections.append({"frame": i, "bbox": bbox_far, "confidence": 0.5, "track_id": 2})
+            near_detection = {"frame": i, "bbox": bbox_near, "confidence": 0.5, "track_id": 1, "is_synthetic": True}
+            far_detection = {"frame": i, "bbox": bbox_far, "confidence": 0.5, "track_id": 2, "is_synthetic": True}
+            detections.append(near_detection)
+            detections.append(far_detection)
 
         return detections
 
@@ -157,6 +167,7 @@ class PlayerTrackingStage:
             "side": side,
             "track_id": track_id,
             "detections": [det],
+            "is_synthetic": det.get("is_synthetic", False),
         }
 
     @staticmethod

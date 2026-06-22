@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH
 
 BONE_PAIRS = [
     (0,1),(0,2),(1,2),(1,3),(2,4),
@@ -10,8 +11,6 @@ BONE_PAIRS = [
     (5,6),(5,11),(6,12),(11,12),
     (11,13),(13,15),(12,14),(14,16),
 ]
-
-SEQ_LEN = 30
 
 
 def _normalize_joints_bstdiag(coords: np.ndarray, det_bbox: tuple | None = None) -> np.ndarray:
@@ -79,7 +78,7 @@ def _build_clip(
     vid_h: float,
     court_length: float,
     court_width: float,
-    seq_len: int = SEQ_LEN,
+    seq_len: int,
     player_sides: dict | None = None,
     player_detections: dict | None = None,
 ) -> dict:
@@ -189,8 +188,8 @@ class StrokeClassificationStage:
         model_path = str(settings.bst_model_path) if settings.bst_model_path else None
         classifier = BSTClassifier(model_path, device=settings.device)
 
-        court_length = court.get("court_length", 13.4)
-        court_width = court.get("court_width", 5.18)
+        court_length = court.get("court_length", COURT_LENGTH)
+        court_width = court.get("court_width", COURT_WIDTH)
 
         vid_w, vid_h = 1280, 720
         video_res = artifacts.get("video_resolution")
@@ -223,42 +222,48 @@ class StrokeClassificationStage:
             if hit_pos > 0:
                 start_frame = hit_frames_sorted[hit_pos - 1]
             else:
-                start_frame = max(0, frame - SEQ_LEN // 2)
+                start_frame = max(0, frame - classifier.seq_len // 2)
 
             if hit_pos < len(hit_frames_sorted) - 1:
                 end_frame = hit_frames_sorted[hit_pos + 1] + 2
             else:
-                end_frame = frame + SEQ_LEN // 2 + 1
+                end_frame = frame + classifier.seq_len // 2 + 1
 
             clip_frames = list(range(start_frame, end_frame))
 
-            if len(clip_frames) > SEQ_LEN:
+            if len(clip_frames) > classifier.seq_len:
                 hit_offset = frame - start_frame
-                half = SEQ_LEN // 2
+                half = classifier.seq_len // 2
                 clip_start = max(0, hit_offset - half)
-                clip_end = clip_start + SEQ_LEN
+                clip_end = clip_start + classifier.seq_len
                 if clip_end > len(clip_frames):
                     clip_end = len(clip_frames)
-                    clip_start = max(0, clip_end - SEQ_LEN)
+                    clip_start = max(0, clip_end - classifier.seq_len)
                 clip_frames = clip_frames[clip_start:clip_end]
 
-            while len(clip_frames) < SEQ_LEN:
+            while len(clip_frames) < classifier.seq_len:
                 clip_frames.append(clip_frames[-1] if clip_frames else frame)
-            clip_frames = clip_frames[:SEQ_LEN]
+            clip_frames = clip_frames[:classifier.seq_len]
 
             clip = _build_clip(
                 clip_frames, shuttle_df, pose_df,
                 vid_w, vid_h, court_length, court_width,
+                seq_len=classifier.seq_len,
                 player_sides=player_sides, player_detections=player_list,
             )
 
             stroke_type, confidence = classifier.predict_single(clip)
+
+            # Add flag if prediction is rule-based (fallback)
+            is_rule_based = classifier.model is None  # BST failed to load
 
             shot = {
                 "frame": frame,
                 "hit_confidence": float(hit["confidence"]),
                 "stroke_type": stroke_type,
                 "stroke_confidence": confidence,
+                "is_rule_based": is_rule_based,
+                "is_bst_fallback": is_rule_based,
             }
             shots.append(shot)
 

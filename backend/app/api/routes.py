@@ -11,14 +11,14 @@ router = APIRouter(prefix="/api")
 
 def run_pipeline(job_id: str):
     from app.pipeline.base import StageConfig
-    from app.pipeline.court import CourtDetectionStage
-    from app.pipeline.players import PlayerTrackingStage
-    from app.pipeline.shuttle import ShuttleTrackingStage
-    from app.pipeline.pose import PoseEstimationStage
-    from app.pipeline.hits import HitFrameLocalizationStage
-    from app.pipeline.strokes import StrokeClassificationStage
-    from app.pipeline.attribution import PlayerAttributionStage
-    from app.pipeline.rallies import RallySegmentationStage
+    from app.pipeline import CourtDetectionStage
+    from app.pipeline import PlayerTrackingStage
+    from app.pipeline import ShuttleTrackingStage
+    from app.pipeline import PoseEstimationStage
+    from app.pipeline import HitFrameLocalizationStage
+    from app.pipeline import StrokeClassificationStage
+    from app.pipeline import PlayerAttributionStage
+    from app.pipeline import RallySegmentationStage
     from app.pipeline.analytics.court_position import CourtPositionAnalyticsStage
     from app.pipeline.analytics.footwork import FootworkAnalyticsStage
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
@@ -76,8 +76,8 @@ def run_pipeline(job_id: str):
         ("pose_estimation", lambda: PoseEstimationStage().run(store, config, frames=frames if frames else None)),
         ("hit_frame_localization", lambda: HitFrameLocalizationStage().run(store, config)),
         ("stroke_classification", lambda: StrokeClassificationStage().run(store, config)),
-        ("rally_segmentation", lambda: RallySegmentationStage().run(store, config)),
         ("player_attribution", lambda: PlayerAttributionStage().run(store, config)),
+        ("rally_segmentation", lambda: RallySegmentationStage().run(store, config)),
         ("court_position_analytics", lambda: CourtPositionAnalyticsStage().run(store, config)),
         ("footwork_analytics", lambda: FootworkAnalyticsStage().run(store, config)),
         ("fitness_analytics", lambda: FitnessAnalyticsStage().run(store, config)),
