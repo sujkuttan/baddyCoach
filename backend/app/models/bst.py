@@ -220,16 +220,22 @@ class BSTClassifier:
         return results[0] if results else ("unknown", 0.0, 0)
 
     def _rule_based_predict(self, clip: dict) -> str:
-        """Fallback rule-based prediction using shuttle trajectory."""
+        """Fallback rule-based prediction using shuttle trajectory.
+
+        Only classifies when the trajectory clearly matches one of the
+        heuristics below. Returns 'unknown' for ambiguous trajectories,
+        matching the BST model's class 0 semantics, so downstream stages
+        can distinguish genuine predictions from forced guesses.
+        """
         seq_len = self.seq_len if self.seq_len is not None else 30
         shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
 
         if len(shuttle) < 2:
-            return "clear"
+            return "unknown"
 
         valid = (shuttle[:, 0] != 0) | (shuttle[:, 1] != 0)
         if valid.sum() < 2:
-            return "clear"
+            return "unknown"
         shuttle = shuttle[valid]
 
         dy = np.diff(shuttle[:, 1])
@@ -240,7 +246,6 @@ class BSTClassifier:
         max_speed = float(np.max(speed))
         mean_dy = float(np.mean(dy))
         end_y = float(shuttle[-1, 1])
-        start_y = float(shuttle[0, 1])
 
         if max_speed > 0.15 and mean_dy > 0.05:
             return "smash"
@@ -255,7 +260,7 @@ class BSTClassifier:
         elif end_y > 0.7 and mean_speed < 0.06:
             return "drop"
         else:
-            return "clear"
+            return "unknown"
 
 
 def normalize_shuttlecock(arr: np.ndarray, v_width: int, v_height: int) -> np.ndarray:
