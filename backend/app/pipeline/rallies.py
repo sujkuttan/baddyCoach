@@ -22,12 +22,44 @@ def _infer_end_reason(stroke_type: str, confidence: float) -> str:
     return "forced_error"
 
 
+def _is_rally_ending_shot(stroke_type: str, confidence: float, next_gap: int) -> bool:
+    """Determine if a shot likely ended the rally.
+
+    Uses stroke type, confidence, AND the gap to the next shot as signals.
+    A shot is considered rally-ending if:
+    1. It's followed by a gap > 45 frames (primary signal)
+    2. It's a high-confidence winner (smash/drop/kill with conf >= 0.6) AND gap > 25 frames
+    3. It's a net shot AND gap > 15 frames (net shots often end rallies quickly)
+
+    Args:
+        stroke_type: The classified stroke type
+        confidence: BST model confidence for this stroke
+        next_gap: Frame gap to the next shot (0 if this is the last shot)
+
+    Returns:
+        True if this shot likely ended the rally
+    """
+    # Large gap always indicates rally end
+    if next_gap > 45:
+        return True
+
+    # High-confidence aggressive shots with moderate gap
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.6 and next_gap > 25:
+        return True
+
+    # Net shots with small gap (shuttle hit the net = point over quickly)
+    if stroke_type in ("net_shot",) and next_gap > 15:
+        return True
+
+    return False
+
+
 class RallySegmentationStage:
     name = "rally_segmentation"
     input_keys = ["shots"]
     output_keys = ["rallies"]
 
-    DEFAULT_GAP_THRESHOLD = 45
+    DEFAULT_GAP_THRESHOLD = 60
     DEFAULT_MIN_SHOTS = 3
 
     def run(self, artifacts: ArtifactStore, config: StageConfig,
@@ -47,7 +79,16 @@ class RallySegmentationStage:
 
         for i in range(1, len(shots_df)):
             frame_gap = shots_df.iloc[i]["frame"] - shots_df.iloc[i - 1]["frame"]
-            if frame_gap > threshold:
+
+            # Check if current shot ended the rally
+            stroke_type = shots_df.iloc[i - 1].get("stroke_type", "clear")
+            stroke_confidence = shots_df.iloc[i - 1].get("stroke_confidence", 0.5)
+            next_gap = shots_df.iloc[i]["frame"] - shots_df.iloc[i - 1]["frame"]
+
+            rally_ending = _is_rally_ending_shot(stroke_type, stroke_confidence, next_gap)
+
+            # Split rally if: time gap exceeded OR shot likely ended rally
+            if frame_gap > threshold or rally_ending:
                 if len(rally_shots_idx) >= min_s:
                     rally_id += 1
                     end_frame = int(shots_df.iloc[rally_shots_idx[-1]]["frame"])

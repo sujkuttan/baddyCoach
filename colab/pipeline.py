@@ -1129,7 +1129,7 @@ def stage_hits(shuttle_data, pose_data=None, player_detections=None):
     angle = np.arctan2(dy, dx)
     traj_score = np.abs(np.diff(angle, prepend=angle[0])) / (np.pi + 1e-6)
     speed = np.sqrt(dx**2 + dy**2)
-    peaks, _ = find_peaks(speed, distance=5)
+    peaks, _ = find_peaks(speed, distance=3)
     speed_score = np.zeros(len(speed))
     speed_score[peaks] = speed[peaks]
 
@@ -1174,16 +1174,16 @@ def stage_hits(shuttle_data, pose_data=None, player_detections=None):
 
     combined = (0.4 * _norm(traj_score) + 0.3 * _norm(speed_score) +
                 0.2 * _norm(proximity_score) + 0.1 * _norm(swing_score))
-    threshold = np.percentile(combined, 85)
+    threshold = np.percentile(combined, 90)
     hit_indices = np.where(combined > threshold)[0]
 
     hits = [{"frame": int(shuttle_df.iloc[i]["frame"]), "confidence": float(combined[i])} for i in hit_indices]
 
-    # Dedup: merge hits within 5 frames of each other
+    # Dedup: merge hits within 8 frames of each other
     if len(hits) > 1:
         deduped = [hits[0]]
         for h in hits[1:]:
-            if h["frame"] - deduped[-1]["frame"] >= 5:
+            if h["frame"] - deduped[-1]["frame"] >= 8:
                 deduped.append(h)
             elif h["confidence"] > deduped[-1]["confidence"]:
                 deduped[-1] = h
@@ -1672,7 +1672,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             
             with torch.no_grad():
                 logits_batch = model(JnB_batch, shuttle_batch, pos_batch, vlen_batch)
-                probs_batch = torch.softmax(logits_batch, dim=1).cpu().numpy()
+                probs_batch = torch.softmax(logits_batch.float(), dim=1).cpu().numpy()
             
             for j, (hit, *_) in enumerate(batch):
                 hit_frame = hit['frame']
@@ -1924,7 +1924,39 @@ def _infer_end_reason(stroke_type, confidence):
     return "forced_error"
 
 
-def stage_rallies(shots_data, gap_threshold=45, min_shots=3, fps=30, video_name=""):
+def _is_rally_ending_shot(stroke_type, confidence, next_gap):
+    """Determine if a shot likely ended the rally.
+
+    Uses stroke type, confidence, AND the gap to the next shot as signals.
+    A shot is considered rally-ending if:
+    1. It's followed by a gap > 45 frames (primary signal)
+    2. It's a high-confidence winner (smash/drop/kill with conf >= 0.6) AND gap > 25 frames
+    3. It's a net shot AND gap > 15 frames (net shots often end rallies quickly)
+
+    Args:
+        stroke_type: The classified stroke type
+        confidence: BST model confidence for this stroke
+        next_gap: Frame gap to the next shot (0 if this is the last shot)
+
+    Returns:
+        True if this shot likely ended the rally
+    """
+    # Large gap always indicates rally end
+    if next_gap > 45:
+        return True
+
+    # High-confidence aggressive shots with moderate gap
+    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.6 and next_gap > 25:
+        return True
+
+    # Net shots with small gap (shuttle hit the net = point over quickly)
+    if stroke_type in ("net_shot",) and next_gap > 15:
+        return True
+
+    return False
+
+
+def stage_rallies(shots_data, gap_threshold=60, min_shots=3, fps=30, video_name=""):
     if not shots_data:
         return []
     shots_sorted = sorted(shots_data, key=lambda s: s["frame"])
@@ -1933,7 +1965,17 @@ def stage_rallies(shots_data, gap_threshold=45, min_shots=3, fps=30, video_name=
     start = shots_sorted[0]["frame"]
     count = 1
     for i in range(1, len(shots_sorted)):
-        if shots_sorted[i]["frame"] - shots_sorted[i-1]["frame"] > gap_threshold:
+        frame_gap = shots_sorted[i]["frame"] - shots_sorted[i-1]["frame"]
+
+        # Check if current shot ended the rally
+        prev_shot = shots_sorted[i-1]
+        stroke_type = prev_shot.get("stroke_type", "clear")
+        stroke_confidence = prev_shot.get("stroke_confidence", 0.5)
+
+        rally_ending = _is_rally_ending_shot(stroke_type, stroke_confidence, frame_gap)
+
+        # Split rally if: time gap exceeded OR shot likely ended rally
+        if frame_gap > gap_threshold or rally_ending:
             if count >= min_shots:
                 rallies.append({
                     "rally_id": rally_id,

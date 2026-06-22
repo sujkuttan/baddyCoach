@@ -143,7 +143,7 @@ class BSTClassifier:
 
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
-                    probs = torch.softmax(logits, dim=1).cpu().numpy()
+                    probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
 
                 for j in range(len(batch_clips)):
                     pred_idx = int(np.argmax(probs[j]))

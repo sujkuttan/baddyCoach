@@ -34,7 +34,7 @@ class HitFrameLocalizationStage:
             self.SWING_WEIGHT * swing_score
         )
 
-        threshold = np.percentile(combined, 85)
+        threshold = np.percentile(combined, 90)
         hit_frames = np.where(combined > threshold)[0]
 
         hits = []
@@ -48,7 +48,7 @@ class HitFrameLocalizationStage:
         if len(hits) > 1:
             deduped = [hits[0]]
             for h in hits[1:]:
-                if h["frame"] - deduped[-1]["frame"] >= 5:
+                if h["frame"] - deduped[-1]["frame"] >= 8:
                     deduped.append(h)
                 elif h["confidence"] > deduped[-1]["confidence"]:
                     deduped[-1] = h
@@ -76,7 +76,7 @@ class HitFrameLocalizationStage:
         x = shuttle_df["x"].values
         y = shuttle_df["y"].values
         speed = np.sqrt(np.diff(x, prepend=x[0])**2 + np.diff(y, prepend=y[0])**2)
-        peaks, _ = find_peaks(speed, distance=5)
+        peaks, _ = find_peaks(speed, distance=3)
         score = np.zeros(len(speed))
         score[peaks] = speed[peaks]
         return score / (score.max() + 1e-6)
