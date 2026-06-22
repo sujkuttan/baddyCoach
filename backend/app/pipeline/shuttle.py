@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 
@@ -33,7 +35,7 @@ class ShuttleTrackingStage:
         return StageResult.from_error("No frames or shuttle data provided")
 
     def _run_tracknet(self, frames: list[np.ndarray]) -> list[dict]:
-        """Run TrackNetV3 on video frames.
+        """Run TrackNetV3 on video frames with InpaintNet trajectory rectification.
 
         Model loading stays local to this stage (not via shared.models.setup_models)
         to keep the colab pipeline's self-contained model loading approach intact.
@@ -42,9 +44,10 @@ class ShuttleTrackingStage:
         from app.config.settings import settings
 
         model_path = str(settings.tracknet_model_path)
+        inpaintnet_path = str(settings.inpaintnet_model_path) if settings.inpaintnet_model_path and Path(settings.inpaintnet_model_path).exists() else None
         device = settings.device
 
-        model = TrackNetV3(model_path, device=device)
+        model = TrackNetV3(model_path, device=device, inpaintnet_path=inpaintnet_path)
 
         original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (1280, 720)
         predictions = model.predict_batch(frames, original_size=original_size)
