@@ -205,7 +205,7 @@ class BSTClassifier:
             return "clear"
         elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
             return "drive"
-        elif mean_dy > 0.02 and mean_speed > 0.03:
+        elif mean_dy > 0.04 and mean_speed > 0.05 and end_y > 0.5:
             return "lift"
         elif end_y > 0.7 and mean_speed < 0.06:
             return "drop"

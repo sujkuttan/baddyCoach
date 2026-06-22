@@ -130,6 +130,17 @@ class CourtKeypointDetector:
         bot_y = (points[4][1] + points[5][1]) / 2
         if bot_y <= top_y:
             return None
+
+        # Per-keypoint validation: near corners must be at bottom, far corners at top
+        h = frame.shape[0]
+        mid_y = h / 2
+        # KP4 (near-left) and KP5 (near-right) must be in bottom half
+        if points[4][1] < mid_y or points[5][1] < mid_y:
+            return None
+        # KP0 (far-left) and KP1 (far-right) must be in top half
+        if points[0][1] > mid_y or points[1][1] > mid_y:
+            return None
+
         return points
 
     def detect_corners(self, frame: np.ndarray) -> list[list[int]] | None:
@@ -262,6 +273,17 @@ def compute_homography(image_corners):
 
     # Geometric validation: check aspect ratio of detected court polygon
     valid = _validate_court_geometry(src)
+
+    # Validate that projected corner coordinates are within court bounds
+    if valid:
+        court_length = 13.4
+        court_width = 5.18
+        for corner in src:
+            cx, cy = image_to_court(H, corner)
+            if cx < -1 or cx > court_length + 1 or cy < -1 or cy > court_width + 1:
+                valid = False
+                break
+
     return H, valid
 
 

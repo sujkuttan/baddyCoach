@@ -96,6 +96,9 @@ class PlayerAttributionStage:
                         if foot is not None:
                             try:
                                 cx, cy = image_to_court(H, foot)
+                                # Clamp to court bounds
+                                cx = max(0.0, min(13.4, cx))
+                                cy = max(0.0, min(5.18, cy))
                                 shots_df.at[idx, "court_x"] = round(cx, 3)
                                 shots_df.at[idx, "court_y"] = round(cy, 3)
                             except Exception:

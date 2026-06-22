@@ -575,6 +575,16 @@ class CourtKeypointDetector:
         if bot_y <= top_y:
             return None
         
+        # Per-keypoint validation: near corners must be at bottom, far corners at top
+        h = frame.shape[0]
+        mid_y = h / 2
+        # KP4 (near-left) and KP5 (near-right) must be in bottom half
+        if points[4][1] < mid_y or points[5][1] < mid_y:
+            return None
+        # KP0 (far-left) and KP1 (far-right) must be in top half
+        if points[0][1] > mid_y or points[1][1] > mid_y:
+            return None
+        
         return points
     
     def detect_with_fallback(self, frame):
@@ -990,6 +1000,15 @@ def compute_homography(image_corners, min_points=4):
         return None, False
 
     valid = _validate_court_geometry(src)
+
+    # Validate that projected corner coordinates are within court bounds
+    if valid:
+        for corner in src:
+            cx, cy = image_to_court(H, corner)
+            if cx < -1 or cx > COURT_LENGTH + 1 or cy < -1 or cy > COURT_WIDTH + 1:
+                valid = False
+                break
+
     return H, valid
 
 
@@ -1752,6 +1771,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
 
     # Post-classification smoothing: if a shot has low confidence and
     # its neighbors agree on a different class, adopt the neighbors' class.
+    # Requires >= 3 neighbors to agree to prevent cascade from small samples.
     if len(shots) > 2:
         for i in range(len(shots)):
             if shots[i]["stroke_confidence"] >= 0.25 or shots[i]["stroke_type"] == "unknown":
@@ -1763,7 +1783,7 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
             if neighbors:
                 from collections import Counter
                 majority = Counter(neighbors).most_common(1)[0]
-                if majority[0] != shots[i]["stroke_type"] and majority[1] >= 2:
+                if majority[0] != shots[i]["stroke_type"] and majority[1] >= 3:
                     shots[i]["stroke_type"] = majority[0]
                     shots[i]["stroke_confidence"] = 0.3
 
@@ -1862,6 +1882,9 @@ def stage_attribution(shots_data, shuttle_data, court=None, vid_h=720, vid_w=128
                     if foot is not None:
                         try:
                             cx, cy = image_to_court(H, foot)
+                            # Clamp to court bounds
+                            cx = max(0.0, min(COURT_LENGTH, cx))
+                            cy = max(0.0, min(COURT_WIDTH, cy))
                             shot["court_x"] = round(cx, 3)
                             shot["court_y"] = round(cy, 3)
                         except Exception:
@@ -1898,7 +1921,7 @@ def _rule_based_shuttle_predict(shuttle_df, frame, vid_w, vid_h):
         return "clear"
     elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
         return "drive"
-    elif mean_dy > 0.02 and mean_speed > 0.03:
+    elif mean_dy > 0.04 and mean_speed > 0.05 and end_y > 0.5:
         return "lift"
     elif end_y > 0.7 and mean_speed < 0.06:
         return "drop"
@@ -2049,8 +2072,19 @@ def stage_footwork(pose_data, shots_data, court_data=None):
                 kps = np.array([np.array(x) for x in kps])
             if kps.shape == (17, 3) and np.any(kps != 0):
                 com_points.append((kps[11][:2] + kps[12][:2]) / 2)
-        dist_px = sum(np.sqrt(np.sum((np.array(com_points[i+1]) - np.array(com_points[i]))**2))
-                   for i in range(len(com_points)-1)) if len(com_points) > 1 else 0
+
+        # Filter out identity switches: large jumps (>500px) indicate pose switching between players
+        filtered_points = []
+        for i, pt in enumerate(com_points):
+            if i == 0:
+                filtered_points.append(pt)
+            else:
+                jump = np.sqrt(np.sum((pt - com_points[i-1])**2))
+                if jump < 500:
+                    filtered_points.append(pt)
+
+        dist_px = sum(np.sqrt(np.sum((np.array(filtered_points[i+1]) - np.array(filtered_points[i]))**2))
+                   for i in range(len(filtered_points)-1)) if len(filtered_points) > 1 else 0
         dist_m = dist_px / px_per_m if px_per_m > 0 else dist_px
 
         # Compute recovery times (backend parity)

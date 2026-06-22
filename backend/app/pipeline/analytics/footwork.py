@@ -98,7 +98,16 @@ class FootworkAnalyticsStage:
     def _compute_distance(com_trajectory: np.ndarray) -> float:
         if len(com_trajectory) < 2:
             return 0.0
-        diffs = np.diff(com_trajectory, axis=0)
+        # Filter out identity switches: large jumps (>500px) indicate pose switching between players
+        filtered = [com_trajectory[0]]
+        for i in range(1, len(com_trajectory)):
+            jump = np.sqrt(np.sum((com_trajectory[i] - com_trajectory[i-1])**2))
+            if jump < 500:
+                filtered.append(com_trajectory[i])
+        if len(filtered) < 2:
+            return 0.0
+        filtered = np.array(filtered)
+        diffs = np.diff(filtered, axis=0)
         distances = np.sqrt(np.sum(diffs**2, axis=1))
         return float(np.sum(distances))
 

@@ -279,7 +279,7 @@ class StrokeClassificationStage:
                 if neighbors:
                     from collections import Counter
                     majority = Counter(neighbors).most_common(1)[0]
-                    if majority[0] != shots[i]["stroke_type"] and majority[1] >= 2:
+                    if majority[0] != shots[i]["stroke_type"] and majority[1] >= 3:
                         shots[i]["stroke_type"] = majority[0]
                         shots[i]["stroke_confidence"] = 0.3
 
