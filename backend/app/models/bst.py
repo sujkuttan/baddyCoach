@@ -54,17 +54,28 @@ class BSTClassifier:
     """BST classifier using the official BST_CG / BST_CG_AP model.
 
     Supports loading from the official weight files and inference
-    with proper preprocessing.
+    with proper preprocessing. Batch size is auto-detected from
+    available GPU VRAM via gpu_batch config.
     """
 
-    def __init__(self, model_path: Optional[str] = None, device: str = "cuda"):
+    def __init__(self, model_path: Optional[str] = None, device: str = "cuda", default_seq_len: int = 30, batch_size: Optional[int] = None):
         self.device = device
         self.model = None
-        self.seq_len = None
+        self.seq_len = default_seq_len
         self.classes = COACH_STROKE_CLASSES
+        self.batch_size = batch_size if batch_size is not None else self._default_batch_size()
 
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
+
+    @staticmethod
+    def _default_batch_size() -> int:
+        try:
+            from app.config.gpu_batch import get_gpu_batch_config
+            cfg = get_gpu_batch_config()
+            return int(cfg.get("bst_batch", 32))
+        except Exception:
+            return 32
 
     def _load_model(self, path: str):
         """Load BST_CG or BST_CG_AP model from checkpoint."""
@@ -128,16 +139,18 @@ class BSTClassifier:
             import traceback
             traceback.print_exc()
 
-    def predict_from_clips(self, clips: list, batch_size: int = 32) -> list:
+    def predict_from_clips(self, clips: list, batch_size: Optional[int] = None) -> list:
         """Predict stroke types from prepared BST clips.
 
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
-            batch_size: Number of clips to process in parallel
+            batch_size: Number of clips to process in parallel.
+                       Defaults to self.batch_size (auto-detected from GPU VRAM).
 
         Returns:
             List of (stroke_type, confidence, raw_class_id) tuples
         """
+        batch_size = batch_size or self.batch_size
         if self.model is None:
             return [(self._rule_based_predict(clip), 0.5, 0) for clip in clips]
 
