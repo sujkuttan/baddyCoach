@@ -222,6 +222,14 @@ class StrokeClassificationStage:
         # Get player detection data for bbox normalization
         player_list = players_data.get("players", [])
 
+        # Deduplicate hits by frame: keep the highest-confidence hit per frame.
+        # Duplicate hits can arise from TrackNet producing multiple shuttle
+        # detections at the same frame, or from hits.py gap-based dedup missing
+        # same-frame duplicates. Without dedup, each duplicate produces a
+        # separate shot at the same timestamp with independently classified
+        # (potentially different) stroke types.
+        hits_df = hits_df.loc[hits_df.groupby("frame")["confidence"].idxmax()].reset_index(drop=True)
+
         shots = []
         previous_shots = []
         hit_frames_sorted = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
