@@ -1293,7 +1293,9 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 shuttle[t] = [frame['shuttle_x'], frame['shuttle_y']]
 
             det_bboxes = frame.get('det_bboxes', {})
-            for p_idx, pid in enumerate(['player_1', 'player_2']):
+            # p_idx=0 must be far/top player (Top_player) to match BST training convention
+            # p_idx=1 must be near/bottom player (Bottom_player)
+            for p_idx, pid in enumerate(['player_2', 'player_1']):
                 if pid in frame.get('pose', {}):
                     kps = frame['pose'][pid]
                     if kps is not None and kps.shape == (17, 3):
@@ -1577,11 +1579,8 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
                 model = BST_CG(in_dim, seq_len, n_class=n_classes)
                 model.load_state_dict(state_dict)
                 model.to(device).eval()
-                if device == "cuda":
-                    model = model.half()
-                    print(f"BST_CG loaded (FP16): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
-                else:
-                    print(f"BST_CG loaded (FP32): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+                # BST model runs in FP32 (matches training precision)
+                print(f"BST_CG loaded (FP32): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
             else:
                 print("BST state_dict not recognized, using rule-based fallback")
         except Exception as e:
@@ -1608,23 +1607,17 @@ def stage_strokes(hits_data, shuttle_data, pose_data=None, court=None, device="c
     # Get all hit frames for centering clips
     hit_frames = sorted([h['frame'] for h in hits_data])
     
-    # Build detection bbox lookup per player
+    # Build detection bbox lookup per player (side-based assignment, matches pose data)
     det_bbox_lookup = {}
     if player_detections:
-        # Use per-frame tid_to_pid to build consistent bbox lookup
-        for frame_idx in sorted(set(d["frame"] for d in player_detections)):
-            frame_dets = [d for d in player_detections if d["frame"] == frame_idx]
-            tid_to_pid = {}
-            for d in frame_dets:
-                tid = d.get("track_id", 0)
-                if tid not in tid_to_pid:
-                    tid_to_pid[tid] = f"player_{len(tid_to_pid)+1}"
-            for d in frame_dets:
-                pid = tid_to_pid.get(d.get("track_id", 0))
-                if pid:
-                    if pid not in det_bbox_lookup:
-                        det_bbox_lookup[pid] = {}
-                    det_bbox_lookup[pid][frame_idx] = d["bbox"]
+        for d in player_detections:
+            side = d.get("side", "near")
+            pid = "player_1" if side == "near" else "player_2"
+            frame = d.get("frame")
+            if frame is not None:
+                if pid not in det_bbox_lookup:
+                    det_bbox_lookup[pid] = {}
+                det_bbox_lookup[pid][frame] = d["bbox"]
     
     # Process each hit
     shots = []
