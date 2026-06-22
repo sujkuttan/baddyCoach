@@ -32,10 +32,6 @@ STROKE_CLASSES = [
     "smash", "drop", "net_shot", "drive", "push", "block", "kill"
 ]
 
-# Rules definition (simplified)
-RULES = []
-
-
 # GPU batch configuration
 def _get_gpu_batch_config(device: str) -> dict:
     """Detect GPU VRAM and return optimal batch sizes per pipeline stage."""

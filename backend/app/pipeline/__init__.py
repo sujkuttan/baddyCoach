@@ -18,7 +18,7 @@ from .shared.utils import (
 )
 from .shared.models import setup_models, _download_model_from_gdown, _extract_zip
 from .shared.logging import PipelineLogger, logger
-from .shared.core import STROKE_CLASSES, RULES, _get_gpu_batch_config
+from .shared.core import STROKE_CLASSES, _get_gpu_batch_config
 
 # Import stage classes for export (wrapped in try/except for environments
 # where settings/model dependencies are not available)
@@ -62,7 +62,6 @@ __all__ = [
     'NET_HEIGHT',
     'COURT_MODEL',
     'STROKE_CLASSES',
-    'RULES',
     '_get_gpu_batch_config',
     
     # Utility functions
