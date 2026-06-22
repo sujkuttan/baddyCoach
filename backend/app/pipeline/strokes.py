@@ -266,8 +266,12 @@ class StrokeClassificationStage:
 
             stroke_type, confidence, raw_class_id = classifier.predict_single(clip)
 
-            # Track if prediction is rule-based (fallback) vs BST model
-            is_rule_based = classifier.model is None
+            # Track if this specific shot fell back to rule-based prediction
+            # raw_class_id == 0 catches three paths:
+            #   1. Model never loaded (all clips fallback)
+            #   2. Model predicted "unknown" with uniformly low logits
+            #   3. Runtime exception during inference
+            is_rule_based = raw_class_id == 0
 
             shot = {
                 "frame": frame,

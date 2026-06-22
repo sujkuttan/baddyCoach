@@ -191,8 +191,11 @@ class BSTClassifier:
                             pred_idx = second_idx
                             confidence = second_conf
                         else:
+                            # Model confidently predicted "unknown" with no viable
+                            # second-best — fall back to rule-based with low confidence
                             fallback = self._rule_based_predict(batch_clips[j])
-                            results[batch_start + j] = (fallback, confidence, 0)
+                            rule_conf = min(confidence, 0.3)
+                            results[batch_start + j] = (fallback, rule_conf, 0)
                             continue
 
                     stroke_type = map_to_coach_class(pred_idx)
