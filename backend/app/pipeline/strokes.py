@@ -298,22 +298,51 @@ class StrokeClassificationStage:
                 "stroke_confidence": confidence,
             })
 
+        # Post-classification temporal smoothing: correct low-confidence or
+        # unknown strokes to match the majority of nearby shots.
         if len(shots) > 2:
             for i in range(len(shots)):
-                if shots[i]["stroke_confidence"] >= 0.25 or shots[i]["stroke_type"] == "unknown":
+                conf = shots[i]["stroke_confidence"]
+                stype = shots[i]["stroke_type"]
+                if conf >= 0.25 and stype != "unknown":
                     continue
                 neighbors = []
                 for j in range(max(0, i - 2), min(len(shots), i + 3)):
-                    if j != i and shots[j]["stroke_type"] != "unknown":
+                    if j != i and shots[j]["stroke_type"] not in ("unknown", "Bottom_unknown"):
                         neighbors.append(shots[j]["stroke_type"])
                 if neighbors:
                     from collections import Counter
-                    majority = Counter(neighbors).most_common(1)[0]
-                    if majority[0] != shots[i]["stroke_type"] and majority[1] >= 3:
-                        shots[i]["stroke_type"] = majority[0]
+                    majority, count = Counter(neighbors).most_common(1)[0]
+                    if majority != stype and count >= 3:
+                        shots[i]["stroke_type"] = majority
                         shots[i]["stroke_confidence"] = 0.3
 
         fps = float(config.processing_fps or 30.0)
+
+        # Temporal dedup: merge consecutive shots within 0.2s that share the
+        # same stroke type. When the same hit is detected at multiple nearby
+        # frames, BST produces similar classifications — keep only the one
+        # with the highest confidence.
+        if len(shots) > 1:
+            max_gap = max(1, int(fps * 0.2))  # 0.2 seconds at current FPS
+            shots = sorted(shots, key=lambda s: s["frame"])
+            deduped = [shots[0]]
+            for s in shots[1:]:
+                prev = deduped[-1]
+                gap = s["frame"] - prev["frame"]
+                same_type = (
+                    s["stroke_type"] == prev["stroke_type"]
+                    or s["stroke_type"] == "unknown"
+                    or prev["stroke_type"] == "unknown"
+                )
+                if gap <= max_gap and same_type:
+                    # Merge: keep the higher-confidence shot
+                    if s["stroke_confidence"] > prev["stroke_confidence"]:
+                        deduped[-1] = s
+                else:
+                    deduped.append(s)
+            shots = deduped
+
         for i, s in enumerate(shots):
             s["shot_id"] = i + 1
             s["start_ts"] = round(s["frame"] / fps, 3)

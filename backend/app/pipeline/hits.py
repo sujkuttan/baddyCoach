@@ -47,9 +47,13 @@ class HitFrameLocalizationStage:
             })
 
         if len(hits) > 1:
+            fps = float(config.processing_fps or 30.0)
+            min_gap = max(3, int(fps * 0.1))  # ~100ms minimum between distinct hits
+            hits = sorted(hits, key=lambda h: h["frame"])
             deduped = [hits[0]]
             for h in hits[1:]:
-                if h["frame"] - deduped[-1]["frame"] >= 8:
+                gap = h["frame"] - deduped[-1]["frame"]
+                if gap >= min_gap:
                     deduped.append(h)
                 elif h["confidence"] > deduped[-1]["confidence"]:
                     deduped[-1] = h
