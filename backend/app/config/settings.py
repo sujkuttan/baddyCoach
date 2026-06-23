@@ -43,8 +43,6 @@ class Settings(BaseSettings):
     hit_dedup_gap_seconds: float = 0.1
 
     # Stroke classification thresholds
-    stroke_smoothing_min_confidence: float = 0.25
-    stroke_smoothing_fallback_confidence: float = 0.3
     stroke_smoothing_window: int = 2  # ±neighbors
     stroke_smoothing_majority_count: int = 3
     stroke_dedup_gap_seconds: float = 0.2

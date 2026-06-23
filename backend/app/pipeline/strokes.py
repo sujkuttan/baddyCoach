@@ -258,7 +258,7 @@ class StrokeClassificationStage:
             for i in range(len(shots)):
                 conf = shots[i]["stroke_confidence"]
                 stype = shots[i]["stroke_type"]
-                if conf >= settings.stroke_smoothing_min_confidence and stype != "unknown":
+                if stype != "unknown":
                     continue
                 neighbors = []
                 win = settings.stroke_smoothing_window
@@ -270,7 +270,7 @@ class StrokeClassificationStage:
                     majority, count = Counter(neighbors).most_common(1)[0]
                     if majority != stype and count >= settings.stroke_smoothing_majority_count:
                         shots[i]["stroke_type"] = majority
-                        shots[i]["stroke_confidence"] = settings.stroke_smoothing_fallback_confidence
+                        shots[i]["stroke_confidence"] = 0.3
 
         fps = float(config.processing_fps or settings.fps)
 
