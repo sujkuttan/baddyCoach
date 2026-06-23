@@ -73,41 +73,53 @@ class PlayerAttributionStage:
                 if class_id <= 0:
                     continue
                 if 1 <= class_id <= 12:
-                    # Top_* -> far player (Top of frame = far side)
                     for p in players_data.get("players", []):
                         if p.get("side") == "far":
                             shots_df.at[idx, "player_id"] = p["id"]
                             break
                 elif 13 <= class_id <= 24:
-                    # Bottom_* -> near player (Bottom of frame = near side)
                     for p in players_data.get("players", []):
                         if p.get("side") == "near":
                             shots_df.at[idx, "player_id"] = p["id"]
                             break
 
-        # Fill remaining unassigned shots with alternation heuristic
-        unassigned = shots_df["player_id"].isna()
-        if unassigned.any() and rallies_df is not None and len(rallies_df) > 0:
+        # Per-shot shuttle direction for unassigned shots
+        for idx, shot in shots_df.iterrows():
+            if pd.isna(shot.get("player_id")):
+                result = _shuttle_direction_at(int(shot["frame"]))
+                if result:
+                    shots_df.at[idx, "player_id"] = result
+
+        # Rally-based sequential alternation for remaining unassigned shots
+        # Uses the last assigned/filled shot to determine the next player,
+        # preserving alternation (physical law in badminton) without
+        # overwriting model predictions.
+        if rallies_df is not None and len(rallies_df) > 0:
             for _, rally in rallies_df.iterrows():
-                    start_f = int(rally["start_frame"])
-                    end_f = int(rally["end_frame"])
-                    rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)
-                    rally_shots = shots_df[rally_mask].sort_values("frame")
-                    if len(rally_shots) == 0:
-                        continue
+                start_f = int(rally["start_frame"])
+                end_f = int(rally["end_frame"])
+                rally_mask = (shots_df["frame"] >= start_f) & (shots_df["frame"] <= end_f)
+                rally_shots = shots_df[rally_mask].sort_values("frame")
+                if len(rally_shots) == 0:
+                    continue
 
-                    first_frame = int(rally_shots.iloc[0]["frame"])
-                    first_player = _shuttle_direction_at(first_frame)
-                    if first_player is None:
-                        y_at = shuttle_y_map.get(first_frame)
-                        first_player = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+                last_player = None
+                for _, s in rally_shots.iterrows():
+                    pid = s.get("player_id")
+                    if pd.notna(pid):
+                        last_player = pid
+                    elif last_player is not None:
+                        next_player = "player_2" if last_player == "player_1" else "player_1"
+                        shots_df.at[s.name, "player_id"] = next_player
+                        last_player = next_player
+                    else:
+                        # No assigned shot yet in this rally — use court position
+                        y_at = shuttle_y_map.get(int(s["frame"]))
+                        fallback = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+                        shots_df.at[s.name, "player_id"] = fallback
+                        last_player = fallback
 
-                    second_player = "player_2" if first_player == "player_1" else "player_1"
-                    players_list = [first_player, second_player]
-                    for i, idx in enumerate(rally_shots.index):
-                        shots_df.at[idx, "player_id"] = players_list[i % 2]
-        
-        # Try to use tracking data for unassigned shots
+        # Try to use tracking data for any remaining unassigned shots
         tracked_players = artifacts.get("tracked_players")
         if tracked_players:
             for frame, players in tracked_players.items():
@@ -118,15 +130,12 @@ class PlayerAttributionStage:
                         assigned = "player_1" if sorted_players[0]["bbox"][1] > court_mid_y else "player_2"
                         shots_df.loc[idx_mask, "player_id"] = assigned
 
-        # Fill in remaining shots that weren't assigned by BST predictions
-        for idx, shot in shots_df.iterrows():
-            if pd.isna(shot.get("player_id")):
-                result = _shuttle_direction_at(int(shot["frame"]))
-                if result:
-                    shots_df.at[idx, "player_id"] = result
-                else:
-                    y_at = shuttle_y_map.get(int(shot["frame"]))
-                    shots_df.at[idx, "player_id"] = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+        # Final fallback: court-position heuristic for any still-unassigned shots
+        unassigned = shots_df["player_id"].isna()
+        if unassigned.any():
+            shots_df.loc[unassigned, "player_id"] = shots_df.loc[unassigned, "frame"].apply(
+                lambda f: "player_1" if shuttle_y_map.get(int(f), court_mid_y) > court_mid_y else "player_2"
+            )
 
         if H is not None and pose_df is not None:
             for idx, shot in shots_df.iterrows():
