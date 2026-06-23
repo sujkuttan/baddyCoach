@@ -1,8 +1,9 @@
 from pathlib import Path
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
     data_dir: Path = Path("data")
     jobs_dir: Path = Path("data/jobs")
     max_video_length_seconds: int = 3600
