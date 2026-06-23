@@ -44,16 +44,6 @@ class RallySegmentationStage:
     input_keys = ["shots"]
     output_keys = ["rallies"]
 
-from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
-from app.config.settings import settings
-
-
-class RallySegmentationStage:
-    name = "rally_segmentation"
-    input_keys = ["shots"]
-    output_keys = ["rallies"]
-
     def run(self, artifacts: ArtifactStore, config: StageConfig,
             gap_threshold: int | None = None, min_shots: int | None = None) -> StageResult:
         shots_df = artifacts.get_parquet("shots")
