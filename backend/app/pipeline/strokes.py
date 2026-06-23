@@ -182,6 +182,7 @@ class StrokeClassificationStage:
         hits_df = hits_df.loc[hits_df.groupby("frame")["confidence"].idxmax()].reset_index(drop=True)
 
         shots = []
+        bst_clips_registry = {}
         previous_shots = []
         hit_frames_sorted = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
@@ -222,6 +223,8 @@ class StrokeClassificationStage:
                 player_sides=player_sides, player_detections=player_list,
                 homography=homography,
             )
+
+            bst_clips_registry[int(frame)] = {"frames": clip_frames}
 
             stroke_type, confidence, raw_class_id = classifier.predict_single(clip)
 
@@ -301,6 +304,7 @@ class StrokeClassificationStage:
 
         shots_df = pd.DataFrame(shots)
         artifacts.set_parquet("shots", shots_df)
+        artifacts.set("bst_clips", bst_clips_registry)
 
         return StageResult.success(
             artifacts={"shots": artifacts.path("shots")},

@@ -16,18 +16,13 @@ Requirements:
 import argparse
 import gc
 import json
-from collections import deque
-import os
 import sys
 import time
-import urllib.request
-from collections import Counter
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
 from tqdm import tqdm
 
 # ─── Shared module imports ──────────────────────────────────────────────────
@@ -37,18 +32,13 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from app.pipeline.shared.court import (
-    COURT_LENGTH, COURT_WIDTH, NET_HEIGHT, COURT_MODEL, COURT_ASPECT_RATIO,
-    _detect_court_color_line, _correct_court_points, _validate_court_geometry,
-    compute_homography, image_to_court, HomographySmoother, make_undistorter,
-    foot_midpoint_from_pose, foot_point_from_bbox,
+    COURT_LENGTH, COURT_WIDTH, NET_HEIGHT,
+    _correct_court_points, compute_homography, image_to_court, HomographySmoother,
 )
 from app.pipeline.shared.utils import (
-    _rule_based_shuttle_predict, _evaluate_shot,
-    _infer_end_reason, _is_rally_ending_shot,
-    stage_rally_stats,
+    _infer_end_reason, stage_rally_stats,
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
-from app.pipeline.shared.bst_preproc import normalize_joints, create_bones, normalize_shuttlecock, BONE_PAIRS
 
 CKPT_DIR = Path("ckpts")
 CKPT_DIR.mkdir(exist_ok=True)
@@ -762,585 +752,6 @@ def stage_court_detection(corners):
             "court_length": COURT_LENGTH, "court_width": COURT_WIDTH, "net_height": NET_HEIGHT}
 
 
-def _prepare_stroke_classification(artifacts, all_shuttle, all_pose, all_player_detections, court, vid_w, vid_h, gpu_cfg, pose_model, all_pose_secondary=None, bst_batch_size=32):
-    """Run stroke classification using colab's BST implementation (GPU-efficient).
-
-    This is kept in colab because the backend's StrokeClassificationStage uses a
-    different BST model path and may not load correctly. The colab BST loading
-    follows the original paper's approach.
-    """
-    from app.pipeline.hits import HitFrameLocalizationStage
-    from app.pipeline.base import StageConfig
-
-    config = StageConfig(gpu_enabled=True)
-
-    hits_result = HitFrameLocalizationStage().run(artifacts, config)
-    if hits_result.status == "error":
-        print(f"  Hit detection failed: {hits_result.error}")
-        return [], []
-    hits = hits_result.metadata.get("hits", [])
-    print(f"  Found {len(hits)} hits")
-
-    if not hits:
-        return [], []
-
-    shuttle_df = artifacts.get_parquet("shuttle")
-    pose_df = artifacts.get_parquet("pose")
-
-    hits_data = pd.DataFrame(hits)
-    if pose_df is not None and len(pose_df) > 0:
-        from collections import defaultdict
-        by_player = defaultdict(list)
-        for _, row in pose_df.iterrows():
-            by_player[row.get("player_id", "")].append(row)
-
-    # BST configuration
-    BST_CLASSES = [
-        "net_shot", "block", "smash", "lift", "clear", "drive",
-        "drop", "push", "rush", "cross_court", "short_serve", "long_serve"
-    ]
-    from app.pipeline.shared.bst_preproc import normalize_joints as _norm_joints, create_bones as _cre_bones, BONE_PAIRS
-
-    def create_bones(joints):
-        bones = []
-        for start, end in BONE_PAIRS:
-            start_j = joints[:, :, start, :]
-            end_j = joints[:, :, end, :]
-            bone = np.where((start_j != 0.0) & (end_j != 0.0), end_j - start_j, 0.0)
-            bones.append(bone)
-        return np.stack(bones, axis=-2)
-
-    def normalize_joints_bstdiag(coords, det_bbox=None):
-        return _norm_joints(coords, det_bbox=det_bbox)
-
-    def prepare_bst_clip(clip_frames, seq_len):
-        n_frames = len(clip_frames)
-        joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
-        shuttle = np.zeros((seq_len, 2), dtype=np.float32)
-        pos = np.zeros((seq_len, 2, 2), dtype=np.float32)
-
-        for t, frame in enumerate(clip_frames[:seq_len]):
-            if 'shuttle_x' in frame and 'shuttle_y' in frame:
-                shuttle[t] = [frame['shuttle_x'], frame['shuttle_y']]
-
-            det_bboxes = frame.get('det_bboxes', {})
-            for p_idx, pid in enumerate(['player_2', 'player_1']):
-                if pid in frame.get('pose', {}):
-                    kps = frame['pose'][pid]
-                    if kps is not None and kps.shape == (17, 3):
-                        coords = kps[:, :2]
-                        det_bbox = det_bboxes.get(pid)
-                        joints[t, p_idx] = normalize_joints_bstdiag(coords, det_bbox=det_bbox)
-                        feet_y = max(coords[15, 1], coords[16, 1])
-                        feet_x = (coords[15, 0] + coords[16, 0]) / 2
-                        pos[t, p_idx] = [feet_x / vid_w, feet_y / vid_h]
-
-        for dim in range(2):
-            shuttle_series = pd.Series(shuttle[:, dim])
-            mask = shuttle_series == 0.0
-            if mask.any() and (~mask).any():
-                shuttle_series = shuttle_series.replace(0, np.nan)
-                shuttle_series = shuttle_series.interpolate(method='linear').bfill().ffill()
-                shuttle[:, dim] = shuttle_series.values
-
-        bones = create_bones(joints)
-        JnB = np.concatenate([joints, bones], axis=-2).reshape(seq_len, 2, -1)
-        return JnB, shuttle, pos, min(n_frames, seq_len)
-    
-    # Load BST model
-    import torch
-
-    bst_path = str(BST_PATH) if BST_PATH.exists() else None
-    model = None
-    seq_len = SEQ_LEN
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    if bst_path:
-        try:
-            checkpoint = torch.load(bst_path, map_location=device, weights_only=False)
-
-            state_dict = checkpoint if isinstance(checkpoint, dict) and 'model' not in checkpoint else None
-            if state_dict is None and isinstance(checkpoint, dict) and 'model' in checkpoint:
-                state_dict = checkpoint['model'] if isinstance(checkpoint['model'], dict) else None
-
-            if state_dict and any('tcn_pose' in k for k in list(state_dict.keys())[:10]):
-                in_dim = 72
-                n_classes = 25
-                detected_seq_len = SEQ_LEN
-
-                for k, v in state_dict.items():
-                    if 'tcn_pose.net.0.weight' in k:
-                        in_dim = v.shape[1]
-                    if 'mlp_head.mlp.mlp.3.weight' in k:
-                        n_classes = v.shape[0]
-                    if 'embedding_tem' in k:
-                        detected_seq_len = v.shape[1] - 1
-
-                seq_len = detected_seq_len
-
-                seq_len = detected_seq_len
-
-                from app.models.bst_model import BST_CG
-
-                model = BST_CG(in_dim, seq_len, n_class=n_classes)
-                model.load_state_dict(state_dict)
-                model.to(device).eval()
-                print(f"BST_CG loaded (FP32): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
-                model = BST_CG(in_dim, seq_len, n_class=n_classes)
-                model.load_state_dict(state_dict)
-                model.to(device).eval()
-                print(f"BST_CG loaded (FP32): in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
-            else:
-                print("BST state_dict not recognized, using rule-based fallback")
-        except Exception as e:
-            print(f"BST load error: {e}")
-    
-    # Group pose by frame
-    pose_by_frame = {}
-    if len(pose_df) > 0:
-        for f_idx in pose_df['frame'].unique():
-            frame_poses = pose_df[pose_df['frame'] == f_idx]
-            pd_dict = {}
-            for _, row in frame_poses.iterrows():
-                kps_raw = row['keypoints']
-                kps = np.array(kps_raw) if isinstance(kps_raw, np.ndarray) else np.array(kps_raw)
-                if kps.shape != (17, 3) and hasattr(kps_raw, 'tolist'):
-                    kps = np.array(kps_raw.tolist())
-                if kps.shape == (17, 3):
-                    pd_dict[row['player_id']] = kps
-            pose_by_frame[f_idx] = pd_dict
-    
-    # Get all hit frames for centering clips
-    hit_frames = sorted([h['frame'] for h in hits_data])
-    
-    # Build detection bbox lookup per player (side-based assignment, matches pose data)
-    det_bbox_lookup = {}
-    if player_detections:
-        for d in player_detections:
-            side = d.get("side", "near")
-            pid = "player_1" if side == "near" else "player_2"
-            frame = d.get("frame")
-            if frame is not None:
-                if pid not in det_bbox_lookup:
-                    det_bbox_lookup[pid] = {}
-                det_bbox_lookup[pid][frame] = d["bbox"]
-    
-    # Process each hit
-    shots = []
-    
-    if model is not None:
-        import torch
-        
-        hit_frames_sorted = sorted([h['frame'] for h in hits_data])
-        
-        all_clips = []
-        for hit in hits_data:
-            hit_frame = hit['frame']
-            hit_pos = hit_frames_sorted.index(hit_frame)
-            start_frame = hit_frames_sorted[hit_pos - 1] if hit_pos > 0 else max(0, hit_frame - seq_len // 2)
-            end_frame = hit_frames_sorted[hit_pos + 1] + 2 if hit_pos < len(hit_frames_sorted) - 1 else hit_frame + seq_len // 2 + 1
-            
-            clip_frames = []
-            for f in range(start_frame, end_frame):
-                frame_data = {}
-                if len(shuttle_df) > 0:
-                    s_row = shuttle_df[shuttle_df['frame'] == f]
-                    if len(s_row) > 0:
-                        frame_data['shuttle_x'] = float(s_row.iloc[0]['x']) / vid_w
-                        frame_data['shuttle_y'] = float(s_row.iloc[0]['y']) / vid_h
-                    else:
-                        frame_data['shuttle_x'] = 0.0
-                        frame_data['shuttle_y'] = 0.0
-                else:
-                    frame_data['shuttle_x'] = 0.0
-                    frame_data['shuttle_y'] = 0.0
-                raw_pose = pose_by_frame.get(f, {})
-                frame_data['pose'] = {'player_1': raw_pose.get('player_1'), 'player_2': raw_pose.get('player_2')}
-                frame_data['det_bboxes'] = {
-                    'player_1': det_bbox_lookup.get('player_1', {}).get(f),
-                    'player_2': det_bbox_lookup.get('player_2', {}).get(f),
-                }
-                clip_frames.append(frame_data)
-            
-            if len(clip_frames) > seq_len:
-                hit_offset = hit_frame - start_frame
-                half = seq_len // 2
-                clip_start = max(0, hit_offset - half)
-                clip_end = clip_start + seq_len
-                if clip_end > len(clip_frames):
-                    clip_end = len(clip_frames)
-                    clip_start = max(0, clip_end - seq_len)
-                clip_frames = clip_frames[clip_start:clip_end]
-            while len(clip_frames) < seq_len:
-                clip_frames.append({'shuttle_x': 0.0, 'shuttle_y': 0.0, 'pose': {}})
-            
-            JnB, shuttle_arr, pos_arr, v_len = prepare_bst_clip(clip_frames, seq_len)
-            all_clips.append((hit, JnB, shuttle_arr, pos_arr, v_len))
-        
-        for batch_start in range(0, len(all_clips), bst_batch_size):
-            batch = all_clips[batch_start:batch_start + bst_batch_size]
-            JnB_batch = torch.from_numpy(np.stack([c[1] for c in batch])).float().to(device)
-            shuttle_batch = torch.from_numpy(np.stack([c[2] for c in batch])).float().to(device)
-            pos_batch = torch.from_numpy(np.stack([c[3] for c in batch])).float().to(device)
-            vlen_batch = torch.tensor([c[4] for c in batch], dtype=torch.long).to(device)
-            if device == "cuda":
-                JnB_batch = JnB_batch.half()
-                shuttle_batch = shuttle_batch.half()
-                pos_batch = pos_batch.half()
-            
-            with torch.no_grad():
-                logits_batch = model(JnB_batch, shuttle_batch, pos_batch, vlen_batch)
-                probs_batch = torch.softmax(logits_batch.float(), dim=1).cpu().numpy()
-            
-            for j, (hit, *_) in enumerate(batch):
-                hit_frame = hit['frame']
-                probs = probs_batch[j]
-                pred_idx = int(np.argmax(probs))
-                confidence = float(probs[pred_idx])
-                
-                if pred_idx == 0:
-                    second_idx = int(np.argsort(probs)[-2])
-                    second_conf = float(probs[second_idx])
-                    if second_conf > 0.05:
-                        pred_idx = second_idx
-                        confidence = second_conf
-                    else:
-                        stroke_type = _rule_based_shuttle_predict(shuttle_df, hit_frame, vid_w, vid_h)
-                        shots.append({"frame": hit_frame, "hit_confidence": hit['confidence'],
-                                      "stroke_type": stroke_type, "stroke_confidence": confidence})
-                        continue
-                
-                if pred_idx == 0:
-                    stroke_type = "unknown"
-                elif 1 <= pred_idx <= 12:
-                    stroke_type = BST_CLASSES[pred_idx - 1] if pred_idx - 1 < len(BST_CLASSES) else "clear"
-                elif 13 <= pred_idx <= 24:
-                    stroke_type = BST_CLASSES[pred_idx - 13] if pred_idx - 13 < len(BST_CLASSES) else "clear"
-                else:
-                    stroke_type = "clear"
-                
-                shots.append({"frame": hit_frame, "hit_confidence": hit['confidence'],
-                              "stroke_type": stroke_type, "stroke_confidence": confidence})
-        
-        del JnB_batch, shuttle_batch, pos_batch, vlen_batch
-        if device == "cuda":
-            torch.cuda.empty_cache()
-    else:
-        # Rule-based fallback when model not available
-        for hit in hits_data:
-            frame = hit['frame']
-            
-            # Use shuttle trajectory for classification
-            stroke_type = "clear"
-            confidence = 0.4
-            
-            if len(shuttle_df) > 0:
-                window = shuttle_df[(shuttle_df['frame'] >= frame - 5) & (shuttle_df['frame'] <= frame + 5)]
-                if len(window) >= 2:
-                    y_vals = window['y'].values / vid_h
-                    x_vals = window['x'].values / vid_w
-                    # Filter out zero coordinates (missing shuttle data)
-                    valid = (x_vals != 0) | (y_vals != 0)
-                    if valid.sum() < 2:
-                        shots.append({"frame": frame, "hit_confidence": hit['confidence'], "stroke_type": "clear", "stroke_confidence": 0.4})
-                        continue
-                    y_vals = y_vals[valid]
-                    dy = np.diff(y_vals)
-                    speed = np.mean(np.abs(dy))
-                    
-                    if speed > 0.1 and np.mean(dy) > 0.05:
-                        stroke_type = "smash"
-                        confidence = 0.5
-                    elif speed < 0.03:
-                        stroke_type = "net_shot"
-                        confidence = 0.45
-                    elif np.mean(dy) < -0.03:
-                        stroke_type = "clear"
-                        confidence = 0.5
-                    elif speed > 0.05:
-                        stroke_type = "drive"
-                        confidence = 0.45
-            
-            shots.append({
-                "frame": frame,
-                "hit_confidence": hit['confidence'],
-                "stroke_type": stroke_type,
-                "stroke_confidence": confidence,
-            })
-
-    # Post-classification smoothing: if a shot has low confidence and
-    # its neighbors agree on a different class, adopt the neighbors' class.
-    # Requires >= 3 neighbors to agree to prevent cascade from small samples.
-    if len(shots) > 2:
-        for i in range(len(shots)):
-            if shots[i]["stroke_confidence"] >= 0.25 or shots[i]["stroke_type"] == "unknown":
-                continue
-            neighbors = []
-            for j in range(max(0, i - 2), min(len(shots), i + 3)):
-                if j != i and shots[j]["stroke_type"] != "unknown":
-                    neighbors.append(shots[j]["stroke_type"])
-            if neighbors:
-                from collections import Counter
-                majority = Counter(neighbors).most_common(1)[0]
-                if majority[0] != shots[i]["stroke_type"] and majority[1] >= 3:
-                    shots[i]["stroke_type"] = majority[0]
-                    shots[i]["stroke_confidence"] = 0.3
-
-    return shots
-
-
-# ─── Shuttle-Coach Integration ──────────────────────────────────────────────
-
-def _shuttle_coach_recovery_time(positions_df, shots_df, player_ids):
-    """Compute recovery time metric for each player."""
-    import numpy as np
-    results = []
-    # Skip if required columns are missing
-    if "court_x" not in positions_df.columns or "court_y" not in positions_df.columns:
-        return results
-    if "player_id" not in positions_df.columns:
-        return results
-    # Use ts if available, otherwise derive from frame
-    ts_col = "ts" if "ts" in positions_df.columns else "frame"
-    for pid in player_ids:
-        pos = positions_df[positions_df["player_id"] == pid].dropna(subset=["court_x", "court_y"]).sort_values(ts_col)
-        if len(pos) < 10:
-            continue
-        base = np.array([pos["court_x"].median(), pos["court_y"].median()])
-        player_shots = shots_df[shots_df["player_id"] == pid].sort_values("start_ts")
-        recov = []
-        for _, s in player_shots.iterrows():
-            shot_ts = s.get("start_ts", s.get("frame", 0) / 30.0)
-            after = pos[pos[ts_col] >= shot_ts].head(60)
-            if after.empty:
-                continue
-            d = np.linalg.norm(after[["court_x", "court_y"]].to_numpy() - base, axis=1)
-            back = np.argmax(d < 1.0) if (d < 1.0).any() else len(d) - 1
-            recov.append(after[ts_col].iloc[back] - shot_ts)
-        if recov:
-            results.append({
-                "metric_id": "movement.recovery_time",
-                "player_id": pid,
-                "value": float(np.mean(recov)),
-                "unit": "s",
-                "sample_size": len(recov),
-                "confidence": min(1.0, len(recov) / 30),
-                "context": {"median": float(np.median(recov))}
-            })
-    return results
-
-
-def _shuttle_coach_shot_mix(shots_df, player_ids):
-    """Compute shot distribution for each player."""
-    results = []
-    for pid in player_ids:
-        s = shots_df[shots_df["player_id"] == pid]
-        if s.empty:
-            continue
-        mix = (s["stroke_type"].value_counts(normalize=True) * 100).round(1).to_dict()
-        results.append({
-            "metric_id": "shots.mix",
-            "player_id": pid,
-            "value": mix,
-            "unit": "%",
-            "sample_size": len(s),
-            "confidence": float(s["stroke_confidence"].mean()) if "stroke_confidence" in s.columns else 1.0,
-            "context": {}
-        })
-    return results
-
-
-def _shuttle_coach_error_location(rallies_df, player_ids):
-    """Compute error breakdown for each player."""
-    results = []
-    for pid in player_ids:
-        if "winner_player_id" not in rallies_df.columns:
-            continue
-        lost = rallies_df[(rallies_df["winner_player_id"].notna()) & (rallies_df["winner_player_id"] != pid)]
-        if "end_reason" in rallies_df.columns and not lost.empty:
-            reasons = (lost["end_reason"].value_counts(normalize=True) * 100).round(1).to_dict()
-        else:
-            reasons = {}
-        results.append({
-            "metric_id": "errors.location_reason",
-            "player_id": pid,
-            "value": reasons,
-            "unit": "%",
-            "sample_size": int(len(lost)),
-            "confidence": 1.0,
-            "context": {}
-        })
-    return results
-
-
-def _shuttle_coach_derive_findings(metrics):
-    """Derive coaching findings from metrics."""
-    findings = []
-    
-    # Group by metric_id
-    by_id = {}
-    for m in metrics:
-        by_id.setdefault(m["metric_id"], []).append(m)
-    
-    # Slow recovery
-    for m in by_id.get("movement.recovery_time", []):
-        if m["value"] > 0.8 and m["sample_size"] >= 15:
-            severity = min(1.0, (m["value"] - 0.8) / 0.8)
-            findings.append({
-                "code": "slow_recovery",
-                "player_id": m["player_id"],
-                "severity": severity,
-                "headline": "Slow recovery to base position",
-                "detail": f"Average recovery {m['value']:.2f}s (median {m['context'].get('median', 0):.2f}s) over {m['sample_size']} shots. Returning to base faster would reduce time spent out of position.",
-                "evidence": [m["metric_id"]],
-                "drill": "Split-step practice: bounce on toes, explode to shuttle on opponent's hit."
-            })
-    
-    # High unforced errors
-    for m in by_id.get("errors.location_reason", []):
-        if isinstance(m["value"], dict):
-            unforced = m["value"].get("unforced_error", 0)
-            if unforced > 20 and m["sample_size"] >= 8:
-                severity = min(1.0, unforced / 50)
-                findings.append({
-                    "code": "high_unforced",
-                    "player_id": m["player_id"],
-                    "severity": severity,
-                    "headline": "High unforced error rate",
-                    "detail": f"{unforced:.0f}% of lost points are unforced errors ({m['sample_size']} lost rallies). Shot tolerance is the highest-leverage area to improve.",
-                    "evidence": [m["metric_id"]],
-                    "drill": "Consistency drills: rally with partner, focus on keeping shuttle in play."
-                })
-            
-            # High net errors
-            net_err = m["value"].get("net", 0)
-            if net_err > 8 and m["sample_size"] >= 8:
-                severity = min(1.0, net_err / 20)
-                findings.append({
-                    "code": "high_net_errors",
-                    "player_id": m["player_id"],
-                    "severity": severity,
-                    "headline": "Frequent net errors",
-                    "detail": f"{net_err:.0f}% of lost points ended at the net ({m['sample_size']} lost rallies). Tighten net shots and improve clearance.",
-                    "evidence": [m["metric_id"]],
-                    "drill": "Net clearance drills: practice lifting just over the tape from mid-court."
-                })
-    
-    # Shot variety
-    for m in by_id.get("shots.mix", []):
-        if isinstance(m["value"], dict) and m["value"]:
-            max_shot = max(m["value"].values())
-            max_type = max(m["value"], key=m["value"].get)
-            if max_shot > 40 and m["sample_size"] >= 15:
-                severity = (max_shot - 40) / 40
-                findings.append({
-                    "code": "low_variety",
-                    "player_id": m["player_id"],
-                    "severity": severity,
-                    "headline": f"Predictable shot selection ({max_type}: {max_shot:.0f}%)",
-                    "detail": f"Dominant stroke accounts for {max_shot:.0f}% of shots. Opponents can read your patterns.",
-                    "evidence": [m["metric_id"]],
-                    "drill": "Pattern-breaking drill: after 2 identical shots, forced switch to a different stroke."
-                })
-            elif max_shot < 25 and m["sample_size"] >= 15:
-                findings.append({
-                    "code": "good_variety",
-                    "player_id": m["player_id"],
-                    "severity": 0.1,
-                    "headline": "Good shot variety",
-                    "detail": f"No single stroke dominates (max {max_shot:.0f}%). This keeps opponents guessing.",
-                    "evidence": [m["metric_id"]],
-                    "drill": ""
-                })
-    
-    return findings
-
-
-def _shuttle_coach_to_ui_format(findings, metrics):
-    """Map shuttle-coach findings to UI CoachPanel format."""
-    strengths = []
-    weaknesses = []
-    improvements = []
-    drills = []
-    evidence = []
-    
-    # Sort by severity
-    findings = sorted(findings, key=lambda f: f.get("severity", 0), reverse=True)
-    
-    for f in findings:
-        severity = f.get("severity", 0)
-        headline = f.get("headline", "")
-        detail = f.get("detail", "")
-        drill = f.get("drill", "")
-        player_id = f.get("player_id", "")
-        
-        # Add player prefix for clarity
-        player_prefix = f"[{'Near' if player_id == 'player_1' else 'Far'}] " if player_id else ""
-        finding_text = f"{player_prefix}{headline} — {detail}"
-        
-        if severity < 0.3:
-            strengths.append(finding_text)
-        else:
-            weaknesses.append(finding_text)
-            improvements.append(finding_text)
-            if drill:
-                drills.append(drill)
-        
-        # Add evidence
-        evidence.append({
-            "finding": finding_text,
-            "metrics": [f"{m['metric_id']}: {m['value']}" for m in metrics if m["metric_id"] in f.get("evidence", [])]
-        })
-    
-    return {
-        "strengths": strengths,
-        "weaknesses": weaknesses,
-        "top_3_improvements": improvements[:3],
-        "recommended_drills": drills[:3],
-        "evidence": evidence[:10]  # Limit evidence to prevent huge reports
-    }
-
-
-def stage_shuttle_coach(debug_dir, shots, rallies, player_detections, shuttle_data):
-    """Run shuttle-coach analysis on exported parquet files."""
-    import pandas as pd
-    
-    player_ids = sorted(set(s.get("player_id", "player_1") for s in shots))
-    
-    # Create DataFrames
-    shots_df = pd.DataFrame(shots)
-    rallies_df = pd.DataFrame(rallies)
-    positions_df = pd.DataFrame(player_detections)
-    
-    # Ensure required columns exist
-    if "start_ts" not in shots_df.columns:
-        shots_df["start_ts"] = shots_df["frame"] / 30.0
-    if "court_x" not in positions_df.columns:
-        positions_df["court_x"] = np.nan
-        positions_df["court_y"] = np.nan
-    
-    # Convert side to player_id if needed (Colab uses 'side', backend uses 'player_id')
-    if "player_id" not in positions_df.columns and "side" in positions_df.columns:
-        side_map = {"near": "player_1", "far": "player_2"}
-        positions_df["player_id"] = positions_df["side"].map(side_map).fillna("player_1")
-    
-    # Compute metrics
-    metrics = []
-    metrics.extend(_shuttle_coach_recovery_time(positions_df, shots_df, player_ids))
-    metrics.extend(_shuttle_coach_shot_mix(shots_df, player_ids))
-    metrics.extend(_shuttle_coach_error_location(rallies_df, player_ids))
-    
-    # Derive findings
-    findings = _shuttle_coach_derive_findings(metrics)
-    
-    # Map to UI format
-    ui_format = _shuttle_coach_to_ui_format(findings, metrics)
-    
-    return {
-        "metrics": metrics,
-        "findings": findings,
-        "ui": ui_format
-    }
 
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
@@ -1397,7 +808,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
     from app.pipeline.analytics.tactical import TacticalAnalyticsStage
     from app.pipeline.analytics.technical import TechnicalAnalyticsStage
-    from app.coach.engine import CoachEngine
+    from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
 
     start_time = time.time()
@@ -1700,7 +1111,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
         # ── Coach recommendations (backend engine) ──
         print("\n[5/5] Coach recommendations...")
-        engine = CoachEngine()
         all_players = set(list(tactical.keys()) + list(fitness.keys()))
         if not all_players:
             all_players = {"player_1"}
@@ -1709,15 +1119,15 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                  "recommended_drills": [], "evidence": [], "rally_stats": None}
 
         for pid in sorted(all_players):
-            player_analytics = {
-                "tactical_analytics": tactical,
+            analytics = {
                 "fitness_analytics": fitness,
+                "tactical_analytics": tactical,
                 "footwork_analytics": footwork,
                 "court_analytics": court_analytics,
                 "_rallies_df": rallies_df,
                 "_shots_df": shots_df,
             }
-            result = engine.generate(player_analytics, pid)
+            result = analyze_from_pipeline(analytics, {}, player_id=pid)
             for key in coach:
                 if key in result:
                     if isinstance(coach[key], list):
@@ -1728,28 +1138,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         rally_stats = stage_rally_stats(shots, rallies)
         coach["rally_stats"] = rally_stats
         print(f"  {len(coach['strengths'])} strengths, {len(coach['weaknesses'])} weaknesses")
-
-        # ── Shuttle-coach advanced analytics ──
-        print("\n  Shuttle-coach analytics...")
-        try:
-            shuttle_coach_result = stage_shuttle_coach(debug_dir, shots, rallies, all_player_detections, all_shuttle)
-            sc_ui = shuttle_coach_result["ui"]
-            for w in sc_ui.get("weaknesses", []):
-                if w not in coach["weaknesses"]:
-                    coach["weaknesses"].append(w)
-            for s in sc_ui.get("strengths", []):
-                if s not in coach["strengths"]:
-                    coach["strengths"].append(s)
-            for d in sc_ui.get("recommended_drills", []):
-                if d and d not in coach["recommended_drills"]:
-                    coach["recommended_drills"].append(d)
-            for e in sc_ui.get("evidence", []):
-                if e not in coach["evidence"]:
-                    coach["evidence"].append(e)
-            coach["top_3_improvements"] = coach["weaknesses"][:3]
-            print(f"  Shuttle-coach: {len(shuttle_coach_result['findings'])} findings")
-        except Exception as e:
-            print(f"  Shuttle-coach skipped: {e}")
 
     # ── Build and save report ──
     report = _generate_report(court, players_data, shots, rallies, coach,

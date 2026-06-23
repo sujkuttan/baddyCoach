@@ -24,7 +24,7 @@ class TechnicalAnalyticsStage:
         # Try to use BST clip data for temporal analysis
         bst_clips = artifacts.get("bst_clips")
         if bst_clips:
-            technical = self._analyze_with_bst_clips(shots_df, bst_clips)
+            technical = self._analyze_with_bst_clips(shots_df, bst_clips, pose_df)
         else:
             # Fallback to single-frame evaluation
             technical = self._analyze_single_frame(shots_df, pose_df)
@@ -36,18 +36,18 @@ class TechnicalAnalyticsStage:
             metadata={"technical_assessment": technical}
         )
 
-    def _analyze_with_bst_clips(self, shots_df, bst_clips):
+    def _analyze_with_bst_clips(self, shots_df, bst_clips, pose_df):
         """Analyze shot technique using BST clip data for temporal analysis."""
         technical = {}
-        
+
         # Group shots by player and stroke type
         for player_id in shots_df["player_id"].unique():
             player_shots = shots_df[shots_df["player_id"] == player_id]
             player_assessments = {}
-            
+
             for stroke_type in player_shots["stroke_type"].unique():
                 type_shots = player_shots[player_shots["stroke_type"] == stroke_type]
-                
+
                 # Find corresponding BST clips for these shots
                 clip_scores = []
                 for _, shot in type_shots.iterrows():
@@ -55,8 +55,17 @@ class TechnicalAnalyticsStage:
                     # Look for BST clip that contains this frame
                     for clip_id, clip_data in bst_clips.items():
                         if frame in clip_data.get("frames", []):
+                            # Extract pose keypoints from pose_df for this clip
+                            clip_pose = []
+                            for clip_frame in clip_data.get("frames", []):
+                                pose_row = pose_df[(pose_df["frame"] == clip_frame) & (pose_df["player_id"] == player_id)]
+                                if len(pose_row) > 0:
+                                    raw = pose_row.iloc[0]["keypoints"]
+                                    kps = np.array(raw.tolist()) if hasattr(raw, 'tolist') else np.array(raw)
+                                    if kps.shape == (17, 3):
+                                        clip_pose.append(kps)
                             # Use clip-level analysis if available
-                            clip_score = self._analyze_clip(clip_data)
+                            clip_score = self._analyze_clip(clip_pose)
                             clip_scores.append(clip_score)
                             break
                 
@@ -110,19 +119,11 @@ class TechnicalAnalyticsStage:
 
         return technical
 
-    def _analyze_clip(self, clip_data):
+    def _analyze_clip(self, clip_pose):
         """Analyze a single BST clip for technical assessment."""
-        # Use multiple frames from the clip to assess technique
-        frames = clip_data.get("frames", [])
-        if not frames:
+        if not clip_pose or len(clip_pose) < 3:
             return 0.5
-        
-        # Analyze swing mechanics using pose data from multiple frames
-        pose_data = clip_data.get("pose", [])
-        if pose_data:
-            return self._analyze_swing_mechanics(pose_data)
-        else:
-            return 0.5
+        return self._analyze_swing_mechanics(clip_pose)
 
     def _analyze_swing_mechanics(self, pose_data):
         """Analyze swing using temporal angle trajectories across the clip."""

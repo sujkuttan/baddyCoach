@@ -6,8 +6,8 @@
 
 ```
 court_detection → player_tracking → shuttle_tracking → pose_estimation → 
-hit_frame_localization → stroke_classification → rally_segmentation → 
-player_attribution → court_position_analytics → footwork_analytics → 
+hit_frame_localization → stroke_classification → player_attribution → 
+rally_segmentation → court_position_analytics → footwork_analytics → 
 fitness_analytics → tactical_analytics → technical_analytics → coach_recommendations
 ```
 
@@ -15,14 +15,13 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - Backend: FastAPI with WebSocket progress tracking
 - Frontend: React + TypeScript + Vite dashboard
 - ML models: YOLOv8, RTMPose, TrackNetV3, BST (Badminton Stroke Transformer)
-- Coaching engine: YAML rule-based system (25+ rules in `backend/app/coach/rules.yaml`)
+- Coaching engine: YAML rule-based system (25+ rules in `backend/app/shuttle_coach/feedback/rules.yaml`)
 
 ## Critical Architecture Notes
 
-### ⚠️ Stage Ordering Bug
-- **Issue:** `rally_segmentation` (index 7) runs before `player_attribution` (index 8)
-- **Impact:** Rally winners systematically misattributed to player_1
-- **Fix:** Reorder stages or recompute winners after attribution (`backend/app/api/routes.py:79-80`)
+### ✅ Stage Ordering Bug (Fixed)
+- **Was:** `rally_segmentation` ran before `player_attribution`, misattributing winners to player_1
+- **Fix:** Reordered so `player_attribution` (index 6) runs before `rally_segmentation` (index 7), with rally alternation algorithm for winner determination
 
 ### ⚠️ BST Model Integration
 - **Issue:** BST likely not running due to sequence-length mismatch
@@ -41,10 +40,9 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Issue:** Throws away 7 of 8 output channels, no InpaintNet implemented
 - **Impact:** Zero shuttle detections poison hit/stroke/analytics downstream
 
-### ⚠️ RTMPose Bug
-- **Issue:** x/y rescale divisors swapped (`rtmpose.py:62-63`)
-- **Impact:** All joints mislocated, corrupts BST features and analytics
-- **Issue:** Hardcoded input name `"input"` vs `self.input_name`
+### ⚠️ RTMPose Bug (Fixed)
+- **Was:** x/y rescale divisors swapped, hardcoded `"input"` instead of `self.input_name`
+- **Fix:** Corrected dimension order (height=256, width=192) and `self.input_name` from model metadata
 
 ### ⚠️ Recovery Time Units
 - **Issue:** `threshold = 0.3` in pixels, but recovery distances in meters
@@ -107,7 +105,6 @@ python app/config/model_downloader.py
 ## Configuration & Environment
 
 ### ⚠️ Critical Configuration Issues
-- **Settings:** `BaseModel` not `BaseSettings` (`settings.py:5`) - no env/.env override
 - **GPU:** `gpu_enabled=False` by default, CPU-only `onnxruntime` in requirements
 - **Magic numbers:** Hardcoded FPS=30.0, court dims, thresholds scattered across ~6 files
 
@@ -124,16 +121,16 @@ GEMINI_API_KEY=your_api_key_here
 ### ⚠️ Model Loading Failures
 - TrackNet crashes silently to zeros if loading fails (`tracknet.py:223-227`)
 - BST falls back to rule-based classification when sequence mismatch
-- RTMPose transpose bug corrupts all pose-derived analytics
+- RTMPose transpose bug used to corrupt all pose-derived analytics (fixed)
 
 ### ⚠️ Data Quality Issues
-- Synthetic detections (`_generate_synthetic_detections`) presented as real
+- Synthetic detections (`_generate_synthetic_detections`) presented as real (removed — pipeline now fails early with error)
 - Rule-based strokes masquerading as model output
 - No data quality flags in coaching reports
 
 ### ⚠️ Architecture Conflicts
-- Two coaching engines (`coach/engine.py` vs `shuttle_coach/`) with overlapping purpose
-- Colab pipeline (3,400 lines) duplicates backend logic - high drift risk
+- Two coaching engines (`coach/engine.py` vs `shuttle_coach/`) with overlapping purpose (merged into shuttle_coach)
+- Colab pipeline (~2,000 lines) duplicates backend logic - high drift risk
 - No model abstraction layer - each stage hardcodes model imports
 
 ### ⚠️ Security & Reliability
@@ -154,7 +151,7 @@ ls -la BST/weight/bst_CG_JnB_bone_merged.pt
 
 ### Pipeline Issues
 - **Stage failures:** Check WebSocket progress at `/api/jobs/{job_id}/progress`
-- **Data quality:** Look for synthetic detections in report metadata
+- **Data quality:** no synthetic detections (removed — pipeline fails early with error)
 - **Performance:** CPU-only path means minutes-to-hours per video
 
 ### Test Failures
@@ -171,7 +168,7 @@ python -m pytest -m "not gpu and not model"
 ### Backend Entry Points
 - `backend/app/main.py` - FastAPI app
 - `backend/app/api/routes.py` - All API endpoints
-- `backend/app/coach/engine.py` - Coaching logic
+- `backend/app/shuttle_coach/engine.py` - Coaching logic
 - `backend/app/pipeline/base.py` - Pipeline base class
 
 ### Model Files
@@ -183,12 +180,12 @@ python -m pytest -m "not gpu and not model"
 ### Configuration
 - `backend/app/config/settings.py` - Model paths, thresholds
 - `backend/app/config/gpu_batch.py` - GPU batch sizing
-- `backend/app/coach/rules.yaml` - 25+ coaching rules
+- `backend/app/shuttle_coach/feedback/rules.yaml` - 25+ coaching rules
 
 ## Migration Notes
 
 ### ⚠️ Colab Pipeline Parity
-- Colab has 3,400-line reimplementation of backend
+- Colab has ~2,000-line reimplementation of backend
 - BST adapts to detected sequence length (`colab/pipeline.py:1348-1350`)
 - Coach rules duplicated (backend reads YAML, colab hardcodes)
 
@@ -201,8 +198,8 @@ python -m pytest -m "not gpu and not model"
 
 ### Critical (correctness)
 1. Fix BST seq_len wiring and weight path
-2. Reorder stages for correct rally winners
-3. Fix RTMPose x/y rescale transpose
+2. ~~Reorder stages for correct rally winners~~ (Done)
+3. ~~Fix RTMPose x/y rescale transpose~~ (Done)
 4. Fix recovery-time pixel/meter mismatch
 5. Respect `court.valid` flag
 6. Flag synthetic/fallback data in reports
@@ -212,12 +209,12 @@ python -m pytest -m "not gpu and not model"
 8. Use BST Top/Bottom output for attribution
 9. Compute analytics in meters via homography
 10. Replace per-frame YOLO with proper tracking
-11. Externalize config with pydantic-settings
+11. ~~Externalize config with pydantic-settings~~ (Done)
 12. Add auth + upload validation
 
 ### Nice-to-have
 13. Unify backend/colab pipelines
-14. Replace single-frame technique score
+14. ~~Replace single-frame technique score~~ (Done)
 15. Cross-session progress tracking
 16. Structured logging + data-quality score
 17. Promote grounded LLM narration
