@@ -65,10 +65,11 @@ class FootworkAnalyticsStage:
 
             # Convert pixel coordinates to court coordinates using homography
             homography = court.get("homography")
-            distance_px = self._compute_distance(com_trajectory, homography)
-            distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
+            distance = self._compute_distance(com_trajectory, homography)
+            # When homography is available, _compute_distance returns meters directly
+            distance_m = distance if homography is not None else (distance / px_per_m if px_per_m > 0 else distance)
             fps = float(config.processing_fps or settings.fps)
-            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, px_per_m, fps) if shots_df is not None else []
+            recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, fps, homography, px_per_m) if shots_df is not None else []
 
             metrics[player_id] = {
                 "distance_covered": float(distance_m),
@@ -118,7 +119,7 @@ class FootworkAnalyticsStage:
             filtered = [court_pts[0]]
             for i in range(1, len(court_pts)):
                 jump = np.sqrt(np.sum((court_pts[i] - filtered[-1])**2))
-                if jump < settings.footwork_jump_filter_pixels:
+                if jump < 2.0:
                     filtered.append(court_pts[i])
             if len(filtered) < 2:
                 return 0.0
@@ -141,7 +142,7 @@ class FootworkAnalyticsStage:
             return float(np.sum(distances))
 
     @staticmethod
-    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float, fps: float = settings.fps) -> list[float]:
+    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, fps: float, homography: np.ndarray | None = None, px_per_m: float = 1.0) -> list[float]:
         recovery_times = []
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
@@ -157,14 +158,19 @@ class FootworkAnalyticsStage:
             if len(com_points) == 0:
                 continue
 
-            # Convert threshold from meters to pixels
             threshold_m = settings.footwork_recovery_threshold_meters
-            threshold_px = threshold_m * px_per_m
-            
-            distances = np.sqrt(np.sum((com_points - base_position) ** 2, axis=1))
-            returned = np.where(distances < threshold_px)[0]
+
+            if homography is not None:
+                H = np.array(homography)
+                court_coms = [image_to_court(H, pt) for pt in com_points]
+                court_base = image_to_court(H, base_position)
+                distances = np.sqrt(np.sum((np.array(court_coms) - court_base) ** 2, axis=1))
+            else:
+                threshold_m *= px_per_m
+                distances = np.sqrt(np.sum((com_points - base_position) ** 2, axis=1))
+
+            returned = np.where(distances < threshold_m)[0]
             if len(returned) > 0:
-                # Convert frame count to seconds
                 recovery_times.append(float(returned[0]) / fps)
 
         return recovery_times
