@@ -317,6 +317,91 @@ rules:
     drill: "Shot library: practice adding 2 new shot types to your game."
     context_fields: ["tactical.unique_strokes_count"]
 
+  # ─── Technique Rules ────────────────────────────────────
+  - name: technique_smash_strong
+    check:
+      field: technique.smash_score
+      operator: ">"
+      threshold: 0.85
+      min_shots: technique.shot_count >= 3
+    recommendation: "Excellent smash technique ({technique.smash_score:.2f}) — full arm extension and good follow-through on overhead smashes."
+    category: strength
+    context_fields: ["technique.smash_score"]
+
+  - name: technique_smash_needs_work
+    check:
+      field: technique.smash_score
+      operator: "<"
+      threshold: 0.65
+      min_shots: technique.shot_count >= 3
+    recommendation: "Smash technique needs improvement ({technique.smash_score:.2f}). Focus on full elbow extension and engaging your core rotation for power."
+    category: weakness
+    drill: "Shadow smash: 3 sets of 10 full-arm swings with hip rotation emphasis."
+    context_fields: ["technique.smash_score"]
+
+  - name: technique_clear_weak
+    check:
+      field: technique.clear_score
+      operator: "<"
+      threshold: 0.6
+      min_shots: technique.shot_count >= 3
+    recommendation: "Clear technique is limited ({technique.clear_score:.2f}). Work on higher contact point and complete arm extension."
+    category: weakness
+    drill: "High-contact clears: practice making contact above and in front of the head."
+    context_fields: ["technique.clear_score"]
+
+  - name: technique_net_strong
+    check:
+      field: technique.net_score
+      operator: ">"
+      threshold: 0.8
+      min_shots: technique.shot_count >= 3
+    recommendation: "Strong net technique ({technique.net_score:.2f}) — good knee bend and soft wrist control on net shots."
+    category: strength
+    context_fields: ["technique.net_score"]
+
+  - name: technique_overall_good
+    check:
+      field: technique.overall
+      operator: ">"
+      threshold: 0.75
+      min_shots: technique.shot_count >= 10
+    recommendation: "Overall technique score of {technique.overall:.2f} — solid fundamentals across all stroke types."
+    category: strength
+    context_fields: ["technique.overall", "technique.shot_count"]
+
+  - name: technique_overall_needs_work
+    check:
+      field: technique.overall
+      operator: "<"
+      threshold: 0.55
+      min_shots: technique.shot_count >= 10
+    recommendation: "Overall technique score is {technique.overall:.2f}. Review fundamentals including grip, stance, and swing mechanics."
+    category: weakness
+    drill: "Fundamentals check: slow-motion practice recording all stroke types with coach feedback."
+    context_fields: ["technique.overall", "technique.shot_count"]
+
+  - name: technique_drive_weak
+    check:
+      field: technique.drive_score
+      operator: "<"
+      threshold: 0.6
+      min_shots: technique.shot_count >= 3
+    recommendation: "Drive technique is below par ({technique.drive_score:.2f}). Use more forearm rotation and keep the racquet head up."
+    category: weakness
+    drill: "Wall drives: 3-minute continuous drive rally against a wall focusing on wrist snap."
+    context_fields: ["technique.drive_score"]
+
+  - name: technique_drop_strong
+    check:
+      field: technique.drop_score
+      operator: ">"
+      threshold: 0.8
+      min_shots: technique.shot_count >= 3
+    recommendation: "Excellent drop technique ({technique.drop_score:.2f}). Deceptive and well-disguised from your overhead preparation."
+    category: strength
+    context_fields: ["technique.drop_score"]
+
   # ─── Comparison Rules (player vs opponent) ─────────────────
   - name: opponent_smash_weak
     check:

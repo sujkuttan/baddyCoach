@@ -181,6 +181,13 @@ def test_technical_analytics_evaluates_shots(tmp_job_dir):
     court_data = {"court_length": 13.4, "court_width": 5.18}
     store.set("court", court_data)
 
+    bst_clips = {
+        "clip_0": {"frames": [0, 1, 2, 3, 4]},
+        "clip_1": {"frames": [8, 9, 10, 11, 12]},
+        "clip_2": {"frames": [18, 19, 20, 21, 22]},
+    }
+    store.set("bst_clips", bst_clips)
+
     stage = TechnicalAnalyticsStage()
     result = stage.run(store, config)
 

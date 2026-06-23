@@ -15,7 +15,7 @@ from .court import (
 from .utils import (
     get_video_info, frame_generator, detect_court_from_frame,
     compute_court_homography,
-    _rule_based_shuttle_predict, _evaluate_shot,
+    _rule_based_shuttle_predict,
     _infer_end_reason, _is_rally_ending_shot,
     stage_rally_stats,
 )

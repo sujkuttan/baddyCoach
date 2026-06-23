@@ -2,6 +2,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from app.shuttle_coach.loader import load_match, capabilities
 from app.shuttle_coach.events import MatchModel
 from app.shuttle_coach.metrics import run_metrics
@@ -73,6 +75,7 @@ def analyze_from_pipeline(
         "rally_stats": _compute_rally_stats(analytics, player_id),
         "court_analysis": _compute_court_analysis(analytics, player_id),
         "opponent": _compute_opponent_data(analytics, player_id),
+        "technique": _compute_technique_data(analytics, player_id),
     }
 
     yaml_findings = evaluate_yaml_rules(player_analytics, player_id)
@@ -190,6 +193,21 @@ def _compute_court_analysis(analytics: dict, player_id: str) -> dict:
         "left_pct": left / total,
         "right_pct": right / total,
     }
+
+
+def _compute_technique_data(analytics: dict, player_id: str) -> dict:
+    tech = analytics.get("technical_analytics", {}).get(player_id, {})
+    if not tech:
+        return {"overall": 0, "shot_count": 0}
+    scores = {}
+    avg_scores = []
+    for stype, data in tech.items():
+        score = data.get("avg_score", 0)
+        scores[f"{stype}_score"] = score
+        avg_scores.append(score)
+    scores["overall"] = float(np.mean(avg_scores)) if avg_scores else 0
+    scores["shot_count"] = sum(data.get("shot_count", 0) for data in tech.values())
+    return scores
 
 
 def _compute_opponent_data(analytics: dict, player_id: str) -> dict:

@@ -144,20 +144,6 @@ class TestSharedUtilsModule:
         result = _rule_based_shuttle_predict(shuttle_df, 0, 1280, 720)
         assert result == "clear"
 
-    def test_evaluate_shot_smash(self):
-        from app.pipeline.shared.utils import _evaluate_shot
-        kps = np.zeros((17, 3), dtype=np.float32)
-        kps[5] = [100, 100, 0.9]  # shoulder
-        kps[9] = [100, 200, 0.9]  # wrist (below shoulder)
-        score = _evaluate_shot("smash", kps)
-        assert 0.0 <= score <= 1.0
-
-    def test_evaluate_shot_invalid_shape(self):
-        from app.pipeline.shared.utils import _evaluate_shot
-        kps = np.zeros((10, 3), dtype=np.float32)
-        score = _evaluate_shot("smash", kps)
-        assert score == 0.5
-
     def test_infer_end_reason_winner(self):
         from app.pipeline.shared.utils import _infer_end_reason
         assert _infer_end_reason("smash", 0.8) == "winner"

@@ -152,21 +152,6 @@ class TestSharedCourtConsistency:
         assert 0.0 <= cy <= 5.18 or abs(cy) < 2
 
 
-# ─── Phase 4.2: Test shared utils consistency ───────────────────────────────
-
-class TestSharedUtilsConsistency:
-    """Verify shared utils produce consistent results."""
-
-    def test_evaluate_shot_consistency(self):
-        from app.pipeline.shared.utils import _evaluate_shot
-
-        kps = np.zeros((17, 3), dtype=np.float32)
-        kps[5] = [100, 100, 0.9]
-        kps[9] = [100, 200, 0.9]
-
-        score = _evaluate_shot("smash", kps)
-        assert 0.0 <= score <= 1.0
-
     def test_rule_based_shuttle_consistency(self):
         from app.pipeline.shared.utils import _rule_based_shuttle_predict
 

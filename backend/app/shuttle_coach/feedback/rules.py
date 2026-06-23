@@ -212,6 +212,7 @@ def evaluate_yaml_rules(analytics: dict, player_id: str) -> list[Finding]:
         "rally_stats": analytics.get("rally_stats", {}),
         "court_analysis": analytics.get("court_analysis", {}),
         "opponent": analytics.get("opponent", {}),
+        "technique": analytics.get("technique", {}),
     }
 
     for rule in rules:
