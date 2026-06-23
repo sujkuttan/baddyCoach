@@ -24,7 +24,7 @@ def run_pipeline(job_id: str):
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
     from app.pipeline.analytics.tactical import TacticalAnalyticsStage
     from app.pipeline.analytics.technical import TechnicalAnalyticsStage
-    from app.coach.engine import CoachEngine
+    from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
     from app.api.websocket import ws_manager
     from app.pipeline.shared.utils import get_video_info
@@ -130,7 +130,6 @@ def run_pipeline(job_id: str):
     except Exception:
         pass
 
-    engine = CoachEngine()
     all_players = set(list(analytics["tactical_analytics"].keys()) + list(analytics["fitness_analytics"].keys()))
     if not all_players:
         all_players = {"player_1"}
@@ -140,9 +139,7 @@ def run_pipeline(job_id: str):
         "recommended_drills": [], "evidence": [], "rally_stats": None,
     }
     for pid in sorted(all_players):
-        player_analytics = dict(analytics)
-        player_analytics["shuttle_coach_metrics"] = shuttle_metrics.get(pid, {})
-        result = engine.generate(player_analytics, player_id=pid)
+        result = analyze_from_pipeline(analytics, shuttle_metrics, player_id=pid)
         report["strengths"].extend(result["strengths"])
         report["weaknesses"].extend(result["weaknesses"])
         report["top_3_improvements"].extend(result["top_3_improvements"])

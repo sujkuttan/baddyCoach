@@ -1,4 +1,7 @@
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+import re
 
 from app.shuttle_coach.metrics.base import MetricResult
 
@@ -66,13 +69,8 @@ def _check_high_unforced(results: list[MetricResult]) -> list[Finding]:
 
 
 def derive_findings(results_by_id: dict[str, list[MetricResult]]) -> list[Finding]:
-    """Derive findings from metrics grouped by metric_id.
-
-    results_by_id is keyed by metric_id (e.g. 'movement.recovery_time'),
-    with values being lists of MetricResult (one per player).
-    """
+    """Derive findings from metrics grouped by metric_id."""
     findings: list[Finding] = []
-    # Flatten all results into a single list for evaluation
     all_results = []
     for results in results_by_id.values():
         all_results.extend(results)
@@ -80,4 +78,165 @@ def derive_findings(results_by_id: dict[str, list[MetricResult]]) -> list[Findin
     findings.extend(_check_slow_recovery(all_results))
     findings.extend(_check_weak_shots(all_results))
     findings.extend(_check_high_unforced(all_results))
+    return findings
+
+
+# ─── YAML Rule Evaluation ─────────────────────────────────────
+
+_YAML_RULES_CACHE: list[dict] | None = None
+
+
+def _load_yaml_rules(rules_path: Path | None = None) -> list[dict]:
+    global _YAML_RULES_CACHE
+    if _YAML_RULES_CACHE is not None:
+        return _YAML_RULES_CACHE
+    import yaml
+    if rules_path is None:
+        rules_path = Path(__file__).parent / "rules.yaml"
+    with open(rules_path) as f:
+        _YAML_RULES_CACHE = yaml.safe_load(f)["rules"]
+    return _YAML_RULES_CACHE
+
+
+def _get_nested(data: dict, path: str):
+    """Dot-notation field access matching coach/engine.py semantics."""
+    keys = path.split(".")
+    current = data
+    for key in keys:
+        if current is None:
+            return 0
+        if isinstance(current, dict):
+            current = current.get(key, 0)
+        elif isinstance(current, (list, tuple)):
+            try:
+                idx = int(key)
+                current = current[idx] if 0 <= idx < len(current) else 0
+            except (ValueError, IndexError):
+                return 0
+        else:
+            return 0
+    return current if current is not None else 0
+
+
+def _compare(actual, operator: str, expected) -> bool:
+    try:
+        actual = float(actual)
+        expected = float(expected)
+    except (TypeError, ValueError):
+        if operator == "==":
+            return str(actual) == str(expected)
+        elif operator == "!=":
+            return str(actual) != str(expected)
+        return False
+    if operator == "<":
+        return actual < expected
+    elif operator == ">":
+        return actual > expected
+    elif operator == "<=":
+        return actual <= expected
+    elif operator == ">=":
+        return actual >= expected
+    elif operator == "==":
+        return actual == expected
+    elif operator == "!=":
+        return actual != expected
+    return False
+
+
+def _format_recommendation(template: str, analytics: dict) -> str:
+    def replacer(match):
+        field_path = match.group(1)
+        value = _get_nested(analytics, field_path)
+        if isinstance(value, (int, float)):
+            fmt = match.group(2) if match.group(2) else ".1f"
+            try:
+                return format(value, fmt)
+            except (ValueError, KeyError):
+                return str(value)
+        return str(value)
+    return re.sub(r'\{([^}:]+)(?::([^}]+))?\}', replacer, template)
+
+
+def _evaluate_rule(rule: dict, analytics: dict) -> bool:
+    check = rule.get("check", {})
+    if not check:
+        return False
+
+    min_shots_expr = check.get("min_shots")
+    if min_shots_expr:
+        parts = min_shots_expr.split()
+        if len(parts) == 3:
+            field_path, operator, value_str = parts
+            try:
+                threshold = float(value_str)
+            except ValueError:
+                return False
+            field_value = _get_nested(analytics, field_path)
+            if not _compare(field_value, operator, threshold):
+                return False
+
+    field_path = check.get("field")
+    operator = check.get("operator")
+    threshold = check.get("threshold", check.get("value"))
+
+    if not field_path or not operator:
+        return False
+
+    value = _get_nested(analytics, field_path)
+    return _compare(value, operator, threshold)
+
+
+def _category_severity(category: str) -> float:
+    return {"strength": 0.3, "weakness": 0.7, "insight": 0.5}.get(category, 0.5)
+
+
+def evaluate_yaml_rules(analytics: dict, player_id: str) -> list[Finding]:
+    """Evaluate YAML-defined rules against analytics data.
+
+    Args:
+        analytics: dict with keys: tactical, fitness, footwork, rally_stats,
+                   court_analysis, opponent
+        player_id: player identifier
+
+    Returns:
+        List of Finding objects from matching rules.
+    """
+    rules = _load_yaml_rules()
+    findings = []
+
+    # Build the nested dict the same way coach/engine.py does
+    player_analytics = {
+        "tactical": analytics.get("tactical", {}),
+        "fitness": analytics.get("fitness", {}),
+        "footwork": analytics.get("footwork", {}),
+        "rally_stats": analytics.get("rally_stats", {}),
+        "court_analysis": analytics.get("court_analysis", {}),
+        "opponent": analytics.get("opponent", {}),
+    }
+
+    for rule in rules:
+        try:
+            if not _evaluate_rule(rule, player_analytics):
+                continue
+
+            rec = _format_recommendation(rule["recommendation"], player_analytics)
+            rec_with_player = f"[{player_id}] {rec}"
+
+            evidence = [f"player: {player_id}"]
+            for cf in rule.get("context_fields", []):
+                val = _get_nested(player_analytics, cf)
+                if isinstance(val, float):
+                    evidence.append(f"{cf}: {val:.3f}")
+
+            findings.append(Finding(
+                code=rule["name"],
+                player_id=player_id,
+                severity=_category_severity(rule.get("category", "insight")),
+                headline=f"{rule['category'].title()}: {rule['name']}",
+                detail=rec_with_player,
+                evidence=evidence,
+            ))
+        except Exception:
+            continue
+
     return findings

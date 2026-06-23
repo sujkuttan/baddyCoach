@@ -40,14 +40,12 @@ class ShuttleTrackingStage:
         Model loading stays local to this stage (not via shared.models.setup_models)
         to keep the colab pipeline's self-contained model loading approach intact.
         """
-        from app.models.tracknet import TrackNetV3
-        from app.config.settings import settings
+        from app.pipeline.shared.models import get_tracknet
 
-        model_path = str(settings.tracknet_model_path)
-        inpaintnet_path = str(settings.inpaintnet_model_path) if settings.inpaintnet_model_path and Path(settings.inpaintnet_model_path).exists() else None
-        device = settings.device
-
-        model = TrackNetV3(model_path, device=device, inpaintnet_path=inpaintnet_path)
+        model = get_tracknet()
+        if model is None:
+            logger.error("TrackNet model not available")
+            return []
 
         original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (settings.default_frame_width, settings.default_frame_height)
         predictions = model.predict_batch(frames, original_size=original_size)

@@ -16,7 +16,7 @@ from app.pipeline.analytics.footwork import FootworkAnalyticsStage
 from app.pipeline.analytics.fitness import FitnessAnalyticsStage
 from app.pipeline.analytics.tactical import TacticalAnalyticsStage
 from app.pipeline.analytics.technical import TechnicalAnalyticsStage
-from app.coach.engine import CoachEngine
+from app.shuttle_coach.engine import analyze_from_pipeline
 from app.storage.artifacts import ArtifactStore
 
 
@@ -79,7 +79,6 @@ def test_full_pipeline_mock(tmp_job_dir):
         "footwork_analytics": store.get("footwork_analytics") or {},
     }
 
-    engine = CoachEngine()
-    report = engine.generate(analytics, player_id="player_1")
+    report = analyze_from_pipeline(analytics, shuttle_metrics={}, player_id="player_1")
     assert "strengths" in report
     assert "evidence" in report

@@ -265,7 +265,8 @@ class BSTClassifier:
 
 def normalize_shuttlecock(arr: np.ndarray, v_width: int, v_height: int) -> np.ndarray:
     """Normalize shuttlecock position by video resolution."""
-    return arr / np.array([v_width, v_height])
+    from app.pipeline.shared.bst_preproc import normalize_shuttlecock as _ns
+    return _ns(arr, v_width, v_height)
 
 
 def normalize_joints(
@@ -273,19 +274,6 @@ def normalize_joints(
     bbox: np.ndarray,
     center_align: bool = True
 ) -> np.ndarray:
-    """Normalize joints by bounding box diagonal distance."""
-    diag = np.linalg.norm(bbox[:, 2:] - bbox[:, :2], axis=-1, keepdims=True)
-    diag = np.where(diag == 0, 1, diag)
-
-    arr_x = arr[:, :, 0]
-    arr_y = arr[:, :, 1]
-    x_normalized = np.where(arr_x != 0.0, (arr_x - bbox[:, None, 0]) / diag, 0.0)
-    y_normalized = np.where(arr_y != 0.0, (arr_y - bbox[:, None, 1]) / diag, 0.0)
-
-    if center_align:
-        center = (bbox[:, :2] + bbox[:, 2:]) / 2
-        c_normalized = (center - bbox[:, :2]) / diag
-        x_normalized -= c_normalized[:, None, 0]
-        y_normalized -= c_normalized[:, None, 1]
-
-    return np.stack((x_normalized, y_normalized), axis=-1)
+    """Normalize joints by bounding box diagonal distance (batched)."""
+    from app.pipeline.shared.bst_preproc import normalize_joints_batched
+    return normalize_joints_batched(arr, bbox, center_align)

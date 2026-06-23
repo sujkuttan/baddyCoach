@@ -55,12 +55,10 @@ class PlayerTrackingStage:
 
     def _run_yolov8(self, frames: list[np.ndarray]) -> list[dict]:
         """Run YOLOv8 on video frames."""
-        from app.models.yolov8 import YOLOv8Tracker
-        from app.config.settings import settings
-
-        model_path = str(settings.yolov8_model_path) if settings.yolov8_model_path else None
-        device = settings.device
-        tracker = YOLOv8Tracker(model_path, conf_threshold=0.5, device=device)
+        from app.pipeline.shared.models import get_yolov8
+        tracker = get_yolov8()
+        if tracker is None:
+            return []
 
         results = tracker.track_frames(frames)
 

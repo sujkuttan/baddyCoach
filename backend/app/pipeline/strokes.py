@@ -3,57 +3,7 @@ import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
-
-BONE_PAIRS = [
-    (0,1),(0,2),(1,2),(1,3),(2,4),
-    (3,5),(4,6),
-    (5,7),(7,9),(6,8),(8,10),
-    (5,6),(5,11),(6,12),(11,12),
-    (11,13),(13,15),(12,14),(14,16),
-]
-
-
-def _normalize_joints_bstdiag(coords: np.ndarray, det_bbox: tuple | None = None) -> np.ndarray:
-    """Normalize joints using bbox diagonal with center_align.
-
-    Matches the official BST ``normalize_joints`` preprocessing:
-    - Origin = top-left of the player bounding box
-    - Scale = diagonal distance of the bounding box
-    - center_align=True shifts origin to bbox center
-
-    Args:
-        coords: (17, 2) keypoints in pixel coords
-        det_bbox: optional (x1, y1, x2, y2) detection bbox for stable normalization.
-                  If None, falls back to keypoint bbox (less stable).
-
-    Returns:
-        (17, 2) normalized joints, range roughly [-0.X, 0.X]
-    """
-    if det_bbox is not None:
-        bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
-        bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
-    else:
-        bbox_min = coords.min(axis=0)
-        bbox_max = coords.max(axis=0)
-
-    diag = np.linalg.norm(bbox_max - bbox_min)
-    if diag < 1e-6:
-        diag = 1.0
-
-    normalized = (coords - bbox_min) / diag
-    center = (bbox_min + bbox_max) / 2.0
-    normalized -= (center - bbox_min) / diag
-    return normalized.astype(np.float32)
-
-
-def _create_bones(joints: np.ndarray) -> np.ndarray:
-    """Create bone vectors from joint positions. joints: (17, 2) -> bones: (19, 2)"""
-    bones = []
-    for s, e in BONE_PAIRS:
-        sj, ej = joints[s], joints[e]
-        bones.append(ej - sj if np.any(sj != 0) and np.any(ej != 0) else np.zeros(2, dtype=np.float32))
-    return np.array(bones, dtype=np.float32)
-
+from app.pipeline.shared.bst_preproc import normalize_joints, create_bones, BONE_PAIRS
 
 
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
@@ -153,7 +103,7 @@ def _build_clip(
                 coords = kps[:, :2]
                 # Use detection bbox for stable normalization (issue 3 fix)
                 det_bbox = det_bbox_lookup.get(pid, {}).get(frame)
-                joints[t, p_idx] = _normalize_joints_bstdiag(coords, det_bbox=det_bbox)
+                joints[t, p_idx] = normalize_joints(coords, det_bbox=det_bbox)
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
                 feet_y = max(coords[15, 1], coords[16, 1])
@@ -168,7 +118,7 @@ def _build_clip(
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     for i in range(2):
         for t in range(seq_len):
-            bones[t, i] = _create_bones(joints[t, i])
+            bones[t, i] = create_bones(joints[t, i])
     JnB = np.concatenate([joints, bones], axis=-2)
     return {
         'JnB': JnB.reshape(seq_len, 2, -1),
@@ -192,11 +142,12 @@ class StrokeClassificationStage:
         pose_df = artifacts.get_parquet("pose")
         court = artifacts.get("court") or {}
 
-        from app.models.bst import BSTClassifier
+        from app.pipeline.shared.models import get_bst
         from app.config.settings import settings
 
-        model_path = str(settings.bst_model_path) if settings.bst_model_path else None
-        classifier = BSTClassifier(model_path, device=settings.device)
+        classifier = get_bst()
+        if classifier is None:
+            return StageResult.from_error("BST model not available")
 
         court_length = court.get("court_length", COURT_LENGTH)
         court_width = court.get("court_width", COURT_WIDTH)
