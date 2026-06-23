@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # Environment variables
     gemini_api_key: str | None = None
+    gemini_model: str = "gemini-2.0-flash"
     fps: float = 30.0
     court_length: float = 13.4
     court_width: float = 5.18
