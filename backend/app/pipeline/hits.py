@@ -4,19 +4,13 @@ from scipy.signal import find_peaks
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
+from app.config.settings import settings
 
 
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
     input_keys = ["shuttle", "pose"]
     output_keys = ["hits"]
-
-    TRAJECTORY_CHANGE_WEIGHT = 0.4
-    SPEED_PEAK_WEIGHT = 0.3
-    PROXIMITY_WEIGHT = 0.2
-    SWING_WEIGHT = 0.1
-
-    HIT_CONFIDENCE_THRESHOLD = 0.3
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
         shuttle_df = artifacts.get_parquet("shuttle")
@@ -31,15 +25,15 @@ class HitFrameLocalizationStage:
         swing_score = self._compute_swing_peaks(pose_df, n_frames=len(shuttle_df)) if pose_df is not None else np.zeros(len(shuttle_df))
 
         combined = (
-            self.TRAJECTORY_CHANGE_WEIGHT * trajectory_score +
-            self.SPEED_PEAK_WEIGHT * speed_score +
-            self.PROXIMITY_WEIGHT * proximity_score +
-            self.SWING_WEIGHT * swing_score
+            settings.hit_trajectory_weight * trajectory_score +
+            settings.hit_speed_weight * speed_score +
+            settings.hit_proximity_weight * proximity_score +
+            settings.hit_swing_weight * swing_score
         )
 
         peaks, _ = find_peaks(
             combined,
-            height=self.HIT_CONFIDENCE_THRESHOLD,
+            height=settings.hit_confidence_threshold,
         )
         hit_frames = peaks
 
@@ -52,8 +46,8 @@ class HitFrameLocalizationStage:
             })
 
         if len(hits) > 1:
-            fps = float(config.processing_fps or 30.0)
-            min_gap = max(3, int(fps * 0.1))  # ~100ms minimum between distinct hits
+            fps = float(config.processing_fps or settings.fps)
+            min_gap = max(3, int(fps * settings.hit_dedup_gap_seconds))
             hits = sorted(hits, key=lambda h: h["frame"])
             deduped = [hits[0]]
             for h in hits[1:]:

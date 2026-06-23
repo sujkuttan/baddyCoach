@@ -8,6 +8,8 @@ import pandas as pd
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
+from app.config.settings import settings
+
 from .court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT, COURT_MODEL,
     _detect_court_color_line, _correct_court_points,
@@ -261,11 +263,11 @@ def _is_rally_ending_shot(stroke_type: str, confidence: float, next_gap: int) ->
     2. It's a high-confidence winner (smash/drop/kill with conf >= 0.6) AND gap > 25 frames
     3. It's a net shot AND gap > 15 frames (net shots often end rallies quickly)
     """
-    if next_gap > 45:
+    if next_gap > settings.rally_ending_gap_primary:
         return True
-    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.6 and next_gap > 25:
+    if stroke_type in ("smash", "drop", "kill") and confidence >= settings.rally_ending_high_conf_min and next_gap > settings.rally_ending_gap_high_conf:
         return True
-    if stroke_type in ("net_shot",) and next_gap > 15:
+    if stroke_type in ("net_shot",) and next_gap > settings.rally_ending_gap_net:
         return True
     return False
 

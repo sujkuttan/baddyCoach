@@ -6,6 +6,7 @@ from app.pipeline.shared.court import (
     image_to_court, foot_midpoint_from_pose, foot_point_from_bbox,
     COURT_LENGTH, COURT_WIDTH,
 )
+from app.config.settings import settings
 
 
 class PlayerAttributionStage:
@@ -35,7 +36,7 @@ class PlayerAttributionStage:
         if court_corners and len(court_corners) >= 3:
             court_mid_y = (court_corners[0][1] + court_corners[2][1]) / 2
         else:
-            court_mid_y = 360
+            court_mid_y = settings.default_frame_height / 2
 
         H = None
         if "homography" in court and court["homography"] is not None:
@@ -46,7 +47,7 @@ class PlayerAttributionStage:
             shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
             shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
 
-        LOOKBACK = 5
+        LOOKBACK = settings.attribution_lookback_frames
 
         def _shuttle_direction_at(frame):
             y_at = shuttle_y_map.get(frame)

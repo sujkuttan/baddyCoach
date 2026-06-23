@@ -4,6 +4,7 @@ import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
 from app.pipeline.shared.logging import logger
+from app.config.settings import settings
 
 COURT_WIDTH_M = COURT_WIDTH
 COURT_LENGTH_M = COURT_LENGTH
@@ -66,7 +67,7 @@ class FootworkAnalyticsStage:
             homography = court.get("homography")
             distance_px = self._compute_distance(com_trajectory, homography)
             distance_m = distance_px / px_per_m if px_per_m > 0 else distance_px
-            fps = float(config.processing_fps or 30.0)
+            fps = float(config.processing_fps or settings.fps)
             recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, px_per_m, fps) if shots_df is not None else []
 
             metrics[player_id] = {
@@ -117,7 +118,7 @@ class FootworkAnalyticsStage:
             filtered = [court_pts[0]]
             for i in range(1, len(court_pts)):
                 jump = np.sqrt(np.sum((court_pts[i] - filtered[-1])**2))
-                if jump < 500:
+                if jump < settings.footwork_jump_filter_pixels:
                     filtered.append(court_pts[i])
             if len(filtered) < 2:
                 return 0.0
@@ -130,7 +131,7 @@ class FootworkAnalyticsStage:
             filtered = [com_trajectory[0]]
             for i in range(1, len(com_trajectory)):
                 jump = np.sqrt(np.sum((com_trajectory[i] - com_trajectory[i-1])**2))
-                if jump < 500:
+                if jump < settings.footwork_jump_filter_pixels:
                     filtered.append(com_trajectory[i])
             if len(filtered) < 2:
                 return 0.0
@@ -140,7 +141,7 @@ class FootworkAnalyticsStage:
             return float(np.sum(distances))
 
     @staticmethod
-    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float, fps: float = 30.0) -> list[float]:
+    def _compute_recovery_times(pose_df: pd.DataFrame, shots_df: pd.DataFrame, base_position: np.ndarray, px_per_m: float, fps: float = settings.fps) -> list[float]:
         recovery_times = []
         for _, shot in shots_df.iterrows():
             frame = int(shot["frame"])
@@ -148,7 +149,7 @@ class FootworkAnalyticsStage:
             
             # Only compute recovery for the player who hit the shot
             player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
-            after_shots = player_poses[player_poses["frame"] > frame].head(30)
+            after_shots = player_poses[player_poses["frame"] > frame].head(settings.footwork_recovery_lookahead_frames)
             if len(after_shots) == 0:
                 continue
 
@@ -157,7 +158,7 @@ class FootworkAnalyticsStage:
                 continue
 
             # Convert threshold from meters to pixels
-            threshold_m = 0.3
+            threshold_m = settings.footwork_recovery_threshold_meters
             threshold_px = threshold_m * px_per_m
             
             distances = np.sqrt(np.sum((com_points - base_position) ** 2, axis=1))

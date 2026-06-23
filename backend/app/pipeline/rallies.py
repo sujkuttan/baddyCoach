@@ -3,6 +3,7 @@ import numpy as np
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
+from app.config.settings import settings
 
 
 def _compute_rally_winner_after_attribution(rally_df, shots_df):
@@ -43,8 +44,15 @@ class RallySegmentationStage:
     input_keys = ["shots"]
     output_keys = ["rallies"]
 
-    DEFAULT_GAP_THRESHOLD = 60
-    DEFAULT_MIN_SHOTS = 3
+from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
+from app.config.settings import settings
+
+
+class RallySegmentationStage:
+    name = "rally_segmentation"
+    input_keys = ["shots"]
+    output_keys = ["rallies"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig,
             gap_threshold: int | None = None, min_shots: int | None = None) -> StageResult:
@@ -52,8 +60,8 @@ class RallySegmentationStage:
         if shots_df is None or len(shots_df) == 0:
             return StageResult.success(metadata={"rally_count": 0})
 
-        threshold = gap_threshold or self.DEFAULT_GAP_THRESHOLD
-        min_s = min_shots or self.DEFAULT_MIN_SHOTS
+        threshold = gap_threshold or settings.rally_gap_threshold
+        min_s = min_shots or settings.rally_min_shots
         shots_df = shots_df.sort_values("frame").reset_index(drop=True)
 
         rallies = []

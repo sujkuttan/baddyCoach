@@ -109,10 +109,10 @@ class CourtKeypointDetector:
             return corners
 
         h, w = frame.shape[:2]
-        mx = int(w * 0.08)
+        mx = int(w * settings.court_corner_margin_x)
         return [
-            (mx, int(h * 0.72)), (w - mx, int(h * 0.72)),  # bl, br
-            (mx, int(h * 0.28)), (w - mx, int(h * 0.28)),  # tl, tr
+            (mx, int(h * settings.court_corner_bottom_y)), (w - mx, int(h * settings.court_corner_bottom_y)),  # bl, br
+            (mx, int(h * settings.court_corner_top_y)), (w - mx, int(h * settings.court_corner_top_y)),  # tl, tr
         ]
 
 
@@ -140,10 +140,10 @@ class CourtDetectionStage:
         # If geometric validation failed or no corners found, fallback to fixed params
         if not valid and frame is not None:
             h, w = frame.shape[:2]
-            mx = int(w * 0.08)
+            mx = int(w * settings.court_corner_margin_x)
             corners = [
-                (mx, int(h * 0.72)), (w - mx, int(h * 0.72)),  # bl, br
-                (mx, int(h * 0.28)), (w - mx, int(h * 0.28)),  # tl, tr
+                (mx, int(h * settings.court_corner_bottom_y)), (w - mx, int(h * settings.court_corner_bottom_y)),  # bl, br
+                (mx, int(h * settings.court_corner_top_y)), (w - mx, int(h * settings.court_corner_top_y)),  # tl, tr
             ]
             corrected = _correct_court_points(corners)
             H, valid = compute_homography(corrected)

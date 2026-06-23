@@ -4,6 +4,7 @@ import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
 from app.pipeline.shared.logging import logger
+from app.config.settings import settings
 
 ZONE_NAMES = [
     "front_left", "front_center", "front_right",
@@ -32,7 +33,7 @@ class CourtPositionAnalyticsStage:
         shuttle_df = artifacts.get_parquet("shuttle")
         shots_df = artifacts.get_parquet("shots")
 
-        vid_w, vid_h = 1280, 720
+        vid_w, vid_h = settings.default_frame_width, settings.default_frame_height
         video_res = artifacts.get("video_resolution")
         if video_res:
             vid_w = float(video_res.get("width", vid_w))

@@ -3,6 +3,7 @@ from pathlib import Path
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT
+from app.config.settings import settings
 
 
 class PlayerTrackingStage:
@@ -34,7 +35,7 @@ class PlayerTrackingStage:
         if court_corners:
             court_mid_y = (court_corners[0][1] + court_corners[2][1]) / 2
         else:
-            court_mid_y = 300
+            court_mid_y = settings.default_frame_height / 2
 
         if detections:
             return self._process_detections(artifacts, detections, court_mid_y)
@@ -44,7 +45,10 @@ class PlayerTrackingStage:
             if detections:
                 detections = self._filter_by_court_region(detections, court_corners)
             if not detections:
-                detections = self._generate_synthetic_detections(frames, court_mid_y)
+                return StageResult.from_error(
+                    "YOLOv8 failed to detect any players in the video frames. "
+                    "Check video quality, camera angle, or model checkpoint."
+                )
             return self._process_detections(artifacts, detections, court_mid_y)
 
         return StageResult.from_error("No frames or detections provided")
@@ -99,22 +103,6 @@ class PlayerTrackingStage:
                 filtered.append(det)
         return filtered if filtered else detections
 
-    def _generate_synthetic_detections(self, frames: list[np.ndarray], court_mid_y: float) -> list[dict]:
-        """Generate synthetic player detections when YOLOv8 fails."""
-        detections = []
-        h, w = frames[0].shape[:2] if frames else (720, 1280)
-
-        for i in range(0, len(frames), 5):
-            bbox_near = [int(w * 0.3), int(court_mid_y + 20), int(w * 0.3 + 100), int(court_mid_y + 180)]
-            bbox_far = [int(w * 0.6), int(court_mid_y - 180), int(w * 0.6 + 100), int(court_mid_y - 20)]
-
-            near_detection = {"frame": i, "bbox": bbox_near, "confidence": 0.5, "track_id": 1, "is_synthetic": True}
-            far_detection = {"frame": i, "bbox": bbox_far, "confidence": 0.5, "track_id": 2, "is_synthetic": True}
-            detections.append(near_detection)
-            detections.append(far_detection)
-
-        return detections
-
     def _process_detections(
         self,
         artifacts: ArtifactStore,
@@ -157,18 +145,22 @@ class PlayerTrackingStage:
         players_data = {
             "players": [
                 {"id": p["id"], "side": p["side"], "detection_count": len(p["detections"]),
-                 "detections": [{"frame": d["frame"], "bbox": d["bbox"], "confidence": d["confidence"]}
+                 "is_synthetic": p.get("is_synthetic", False),
+                 "detections": [{"frame": d["frame"], "bbox": d["bbox"], "confidence": d["confidence"],
+                                 "is_synthetic": d.get("is_synthetic", False)}
                                 for d in p["detections"]]}
                 for p in players.values()
             ],
             "total_frames": max(d["frame"] for d in detections) + 1,
         }
 
+        has_synthetic = any(p.get("is_synthetic", False) for p in players_data["players"])
+
         artifacts.set("players", players_data)
 
         return StageResult.success(
             artifacts={"players": artifacts.path("players")},
-            metadata={"player_count": len(players)}
+            metadata={"player_count": len(players), "has_synthetic": has_synthetic}
         )
 
     @staticmethod

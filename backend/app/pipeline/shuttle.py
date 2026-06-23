@@ -49,7 +49,7 @@ class ShuttleTrackingStage:
 
         model = TrackNetV3(model_path, device=device, inpaintnet_path=inpaintnet_path)
 
-        original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (1280, 720)
+        original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (settings.default_frame_width, settings.default_frame_height)
         predictions = model.predict_batch(frames, original_size=original_size)
 
         shuttle_data = []

@@ -3,12 +3,13 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from app.storage.artifacts import ArtifactStore
+from app.config.settings import settings
 
 
 @dataclass
 class StageConfig:
     gpu_enabled: bool = True
-    processing_fps: int = 30
+    processing_fps: int = settings.processing_fps
     extra: dict[str, Any] = field(default_factory=dict)
 
 
