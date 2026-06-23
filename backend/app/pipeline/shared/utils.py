@@ -118,48 +118,117 @@ def _detect_handedness(kps: np.ndarray) -> str:
     return "right" if right_conf >= left_conf else "left"
 
 
+def _compute_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
+    """Angle at p2 formed by vectors p1-p2 and p3-p2, in degrees."""
+    v1 = p1 - p2
+    v2 = p3 - p2
+    dot = float(np.dot(v1, v2))
+    norm = float(np.linalg.norm(v1) * np.linalg.norm(v2)) + 1e-6
+    return float(np.degrees(np.arccos(np.clip(dot / norm, -1.0, 1.0))))
+
+
+def _angle_score(angle: float, ideal_min: float, ideal_max: float,
+                 max_deviation: float = 60) -> float:
+    """Map joint angle [degrees] to [0, 1] technique score.
+
+    1.0 when angle is within [ideal_min, ideal_max],
+    linear drop to 0.0 outside that range.
+    """
+    if ideal_min <= angle <= ideal_max:
+        return 1.0
+    deviation = min(abs(angle - ideal_min), abs(angle - ideal_max))
+    return max(0.0, 1.0 - deviation / max_deviation)
+
+
+def _get_playing_arm_kps(kps: np.ndarray, handedness: str) -> dict:
+    """Extract playing-side keypoints as {shoulder, elbow, wrist, knee, hip, ankle}."""
+    if handedness == "left":
+        return {
+            "shoulder": kps[5][:2], "elbow": kps[7][:2], "wrist": kps[9][:2],
+            "knee": kps[13][:2], "hip": kps[11][:2], "ankle": kps[15][:2],
+        }
+    return {
+        "shoulder": kps[6][:2], "elbow": kps[8][:2], "wrist": kps[10][:2],
+        "knee": kps[14][:2], "hip": kps[12][:2], "ankle": kps[16][:2],
+    }
+
+
 def _evaluate_shot(stroke_type: str, kps: np.ndarray) -> float:
-    """Evaluate shot quality using pose keypoints with handedness awareness."""
+    """Evaluate shot technique using biomechanical joint angles."""
     if kps.shape != (17, 3):
         return 0.5
 
     handedness = _detect_handedness(kps)
-    if handedness == "left":
-        shoulder = kps[5][:2]
-        elbow = kps[7][:2]
-        wrist = kps[9][:2]
-        knee = kps[13][:2]
-        hip = kps[11][:2]
-        ankle = kps[15][:2]
-    else:
-        shoulder = kps[6][:2]
-        elbow = kps[8][:2]
-        wrist = kps[10][:2]
-        knee = kps[14][:2]
-        hip = kps[12][:2]
-        ankle = kps[16][:2]
+    arm = _get_playing_arm_kps(kps, handedness)
 
-    if stroke_type in ("smash", "clear"):
-        height_diff = shoulder[1] - wrist[1]
-        return min(1.0, max(0.0, height_diff / 100.0 + 0.3))
+    S, E, W = arm["shoulder"], arm["elbow"], arm["wrist"]
+    H, K, A = arm["hip"], arm["knee"], arm["ankle"]
+
+    shoulder_angle = _compute_angle(E, S, H)
+    elbow_angle = _compute_angle(W, E, S)
+    knee_angle = _compute_angle(A, K, H)
+
+    if stroke_type == "smash":
+        scores = [
+            _angle_score(shoulder_angle, 120, 180, 50),
+            _angle_score(elbow_angle, 150, 180, 40),
+            1.0 if W[1] < S[1] else max(0.0, (S[1] - W[1]) / 100.0),
+        ]
+        return float(np.mean(scores))
+
+    elif stroke_type == "clear":
+        scores = [
+            _angle_score(shoulder_angle, 90, 150, 50),
+            _angle_score(elbow_angle, 130, 170, 50),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "net_shot":
-        lunge_depth = abs(knee[1] - hip[1])
-        return min(1.0, max(0.0, lunge_depth / 80.0 + 0.2))
+        scores = [
+            _angle_score(knee_angle, 90, 130, 50),
+            _angle_score(shoulder_angle, 30, 90, 40),
+            _angle_score(elbow_angle, 100, 160, 50),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "drive":
-        arm_extension = abs(wrist[0] - elbow[0])
-        return min(1.0, max(0.0, arm_extension / 60.0 + 0.2))
+        scores = [
+            _angle_score(elbow_angle, 120, 160, 50),
+            _angle_score(shoulder_angle, 60, 120, 50),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "lift":
-        height_diff = shoulder[1] - wrist[1]
-        return min(1.0, max(0.0, height_diff / 120.0 + 0.4))
+        scores = [
+            _angle_score(shoulder_angle, 100, 160, 50),
+            _angle_score(elbow_angle, 140, 175, 40),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "drop":
-        height_diff = shoulder[1] - wrist[1]
-        return min(1.0, max(0.0, height_diff / 150.0 + 0.3))
+        scores = [
+            _angle_score(shoulder_angle, 100, 160, 50),
+            _angle_score(elbow_angle, 100, 150, 40),
+            1.0 if W[1] < S[1] else max(0.0, (S[1] - W[1]) / 100.0),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "block":
-        compactness = abs(wrist[1] - hip[1])
-        return min(1.0, max(0.0, compactness / 50.0 + 0.2))
+        body_height = max(K[1], H[1]) - S[1] + 1e-6
+        elbow_proximity = abs(E[0] - S[0]) / body_height
+        scores = [
+            max(0.0, 1.0 - elbow_proximity / 0.5),
+            _angle_score(elbow_angle, 60, 120, 50),
+        ]
+        return float(np.mean(scores))
+
     elif stroke_type == "rush":
-        lunge = abs(knee[1] - ankle[1])
-        return min(1.0, max(0.0, lunge / 40.0 + 0.3))
+        scores = [
+            _angle_score(knee_angle, 80, 120, 50),
+            _angle_score(elbow_angle, 130, 170, 50),
+        ]
+        return float(np.mean(scores))
+
     return 0.5
 
 

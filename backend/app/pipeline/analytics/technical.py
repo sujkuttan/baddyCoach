@@ -2,7 +2,10 @@ import numpy as np
 import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.shared.utils import _evaluate_shot
+from app.pipeline.shared.utils import (
+    _evaluate_shot, _compute_angle, _angle_score,
+    _get_playing_arm_kps, _detect_handedness,
+)
 
 
 class TechnicalAnalyticsStage:
@@ -122,32 +125,31 @@ class TechnicalAnalyticsStage:
             return 0.5
 
     def _analyze_swing_mechanics(self, pose_data):
-        """Analyze swing mechanics using pose data from multiple frames."""
-        if len(pose_data) < 2:
+        """Analyze swing using temporal angle trajectories across the clip."""
+        if len(pose_data) < 3:
             return 0.5
-        
-        # Analyze arm movement, shoulder rotation, and body positioning
-        # This is a simplified version - in production, this would use
-        # more sophisticated biomechanical analysis
-        
-        # Calculate arm extension
-        arm_extensions = []
-        for pose in pose_data:
-            if len(pose) >= 10:  # Check if we have enough keypoints
-                elbow = pose[7][:2] if len(pose[7]) >= 2 else None
-                wrist = pose[9][:2] if len(pose[9]) >= 2 else None
-                if elbow is not None and wrist is not None:
-                    arm_extension = abs(wrist[0] - elbow[0])
-                    arm_extensions.append(arm_extension)
-        
-        if not arm_extensions:
+
+        elbow_angles = []
+        shoulder_angles = []
+        for kps in pose_data:
+            kps = np.array(kps)
+            if kps.shape != (17, 3):
+                continue
+            handedness = _detect_handedness(kps)
+            arm = _get_playing_arm_kps(kps, handedness)
+            S, E, W, H = arm["shoulder"], arm["elbow"], arm["wrist"], arm["hip"]
+            elbow_angles.append(_compute_angle(W, E, S))
+            shoulder_angles.append(_compute_angle(E, S, H))
+
+        if len(elbow_angles) < 3:
             return 0.5
-        
-        # Calculate average arm extension
-        avg_arm_extension = np.mean(arm_extensions)
-        
-        # Normalize to score (0-1)
-        # Typical arm extension for good technique is around 0.3-0.5 meters
-        normalized_score = min(1.0, max(0.0, avg_arm_extension / 0.5))
-        
-        return normalized_score
+
+        mid = len(elbow_angles) // 2
+        extension = np.mean(elbow_angles[mid:]) - np.mean(elbow_angles[:mid])
+        peak_shoulder = max(shoulder_angles)
+
+        scores = [
+            min(1.0, max(0.0, extension / 30.0)),
+            _angle_score(peak_shoulder, 90, 180, 60),
+        ]
+        return float(np.mean(scores))
