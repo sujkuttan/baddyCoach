@@ -98,7 +98,6 @@ class PoseEstimationStage:
         if not player_list:
             return []
 
-        side_map = {p["id"]: p.get("side", "near") for p in player_list}
         det_lookup = {}
         for p in player_list:
             pid = p["id"]
@@ -114,7 +113,7 @@ class PoseEstimationStage:
 
                 if bbox is None:
                     bbox = self._find_fallback_bbox(
-                        frame_idx, player_id, side_map, det_lookup, range_limit=10
+                        frame_idx, player_id, det_lookup, range_limit=10
                     )
 
                 if bbox is None:
@@ -140,25 +139,14 @@ class PoseEstimationStage:
         return pose_data
 
     @staticmethod
-    def _find_fallback_bbox(frame_idx: int, player_id: str, side_map: dict,
+    def _find_fallback_bbox(frame_idx: int, player_id: str,
                             det_lookup: dict, range_limit: int = 10):
-        """Find fallback bbox: same-side first, then any side."""
-        my_side = side_map.get(player_id, "near")
-        same_side_pids = [pid for pid, s in side_map.items() if s == my_side and pid != player_id]
-        other_pids = [pid for pid, s in side_map.items() if s != my_side]
-
+        """Find fallback bbox via temporal interpolation within same player's own detections."""
+        my_dets = det_lookup.get(player_id, {})
         for delta in range(1, range_limit + 1):
-            for pid in same_side_pids:
-                dets = det_lookup.get(pid, {})
-                for offset in [frame_idx + delta, frame_idx - delta]:
-                    if offset in dets:
-                        return dets[offset]
-            for pid in other_pids:
-                dets = det_lookup.get(pid, {})
-                for offset in [frame_idx + delta, frame_idx - delta]:
-                    if offset in dets:
-                        return dets[offset]
-
+            for offset in (frame_idx + delta, frame_idx - delta):
+                if offset in my_dets:
+                    return my_dets[offset]
         return None
 
     def _store_data(self, artifacts: ArtifactStore, pose_data: list[dict]) -> StageResult:
