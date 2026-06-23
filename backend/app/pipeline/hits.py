@@ -16,6 +16,8 @@ class HitFrameLocalizationStage:
     PROXIMITY_WEIGHT = 0.2
     SWING_WEIGHT = 0.1
 
+    HIT_CONFIDENCE_THRESHOLD = 0.3
+
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
         shuttle_df = artifacts.get_parquet("shuttle")
         if shuttle_df is None or len(shuttle_df) == 0:
@@ -35,8 +37,11 @@ class HitFrameLocalizationStage:
             self.SWING_WEIGHT * swing_score
         )
 
-        threshold = np.percentile(combined, 90)
-        hit_frames = np.where(combined > threshold)[0]
+        peaks, _ = find_peaks(
+            combined,
+            height=self.HIT_CONFIDENCE_THRESHOLD,
+        )
+        hit_frames = peaks
 
         hits = []
         for idx in hit_frames:
