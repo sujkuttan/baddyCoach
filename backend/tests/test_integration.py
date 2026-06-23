@@ -35,7 +35,18 @@ def test_full_pipeline_mock(tmp_job_dir):
     result = PlayerTrackingStage().run(store, config, detections=detections)
     assert result.status == "success"
 
-    shuttle_data = [{"frame": i, "x": 100 + i * 10, "y": 200 - i * 5, "confidence": 0.9} for i in range(50)]
+    # Shuttle trajectory with three clear hit-like direction changes
+    shuttle_data = []
+    for i in range(50):
+        if i < 10:
+            x, y = 400, 100 + i * 6
+        elif i < 20:
+            x, y = 400 - (i - 10) * 14, 160 - (i - 10) * 10
+        elif i < 30:
+            x, y = 260 + (i - 20) * 8, 60 + (i - 20) * 10
+        else:
+            x, y = 340 + (i - 30) * 12, 160 + (i - 30) * 6
+        shuttle_data.append({"frame": i, "x": x, "y": y, "confidence": 0.9})
     result = ShuttleTrackingStage().run(store, config, shuttle_data=shuttle_data)
     assert result.status == "success"
 

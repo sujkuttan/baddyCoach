@@ -76,7 +76,8 @@ class HitFrameLocalizationStage:
         angle = np.arctan2(dy, dx)
         angle_diff = np.abs(np.diff(angle, prepend=angle[0]))
         score = angle_diff / (np.pi + 1e-6)
-        return score / (score.max() + 1e-6)
+        m = np.percentile(score, 95)
+        return score / (m + 1e-6) if m > 0 else score
 
     def _compute_speed_peaks(self, shuttle_df: pd.DataFrame) -> np.ndarray:
         x = shuttle_df["x"].values
@@ -85,7 +86,8 @@ class HitFrameLocalizationStage:
         peaks, _ = find_peaks(speed, distance=3)
         score = np.zeros(len(speed))
         score[peaks] = speed[peaks]
-        return score / (score.max() + 1e-6)
+        m = np.percentile(score, 95)
+        return score / (m + 1e-6) if m > 0 else score
 
     def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame) -> np.ndarray:
         score = np.zeros(len(shuttle_df))
@@ -109,7 +111,8 @@ class HitFrameLocalizationStage:
                     dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
                     score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / 100.0))
 
-        return score / (score.max() + 1e-6)
+        m = np.percentile(score, 95)
+        return score / (m + 1e-6) if m > 0 else score
 
     def _compute_swing_peaks(self, pose_df: pd.DataFrame, n_frames: int = 0) -> np.ndarray:
         if n_frames == 0:
@@ -133,4 +136,5 @@ class HitFrameLocalizationStage:
                         score[int(row["frame"])] = arm_velocity
                 prev_kps = kps
 
-        return score / (score.max() + 1e-6)
+        m = np.percentile(score, 95)
+        return score / (m + 1e-6) if m > 0 else score
