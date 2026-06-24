@@ -99,7 +99,6 @@ class BSTClassifier:
             in_dim = 72
             seq_len = None
             n_classes = 25
-            has_ap = False
 
             for k, v in state_dict.items():
                 if 'tcn_pose.net.0.weight' in k:
@@ -108,8 +107,6 @@ class BSTClassifier:
                     n_classes = v.shape[0]
                 if 'embedding_tem' in k:
                     seq_len = v.shape[1] - 1
-                if 'cos_sim' in k:
-                    has_ap = True
 
             if seq_len is None:
                 print("BST checkpoint missing embedding_tem, cannot determine seq_len")
@@ -126,7 +123,12 @@ class BSTClassifier:
                                             "core_missing": ["missing mlp_positions"]})
                 return
 
-            model_class = BST_CG_AP if has_ap else BST_CG
+            # Always use BST_CG_AP (AimPlayer) — all 94-key checkpoints (CG, CG_AP,
+            # ckpts/bst) have identical state dicts since nn.CosineSimilarity has no
+            # trainable params. BST_CG_AP is a strict superset of BST_CG with added
+            # AimPlayer cosine-similarity weighting that improves player-aware
+            # classification. No extra parameters needed beyond BST_CG's.
+            model_class = BST_CG_AP
             model = model_class(
                 in_dim=in_dim,
                 seq_len=seq_len,
@@ -151,7 +153,7 @@ class BSTClassifier:
 
             self.model = model
             self.seq_len = seq_len
-            print(f"BST loaded: class={model_class.__name__}, in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+            print(f"BST loaded: class=BST_CG_AP (AimPlayer), in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
         except Exception as e:
             print(f"BST load error: {e}")
             import traceback
