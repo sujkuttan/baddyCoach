@@ -146,9 +146,14 @@ def ensure_model(name: str, *, force: bool = False,
     return None
 
 
+_ZIP_GDRIVE_IDS: set[str] = {
+    "1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN",  # rtmpose_colab (zip of ONNX)
+}
+
+
 def _is_zip_gdrive(gdrive_id: str) -> bool:
-    """Heuristic: check if a GDrive file ID likely points to a zip."""
-    return False  # We don't know without querying the API; callers handle it.
+    """Check if a GDrive file ID is known to point to a zip archive."""
+    return gdrive_id in _ZIP_GDRIVE_IDS
 
 
 # ─── Existing utilities ────────────────────────────────────────────────────
