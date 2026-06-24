@@ -108,10 +108,15 @@ def ensure_model(name: str, *, force: bool = False,
                 gdown.download(id=gdrive_id, output=str(zip_path), quiet=False)
                 if zip_path.exists():
                     with zipfile.ZipFile(zip_path, 'r') as zf:
-                        onnx_files = [f for f in zf.namelist() if f.endswith('.onnx') or f.endswith('.pt')]
-                        if onnx_files:
-                            data = zf.read(onnx_files[0])
-                            local_path.write_bytes(data)
+                        # Extract ALL .pt and .onnx files from the zip to CKPT_DIR.
+                        # Many zips (e.g. TrackNet) bundle multiple checkpoints
+                        # (TrackNet_best.pt + InpaintNet_best.pt) in one archive.
+                        for member in zf.namelist():
+                            if member.endswith('.onnx') or member.endswith('.pt'):
+                                dest = CKPT_DIR / Path(member).name
+                                dest.parent.mkdir(parents=True, exist_ok=True)
+                                dest.write_bytes(zf.read(member))
+                                logger.info("  extracted -> %s", dest)
                     zip_path.unlink(missing_ok=True)
             else:
                 gdown.download(id=gdrive_id, output=str(local_path), quiet=False)
@@ -129,10 +134,12 @@ def ensure_model(name: str, *, force: bool = False,
                 zip_path = local_path.with_suffix(".zip")
                 urllib.request.urlretrieve(alt_url, str(zip_path))
                 with zipfile.ZipFile(zip_path, 'r') as zf:
-                    onnx_files = [f for f in zf.namelist() if f.endswith('.onnx')]
-                    if onnx_files:
-                        data = zf.read(onnx_files[0])
-                        local_path.write_bytes(data)
+                    for member in zf.namelist():
+                        if member.endswith('.onnx') or member.endswith('.pt'):
+                            dest = CKPT_DIR / Path(member).name
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            dest.write_bytes(zf.read(member))
+                            logger.info("  extracted -> %s", dest)
                 zip_path.unlink(missing_ok=True)
             else:
                 urllib.request.urlretrieve(alt_url, str(local_path))
@@ -148,6 +155,7 @@ def ensure_model(name: str, *, force: bool = False,
 
 _ZIP_GDRIVE_IDS: set[str] = {
     "1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN",  # rtmpose_colab (zip of ONNX)
+    "1rhKXbff1GITgrFTYptW6gAvWZ76E_qzp",  # tracknet (zip of TrackNet_best.pt + InpaintNet_best.pt)
 }
 
 
