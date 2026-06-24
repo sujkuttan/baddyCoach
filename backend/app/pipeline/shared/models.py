@@ -117,12 +117,12 @@ def ensure_model(name: str, *, force: bool = False,
                                 dest = local_path.parent / Path(member).name
                                 dest.parent.mkdir(parents=True, exist_ok=True)
                                 dest.write_bytes(zf.read(member))
-                                logger.info("  extracted -> %s", dest)
+                                print(f"  extracted -> {dest}")
                     zip_path.unlink(missing_ok=True)
             else:
                 gdown.download(id=gdrive_id, output=str(local_path), quiet=False)
             if local_path.exists():
-                logger.info("  -> %s", local_path)
+                print(f"  -> {local_path}")
                 return local_path
         except Exception as e:
             logger.warning("GDrive download failed for %s: %s", name, e)
@@ -140,12 +140,12 @@ def ensure_model(name: str, *, force: bool = False,
                             dest = local_path.parent / Path(member).name
                             dest.parent.mkdir(parents=True, exist_ok=True)
                             dest.write_bytes(zf.read(member))
-                            logger.info("  extracted -> %s", dest)
+                            print(f"  extracted -> {dest}")
                 zip_path.unlink(missing_ok=True)
             else:
                 urllib.request.urlretrieve(alt_url, str(local_path))
             if local_path.exists():
-                logger.info("  -> %s", local_path)
+                print(f"  -> {local_path}")
                 return local_path
         except Exception as e:
             logger.warning("Alt download failed for %s: %s", name, e)
