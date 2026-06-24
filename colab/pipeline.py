@@ -937,6 +937,48 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"    Players: {len(all_player_detections)} detections")
     print(f"    Pose:    {len(all_pose)} frames")
 
+    # ── InpaintNet trajectory rectification (reuses backend module) ──
+    inpaint_path = CKPT_DIR / "InpaintNet_best.pt"
+    if inpaint_path.exists() and len(all_shuttle) > 0:
+        try:
+            from app.models.tracknet import InpaintNet
+            import torch
+            inpaint_model = InpaintNet()
+            ckpt = torch.load(str(inpaint_path), map_location="cpu", weights_only=False)
+            sd = ckpt if isinstance(ckpt, dict) else {}
+            if 'model' in sd:
+                sd = sd['model']
+            inpaint_model.load_state_dict(sd, strict=False)
+            inpaint_model.to(device).eval()
+            print("  Running InpaintNet trajectory rectification...")
+
+            xs = np.array([s.get("x", 0.0) for s in all_shuttle], dtype=np.float32)
+            ys = np.array([s.get("y", 0.0) for s in all_shuttle], dtype=np.float32)
+            confs = np.array([s.get("confidence", 0.0) for s in all_shuttle], dtype=np.float32)
+
+            T = inpaint_model.window_size
+            pad = T // 2
+            xs_pad = np.pad(xs, (pad, pad), mode='edge')
+            ys_pad = np.pad(ys, (pad, pad), mode='edge')
+            cs_pad = np.pad(confs, (pad, pad), mode='edge')
+
+            refined_xs, refined_ys = [], []
+            for i in range(len(xs)):
+                w = np.stack([xs_pad[i:i+T], ys_pad[i:i+T], cs_pad[i:i+T]])  # (3, T)
+                tensor = torch.from_numpy(w).float().unsqueeze(0).to(device)
+                with torch.no_grad():
+                    out = inpaint_model(tensor)
+                rx, ry = out[0, 0, pad].item(), out[0, 1, pad].item()
+                refined_xs.append(rx)
+                refined_ys.append(ry)
+
+            for i, s in enumerate(all_shuttle):
+                s["x"] = float(refined_xs[i])
+                s["y"] = float(refined_ys[i])
+            print(f"    Rectified {len(all_shuttle)} detections")
+        except Exception as e:
+            print(f"  InpaintNet skipped: {e}")
+
     # Build player summary
     players = {"player_1": {"id": "player_1", "side": "near", "detections": []},
                "player_2": {"id": "player_2", "side": "far", "detections": []}}
