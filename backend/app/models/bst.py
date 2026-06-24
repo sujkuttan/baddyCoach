@@ -32,7 +32,7 @@ def map_to_coach_class(shuttleset_class_id: int) -> str:
         return COACH_STROKE_CLASSES[shuttleset_class_id - 1]
     elif 13 <= shuttleset_class_id <= 24:
         base_class = COACH_STROKE_CLASSES[shuttleset_class_id - 13]
-        return f"Bottom_{base_class}"
+        return base_class
     return "unknown"
 
 

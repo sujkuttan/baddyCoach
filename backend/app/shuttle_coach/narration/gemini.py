@@ -23,16 +23,17 @@ def format_metrics_for_rag(metrics: list[dict[str, Any]], question: str) -> str:
 
 def answer(question: str, metrics: list[dict[str, Any]], api_key: str) -> str:
     """Generate a grounded answer to a coaching question."""
-    import google.generativeai as genai
+    from google import genai as genai_sdk
     from app.config.settings import settings
 
-    genai.configure(api_key=api_key)
+    client = genai_sdk.Client(api_key=api_key)
 
     context = format_metrics_for_rag(metrics, question)
+    prompt = f"{SYSTEM_PROMPT}\n\nMETRICS:\n{context}\n\nQUESTION: {question}\n\nANSWER:"
 
-    model = genai.GenerativeModel(settings.gemini_model)
-    response = model.generate_content(
-        f"{SYSTEM_PROMPT}\n\nMETRICS:\n{context}\n\nQUESTION: {question}\n\nANSWER:"
+    response = client.models.generate_content(
+        model=settings.gemini_model,
+        contents=prompt,
     )
 
     text = response.text

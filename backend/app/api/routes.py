@@ -171,14 +171,6 @@ def run_pipeline(job_id: str):
     emit_progress({"stage": "coach_recommendations", "status": "complete", "metadata": report})
 
 
-def _get_video_resolution(video_path: str) -> tuple[int, int]:
-    cap = cv2.VideoCapture(video_path)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    cap.release()
-    return width, height
-
-
 def _extract_frames(video_path: str, sample_interval: int = 3) -> list[np.ndarray]:
     """Extract all frames from video, sampling every Nth frame."""
     cap = cv2.VideoCapture(video_path)
@@ -291,7 +283,6 @@ async def upload_video(file: UploadFile = File(...)):
 
     job_dir = settings.job_dir(job_id)
     video_path = job_dir / f"video.{ext}"
-    content = await file.read()
     video_path.write_bytes(content)
 
     h264_path = job_dir / "video_h264.mp4"

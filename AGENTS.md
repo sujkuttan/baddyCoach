@@ -15,7 +15,7 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - Backend: FastAPI with WebSocket progress tracking
 - Frontend: React + TypeScript + Vite dashboard
 - ML models: YOLOv8, RTMPose, TrackNetV3, BST (Badminton Stroke Transformer)
-- Coaching engine: YAML rule-based system (25+ rules in `backend/app/shuttle_coach/feedback/rules.yaml`)
+- Coaching engine: YAML rule-based system (33+ rules in `backend/app/shuttle_coach/feedback/rules.yaml`)
 
 ## Critical Architecture Notes
 
@@ -44,9 +44,25 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** x/y rescale divisors swapped, hardcoded `"input"` instead of `self.input_name`
 - **Fix:** Corrected dimension order (height=256, width=192) and `self.input_name` from model metadata
 
-### ⚠️ Recovery Time Units
-- **Issue:** `threshold = 0.3` in pixels, but recovery distances in meters
-- **Impact:** `avg_recovery` ≈ 0 for everyone, recovery loop scans all players
+### ✅ Recovery Time Units (Fixed)
+- **Was:** `threshold = 0.3` in pixels, but recovery distances in meters
+- **Fix:** Both query points (`com_points`) and base position converted to court-space via homography before threshold comparison; jump filter uses 2.0m in court-space
+
+### ✅ Hit Detection Normalization (Fixed)
+- **Was:** All four evidence signals used `score / score.max()`, causing dynamic-range collapse in long videos
+- **Fix:** 95th-percentile normalization — `m = np.percentile(score, 95); score / (m + 1e-6)` — robust to extreme frames
+
+### ✅ BST Second-Best Threshold (Fixed)
+- **Was:** `SECOND_BEST_THRESHOLD = 0.05`, allowing any >5% alternative to override `unknown`, producing erratic predictions
+- **Fix:** Raised to `0.3` so only meaningfully-confident alternatives (>30%) replace `unknown`
+
+### ✅ Temporal Smoothing Scope (Fixed)
+- **Was:** Window majority vote overwrote all low-confidence predictions, including determinate ones
+- **Fix:** Only `unknown` strokes are smoothed; determinate predictions (even low-confidence) are preserved untouched
+
+### ✅ Technique Score Overhaul (Fixed)
+- **Was:** Single-frame `_evaluate_shot` fallback with 2 features (elbow extension, shoulder angle); no coaching rules consumed technique data
+- **Fix:** Removed `_evaluate_shot` entirely; `_analyze_swing_mechanics` now uses 5 temporal features: elbow extension, peak shoulder angle, hip-shoulder separation, knee flexion (stroke-type-specific bounds), follow-through displacement. Technique scores wired into `analyze_from_pipeline` with 8 YAML coaching rules.
 
 ## Testing & Development
 
@@ -128,10 +144,10 @@ GEMINI_API_KEY=your_api_key_here
 - Rule-based strokes masquerading as model output
 - No data quality flags in coaching reports
 
-### ⚠️ Architecture Conflicts
-- Two coaching engines (`coach/engine.py` vs `shuttle_coach/`) with overlapping purpose (merged into shuttle_coach)
-- Colab pipeline (~2,000 lines) duplicates backend logic - high drift risk
-- No model abstraction layer - each stage hardcodes model imports
+### ✅ Architecture Conflicts (Resolved)
+- Two coaching engines merged into `shuttle_coach/`; `coach/engine.py` and `coach/rules.yaml` deleted
+- Colab pipeline reduced from ~1,966 to ~1,354 lines — removed `_prepare_stroke_classification`, `CoachEngine`, shuttle-coach functions; uses `analyze_from_pipeline`
+- Model abstraction layer created: `shared/models.py` with lazy singleton registry (`get_yolov8`, `get_tracknet`, `get_rtmpose`, `get_bst`)
 
 ### ⚠️ Security & Reliability
 - No authentication on any endpoint
@@ -180,7 +196,7 @@ python -m pytest -m "not gpu and not model"
 ### Configuration
 - `backend/app/config/settings.py` - Model paths, thresholds
 - `backend/app/config/gpu_batch.py` - GPU batch sizing
-- `backend/app/shuttle_coach/feedback/rules.yaml` - 25+ coaching rules
+- `backend/app/shuttle_coach/feedback/rules.yaml` - 33+ coaching rules
 
 ## Migration Notes
 
@@ -202,19 +218,19 @@ python -m pytest -m "not gpu and not model"
 3. ~~Fix RTMPose x/y rescale transpose~~ (Done)
 4. Fix recovery-time pixel/meter mismatch
 5. Respect `court.valid` flag
-6. Flag synthetic/fallback data in reports
+6. ~~Flag synthetic/fallback data in reports~~ (Done — fallback removed entirely)
 
 ### High (reliability)
 7. Fix TrackNet integration (official arch + InpaintNet)
 8. Use BST Top/Bottom output for attribution
-9. Compute analytics in meters via homography
+9. ~~Compute analytics in meters via homography~~ (Done — footwork distances, recovery times, jump filter all use homography)
 10. Replace per-frame YOLO with proper tracking
 11. ~~Externalize config with pydantic-settings~~ (Done)
 12. Add auth + upload validation
 
 ### Nice-to-have
 13. Unify backend/colab pipelines
-14. ~~Replace single-frame technique score~~ (Done)
+14. ~~Replace single-frame technique score~~ (Done — 5 temporal features + 8 YAML coaching rules)
 15. Cross-session progress tracking
 16. Structured logging + data-quality score
 17. Promote grounded LLM narration

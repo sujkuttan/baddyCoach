@@ -263,7 +263,7 @@ class StrokeClassificationStage:
                 neighbors = []
                 win = settings.stroke_smoothing_window
                 for j in range(max(0, i - win), min(len(shots), i + win + 1)):
-                    if j != i and shots[j]["stroke_type"] not in ("unknown", "Bottom_unknown"):
+                    if j != i and shots[j]["stroke_type"] != "unknown":
                         neighbors.append(shots[j]["stroke_type"])
                 if neighbors:
                     from collections import Counter
