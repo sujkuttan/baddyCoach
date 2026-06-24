@@ -32,13 +32,14 @@ def _build_clip(
     player_sides: dict | None = None,
     player_detections: dict | None = None,
     homography: np.ndarray | None = None,
+    original_len: int | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
     This follows the official BST preprocessing:
     1. Joints normalized by bbox diagonal + center_align (range [-0.X, 0.X])
     2. Bones computed as endpoint differences
-    3. Shuttle normalized by video resolution (range [0, 1])
+    3. Shuttle normalized by court dimensions (range [0, 1])
     4. Position = feet midpoint in court-normalized coords via homography
 
     Player ordering: p_idx=0 is ALWAYS the "far" player, p_idx=1 is "near".
@@ -47,7 +48,7 @@ def _build_clip(
     then normalized by court dimensions (matching BST official preprocessing).
     Falls back to pixel-normalized positions when homography is unavailable.
     """
-    n_frames = len(frames)
+    n_frames_orig = original_len if original_len is not None else len(frames)
     joints = np.zeros((seq_len, 2, 17, 2), dtype=np.float32)
     shuttle = np.zeros((seq_len, 2), dtype=np.float32)
     pos = np.zeros((seq_len, 2, 2), dtype=np.float32)
@@ -78,8 +79,8 @@ def _build_clip(
         if shuttle_df is not None:
             s_row = shuttle_df[shuttle_df['frame'] == frame]
             if len(s_row) > 0:
-                shuttle[t, 0] = float(s_row.iloc[0]['x']) / vid_w
-                shuttle[t, 1] = float(s_row.iloc[0]['y']) / vid_h
+                shuttle[t, 0] = float(s_row.iloc[0]['x']) / court_length
+                shuttle[t, 1] = float(s_row.iloc[0]['y']) / court_width
 
     # Interpolate missing shuttle coordinates (0.0 = missing)
     for dim in range(2):
@@ -124,7 +125,7 @@ def _build_clip(
         'JnB': JnB.reshape(seq_len, 2, -1),
         'shuttle': shuttle,
         'pos': pos,
-        'video_len': min(n_frames, seq_len),
+        'video_len': min(n_frames_orig, seq_len),
     }
 
 
@@ -215,6 +216,7 @@ class StrokeClassificationStage:
                     clip_start = max(0, clip_end - classifier.seq_len)
                 clip_frames = clip_frames[clip_start:clip_end]
 
+            original_n_frames = len(clip_frames)
             while len(clip_frames) < classifier.seq_len:
                 clip_frames.append(clip_frames[-1] if clip_frames else frame)
             clip_frames = clip_frames[:classifier.seq_len]
@@ -225,6 +227,7 @@ class StrokeClassificationStage:
                 seq_len=classifier.seq_len,
                 player_sides=player_sides, player_detections=player_list,
                 homography=homography,
+                original_len=original_n_frames,
             )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
