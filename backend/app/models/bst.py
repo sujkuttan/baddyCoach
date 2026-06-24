@@ -58,12 +58,15 @@ class BSTClassifier:
     available GPU VRAM via gpu_batch config.
     """
 
-    def __init__(self, model_path: Optional[str] = None, device: str = "cuda", default_seq_len: int = 30, batch_size: Optional[int] = None):
+    def __init__(self, model_path: Optional[str] = None, device: str = "cuda",
+                 default_seq_len: int = 30, batch_size: Optional[int] = None,
+                 temperature: Optional[float] = None):
         self.device = device
         self.model = None
         self.seq_len = default_seq_len
         self.classes = COACH_STROKE_CLASSES
         self.batch_size = batch_size if batch_size is not None else self._default_batch_size()
+        self.temperature = temperature if temperature is not None else 1.0
 
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
@@ -157,7 +160,8 @@ class BSTClassifier:
 
             self.model = model
             self.seq_len = seq_len
-            print(f"BST loaded: class=BST_CG_AP (AimPlayer), in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}")
+            self._load_temperature()
+            print(f"BST loaded: class=BST_CG_AP (AimPlayer), in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}, temperature={self.temperature:.3f}")
         except Exception as e:
             print(f"BST load error: {e}")
             import traceback
@@ -165,6 +169,88 @@ class BSTClassifier:
             record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
                                         "n_missing": 0, "n_unexpected": 0,
                                         "core_missing": [str(e)]})
+
+    TEMPERATURE_CACHE = None
+
+    @classmethod
+    def _temperature_cache_path(cls) -> Optional[Path]:
+        try:
+            from app.pipeline.shared.models import CKPT_DIR
+            return CKPT_DIR / "bst" / "bst_temperature.json"
+        except Exception:
+            return None
+
+    def _load_temperature(self):
+        """Load cached temperature, unless overridden by constructor param."""
+        if self.temperature != 1.0:
+            return
+        cache_path = self._temperature_cache_path()
+        if cache_path and cache_path.exists():
+            try:
+                import json
+                with open(cache_path) as f:
+                    data = json.load(f)
+                cached = float(data.get("temperature", 1.0))
+                self.temperature = cached
+                print(f"  Loaded cached temperature: T={cached:.3f}")
+            except Exception as e:
+                print(f"  Could not load cached temperature: {e}")
+
+    @staticmethod
+    def _save_temperature(temperature: float):
+        """Persist calibrated temperature to cache file."""
+        cache_path = BSTClassifier._temperature_cache_path()
+        if cache_path is None:
+            return
+        try:
+            import json
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(cache_path, "w") as f:
+                json.dump({"temperature": float(temperature)}, f)
+            print(f"  Saved temperature T={temperature:.3f} -> {cache_path}")
+        except Exception as e:
+            print(f"  Could not save temperature: {e}")
+
+    @staticmethod
+    def compute_optimal_temperature(logits: np.ndarray, labels: np.ndarray) -> float:
+        """Find optimal temperature via NLL minimization (LBFGS).
+
+        Args:
+            logits: (N, n_classes) pre-softmax logits.
+            labels: (N,) integer class labels.
+
+        Returns:
+            Optimal temperature scalar (T > 0). Returns 1.0 if optimization fails.
+        """
+        try:
+            import torch
+        except ImportError:
+            print("  Torch not available for temperature calibration")
+            return 1.0
+
+        try:
+            logits_t = torch.from_numpy(logits).float()
+            labels_t = torch.from_numpy(labels).long()
+            nll = torch.nn.CrossEntropyLoss()
+
+            T = torch.ones(1, requires_grad=True)
+            optimizer = torch.optim.LBFGS([T], lr=0.01, max_iter=100)
+
+            def closure():
+                optimizer.zero_grad()
+                loss = nll(logits_t / T, labels_t)
+                loss.backward()
+                return loss
+
+            optimizer.step(closure)
+
+            T_opt = float(T.detach().item())
+            if T_opt <= 0:
+                return 1.0
+            return max(0.01, min(T_opt, 100.0))
+        except Exception as e:
+            print(f"  Temperature optimization failed: {e}")
+            return 1.0
 
     def predict_from_clips(self, clips: list, batch_size: Optional[int] = None) -> list:
         """Predict stroke types from prepared BST clips.
@@ -205,7 +291,7 @@ class BSTClassifier:
 
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
-                    probs = torch.softmax(logits.float(), dim=1).cpu().numpy()
+                    probs = torch.softmax(logits.float() / self.temperature, dim=1).cpu().numpy()
 
                 for j in range(len(batch_clips)):
                     pred_idx = int(np.argmax(probs[j]))

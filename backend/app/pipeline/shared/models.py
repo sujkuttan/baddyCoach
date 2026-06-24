@@ -310,8 +310,14 @@ def get_bst():
     if "bst" not in _models:
         try:
             from app.models.bst import BSTClassifier
+            from app.config.settings import settings as s
             path = ensure_model("bst")
-            _models["bst"] = BSTClassifier(str(path) if path else None, device=_get_device())
+            temp = s.bst_temperature
+            if temp == 0.0:
+                temp = None
+            _models["bst"] = BSTClassifier(str(path) if path else None,
+                                           device=_get_device(),
+                                           temperature=temp)
         except ImportError:
             logger.warning("BST not available (standalone mode)")
             return None

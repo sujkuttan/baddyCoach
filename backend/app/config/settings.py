@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     stroke_smoothing_window: int = 2  # ±neighbors
     stroke_smoothing_majority_count: int = 3
     stroke_dedup_gap_seconds: float = 0.2
+    bst_temperature: float = 1.0  # softmax temperature; >1 = softer, <1 = sharper. 0 = use cached.
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5
