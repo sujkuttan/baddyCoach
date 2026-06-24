@@ -64,6 +64,14 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** Single-frame `_evaluate_shot` fallback with 2 features (elbow extension, shoulder angle); no coaching rules consumed technique data
 - **Fix:** Removed `_evaluate_shot` entirely; `_analyze_swing_mechanics` now uses 5 temporal features: elbow extension, peak shoulder angle, hip-shoulder separation, knee flexion (stroke-type-specific bounds), follow-through displacement. Technique scores wired into `analyze_from_pipeline` with 8 YAML coaching rules.
 
+### ✅ BST Bottom_ Prefix Leak (Fixed)
+- **Was:** `map_to_coach_class` returned `Bottom_smash` for the near player but `smash` for the far player — every exact-string consumer (rally end-reason, technique bounds, tactical distribution, frontend charts) broke for near-player strokes
+- **Fix:** `map_to_coach_class` now returns bare stroke type for both players; side is preserved in `shuttleset_class_id` and available via `get_shuttleset_class_info`
+
+### ✅ Upload Zero-Byte Bug (Fixed)
+- **Was:** `routes.py` called `await file.read()` at line 268 (validation) and again at line 294 (write) — second read on consumed `UploadFile` returned `b""`, writing empty videos
+- **Fix:** Reuse the `content` buffer from the validation read; dropped the redundant second read
+
 ## Testing & Development
 
 ### Hardware-Aware Testing
@@ -151,7 +159,6 @@ GEMINI_API_KEY=your_api_key_here
 
 ### ⚠️ Security & Reliability
 - No authentication on any endpoint
-- No file size/length/MIME validation on upload
 - Videos stored indefinitely with no cleanup
 - `torch.load(..., weights_only=False)` - pickle deserialization risk
 
@@ -205,10 +212,9 @@ python -m pytest -m "not gpu and not model"
 - BST adapts to detected sequence length (`colab/pipeline.py:1348-1350`)
 - Coach rules duplicated (backend reads YAML, colab hardcodes)
 
-### ⚠️ Shuttle Coach Endpoint
-- **Broken:** Requires `player_detections.parquet` but backend stores `players.json`
-- **Error:** `Missing required tables: ['player_detections']`
-- **Solution:** Fix data format or remove endpoint
+### ✅ Shuttle Coach Endpoint
+- **Was:** Broken — required `player_detections.parquet` but backend stores `players.json`
+- **Fix:** Removed endpoint
 
 ## Recommended Actions (Priority)
 
@@ -216,7 +222,7 @@ python -m pytest -m "not gpu and not model"
 1. Fix BST seq_len wiring and weight path
 2. ~~Reorder stages for correct rally winners~~ (Done)
 3. ~~Fix RTMPose x/y rescale transpose~~ (Done)
-4. Fix recovery-time pixel/meter mismatch
+4. ~~Fix recovery-time pixel/meter mismatch~~ (Done — homography-based court-space comparison)
 5. Respect `court.valid` flag
 6. ~~Flag synthetic/fallback data in reports~~ (Done — fallback removed entirely)
 
