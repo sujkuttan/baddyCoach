@@ -48,7 +48,9 @@ def _get_gpu_batch_config(device: str) -> dict:
         import torch
         if not torch.cuda.is_available():
             return dict(cpu_cfg)
-        vram_gb = torch.cuda.get_device_properties(0).total_mem / (1024 ** 3)
+        props = torch.cuda.get_device_properties(0)
+        total_mem = getattr(props, 'total_memory', getattr(props, 'total_mem', 0))
+        vram_gb = total_mem / (1024 ** 3)
         for min_gb, cfg in tiers:
             if vram_gb >= min_gb:
                 return dict(cfg)

@@ -119,6 +119,16 @@ def ensure_model(name: str, *, force: bool = False,
                                 dest.write_bytes(zf.read(member))
                                 print(f"  extracted -> {dest}")
                     zip_path.unlink(missing_ok=True)
+                    # If local_path doesn't exist but extracted files do, rename
+                    # the first match (handles zips where the internal .onnx/.pt
+                    # has a different name than expected, e.g. end2end.onnx).
+                    if not local_path.exists():
+                        parent = local_path.parent
+                        for f in sorted(parent.iterdir()):
+                            if f.suffix in ('.onnx', '.pt') and f.name != local_path.name:
+                                f.rename(local_path)
+                                print(f"  renamed {f.name} -> {local_path.name}")
+                                break
             else:
                 gdown.download(id=gdrive_id, output=str(local_path), quiet=False)
             if local_path.exists():
@@ -142,6 +152,13 @@ def ensure_model(name: str, *, force: bool = False,
                             dest.write_bytes(zf.read(member))
                             print(f"  extracted -> {dest}")
                 zip_path.unlink(missing_ok=True)
+                if not local_path.exists():
+                    parent = local_path.parent
+                    for f in sorted(parent.iterdir()):
+                        if f.suffix in ('.onnx', '.pt') and f.name != local_path.name:
+                            f.rename(local_path)
+                            print(f"  renamed {f.name} -> {local_path.name}")
+                            break
             else:
                 urllib.request.urlretrieve(alt_url, str(local_path))
             if local_path.exists():
