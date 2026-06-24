@@ -57,8 +57,15 @@ HRNET_PATH = MODEL_REGISTRY["hrnet"][0]
 
 
 def setup_models(device: str, pose_model: str = "rtmpose"):
+    import os as _os
+    _os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
     import torch
     torch.backends.cudnn.benchmark = False
+    if torch.cuda.is_available():
+        try:
+            torch.cuda.set_per_process_memory_fraction(0.95)
+        except Exception:
+            pass
     print("Setting up models...")
 
     # TrackNet (shuttle tracking)
