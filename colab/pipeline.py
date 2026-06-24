@@ -782,8 +782,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             print(f"  GPU: {props.name} ({vram_gb:.1f} GB)")
         else:
             print("  GPU: CUDA requested but not available, using CPU")
-    except Exception:
-        print("  GPU: detection failed")
+    except Exception as e:
+        print(f"  GPU: detection failed — {e}")
     print(f"  Batch config: YOLO chunk={gpu_cfg['yolo_chunk']} batch={gpu_cfg['yolo_batch']}, "
           f"TrackNet chunk={gpu_cfg['tracknet_chunk']}, RTMPose chunk={gpu_cfg['rtmpose_chunk']}, "
           f"BST batch={gpu_cfg['bst_batch']}")

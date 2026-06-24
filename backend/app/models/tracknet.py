@@ -252,7 +252,7 @@ class TrackNetV3:
     def _load_backbone(self, path: str):
         from app.pipeline.shared.models import _checked_load, record_model_health
         try:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             state_dict = checkpoint if isinstance(checkpoint, dict) else {}
             if 'model' in state_dict:
                 state_dict = state_dict['model']
@@ -303,7 +303,7 @@ class TrackNetV3:
 
     def _load_inpaintnet(self, path: str):
         try:
-            checkpoint = torch.load(path, map_location=self.device)
+            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
             state_dict = checkpoint if isinstance(checkpoint, dict) else {}
             if 'model' in state_dict:
                 state_dict = state_dict['model']
