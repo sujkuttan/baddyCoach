@@ -113,9 +113,13 @@ class PlayerAttributionStage:
                         shots_df.at[s.name, "player_id"] = next_player
                         last_player = next_player
                     else:
-                        # No assigned shot yet in this rally — use court position
-                        y_at = shuttle_y_map.get(int(s["frame"]))
-                        fallback = "player_1" if (y_at or court_mid_y) > court_mid_y else "player_2"
+                        # No assigned shot yet in this rally — serve alternates by rally_id
+                        shot_rid = s.get("rally_id")
+                        if shot_rid is not None:
+                            fallback = "player_1" if int(shot_rid) % 2 == 1 else "player_2"
+                        else:
+                            y_at = shuttle_y_map.get(int(s["frame"]), 0)
+                            fallback = "player_1" if y_at > court_mid_y else "player_2"
                         shots_df.at[s.name, "player_id"] = fallback
                         last_player = fallback
 
@@ -133,9 +137,10 @@ class PlayerAttributionStage:
         # Final fallback: court-position heuristic for any still-unassigned shots
         unassigned = shots_df["player_id"].isna()
         if unassigned.any():
-            shots_df.loc[unassigned, "player_id"] = shots_df.loc[unassigned, "frame"].apply(
-                lambda f: "player_1" if shuttle_y_map.get(int(f), court_mid_y) > court_mid_y else "player_2"
-            )
+            def _final_fallback(f):
+                y = shuttle_y_map.get(int(f), 0)
+                return "player_1" if y > 1 and y > court_mid_y else "player_2"
+            shots_df.loc[unassigned, "player_id"] = shots_df.loc[unassigned, "frame"].apply(_final_fallback)
 
         if H is not None and pose_df is not None:
             for idx, shot in shots_df.iterrows():
@@ -160,8 +165,16 @@ class PlayerAttributionStage:
 
         artifacts.set_parquet("shots", shots_df)
 
+        # Re-compute rally winners now that player attribution is complete
+        if rallies_df is not None and len(rallies_df) > 0:
+            from app.pipeline.rallies import _compute_rally_winner_after_attribution
+            for idx, rally in rallies_df.iterrows():
+                winner = _compute_rally_winner_after_attribution(rally, shots_df)
+                rallies_df.at[idx, "winner_player_id"] = winner
+            artifacts.set_parquet("rallies", rallies_df)
+
         counts = shots_df["player_id"].value_counts().to_dict()
         return StageResult.success(
-            artifacts={"shots": artifacts.path("shots")},
+            artifacts={"shots": artifacts.path("shots"), "rallies": artifacts.path("rallies")},
             metadata={"attributed": len(shots_df), "distribution": counts, "court_mid_y": court_mid_y}
         )
