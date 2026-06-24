@@ -37,13 +37,22 @@ class TacticalAnalyticsStage:
                     rally_openers[strokes[0]] += 1
                     rally_enders[strokes[-1]] += 1
 
+            top_opener = max(rally_openers, key=rally_openers.get) if rally_openers else ""
+            top_ender = max(rally_enders, key=rally_enders.get) if rally_enders else ""
+
             tactical[player_id] = {
                 "shot_distribution": shot_distribution,
                 "total_shots": total,
                 "common_patterns": ngrams,
                 "unique_strokes": list(shot_dist.keys()),
+                "unique_strokes_count": len(shot_dist),
                 "rally_openers": dict(rally_openers),
                 "rally_enders": dict(rally_enders),
+                "top_opener": top_opener,
+                "top_ender": top_ender,
+                "max_shot_percentage": max(shot_distribution.values()) if shot_distribution else 0,
+                "top_pattern": ngrams[0]["pattern"] if ngrams else "",
+                "pattern_repetition": ngrams[0]["count"] if ngrams else 0,
             }
 
         logger.info(f"Computed tactical analytics for {len(tactical)} players")

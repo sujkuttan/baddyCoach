@@ -45,17 +45,21 @@ def test_is_rally_ending_shot_high_conf_smash():
 
 
 def test_is_rally_ending_shot_net_shot():
-    # Net shot with gap > 15 ends rally
-    assert _is_rally_ending_shot("net_shot", 0.3, 20) is True
-    assert _is_rally_ending_shot("net_shot", 0.9, 16) is True
+    # Net shot with gap > 45 ends rally (threshold raised from 15 to 45)
+    assert _is_rally_ending_shot("net_shot", 0.3, 50) is True
+    assert _is_rally_ending_shot("net_shot", 0.9, 46) is True
     # Net shot with small gap does NOT end rally
     assert _is_rally_ending_shot("net_shot", 0.5, 5) is False
+    assert _is_rally_ending_shot("net_shot", 0.5, 40) is False
 
 
 def test_is_rally_ending_shot_large_gap():
     # Large gap always ends rally regardless of stroke type
-    assert _is_rally_ending_shot("clear", 0.6, 50) is True
-    assert _is_rally_ending_shot("lift", 0.5, 46) is True
+    assert _is_rally_ending_shot("clear", 0.6, 95) is True
+    assert _is_rally_ending_shot("lift", 0.5, 91) is True
+    # Below primary threshold does NOT end rally
+    assert _is_rally_ending_shot("clear", 0.6, 50) is False
+    assert _is_rally_ending_shot("lift", 0.5, 46) is False
 
 
 def test_is_rally_ending_shot_normal_shot():
@@ -70,10 +74,10 @@ def test_rally_segmentation_with_net_shot_ending(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
-    # Rally 1: serve -> clear -> drop -> smash -> net_shot (ends rally at frame 18, gap=7 to next)
+    # Rally 1: serve -> clear -> drop -> smash -> net_shot (ends rally at frame 18, gap=47 to next)
     # Rally 2: serve -> clear -> drop
     shots_df = pd.DataFrame({
-        "frame": [0, 5, 10, 15, 18, 35, 40, 45],
+        "frame": [0, 5, 10, 15, 18, 65, 70, 75],
         "stroke_type": ["serve", "clear", "drop", "smash", "net_shot", "serve", "clear", "drop"],
         "player_id": ["player_1", "player_2", "player_1", "player_2",
                       "player_1", "player_2", "player_1", "player_2"],
@@ -86,7 +90,7 @@ def test_rally_segmentation_with_net_shot_ending(tmp_job_dir):
 
     assert result.status == "success"
     rallies_df = store.get_parquet("rallies")
-    # Rally 1 ends at frame 18 (net_shot + gap=17), Rally 2 starts at frame 35
+    # Rally 1 ends at frame 18 (net_shot + gap=47 > 45), Rally 2 starts at frame 65
     assert len(rallies_df) == 2
     assert rallies_df.iloc[0]["end_frame"] == 18
-    assert rallies_df.iloc[1]["start_frame"] == 35
+    assert rallies_df.iloc[1]["start_frame"] == 65

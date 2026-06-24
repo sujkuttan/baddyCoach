@@ -162,7 +162,7 @@ class TestSharedUtilsModule:
 
     def test_is_rally_ending_shot_large_gap(self):
         from app.pipeline.shared.utils import _is_rally_ending_shot
-        assert _is_rally_ending_shot("clear", 0.5, 50) is True
+        assert _is_rally_ending_shot("clear", 0.5, 95) is True
 
     def test_is_rally_ending_shot_small_gap(self):
         from app.pipeline.shared.utils import _is_rally_ending_shot

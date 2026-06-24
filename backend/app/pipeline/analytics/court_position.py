@@ -70,6 +70,6 @@ class CourtPositionAnalyticsStage:
 
     @staticmethod
     def _get_zone_from_court(court_x: float, court_y: float, court_length: float, court_width: float) -> str:
-        col = min(int(court_x / court_length * 3), 2)
-        row = min(int(court_y / court_width * 3), 2)
+        row = min(int(court_x / court_length * 3), 2)
+        col = min(int(court_y / court_width * 3), 2)
         return ZONE_NAMES[row * 3 + col]

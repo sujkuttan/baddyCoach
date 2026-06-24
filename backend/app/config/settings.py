@@ -51,11 +51,11 @@ class Settings(BaseSettings):
     attribution_lookback_frames: int = 5
 
     # Rally segmentation thresholds
-    rally_gap_threshold: int = 60
+    rally_gap_threshold: int = 90
     rally_min_shots: int = 3
-    rally_ending_gap_primary: int = 45
+    rally_ending_gap_primary: int = 90
     rally_ending_gap_high_conf: int = 25
-    rally_ending_gap_net: int = 15
+    rally_ending_gap_net: int = 45
     rally_ending_high_conf_min: float = 0.6
 
     # Court corner fallback (proportional to frame dimensions)
