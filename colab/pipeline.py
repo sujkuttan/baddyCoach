@@ -39,99 +39,55 @@ from app.pipeline.shared.utils import (
     _infer_end_reason, stage_rally_stats,
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
+from app.pipeline.shared.models import ensure_model, MODEL_REGISTRY
 
 CKPT_DIR = Path("ckpts")
 CKPT_DIR.mkdir(exist_ok=True)
 
-TRACKNET_PATH = CKPT_DIR / "TrackNet_best.pt"
-YOLOV8_MODEL = "yolov8s.pt"
-RTMOPOSE_PATH = CKPT_DIR / "rtmpose" / "rtmpose-m_8xb64-270e_coco-256x192.onnx"
-COURT_KP_MODEL_PATH = CKPT_DIR / "court_kpRCNN.pth"
-RTMOPOSE_PATH_ALT = CKPT_DIR / "rtmpose" / "rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
-BST_PATH = CKPT_DIR / "bst" / "bst_CG_JnB_bone_merged.pt"
-HRNET_PATH = CKPT_DIR / "mmpose" / "hrnet_w32_coco_256x192.onnx"
+# Resolve model paths via the centralized registry
+TRACKNET_PATH = MODEL_REGISTRY["tracknet"][0]
+YOLOV8_MODEL = str(MODEL_REGISTRY["yolov8s"][0])
+RTMOPOSE_PATH = MODEL_REGISTRY["rtmpose_colab"][0]
+COURT_KP_MODEL_PATH = MODEL_REGISTRY["court_kprcnn"][0]
+RTMOPOSE_PATH_ALT = MODEL_REGISTRY["rtmpose"][0]
+BST_PATH = MODEL_REGISTRY["bst_colab"][0]
+HRNET_PATH = MODEL_REGISTRY["hrnet"][0]
 
 
 
 
 def setup_models(device: str, pose_model: str = "rtmpose"):
     print("Setting up models...")
+
+    # TrackNet (shuttle tracking)
     if not TRACKNET_PATH.exists():
-        try:
-            import gdown
-            import zipfile
-            print("  Downloading TrackNetV3 weights...")
-            zip_path = str(CKPT_DIR / "tracknet.zip")
-            gdown.download(id="1rhKXbff1GITgrFTYptW6gAvWZ76E_qzp", output=zip_path, quiet=False)
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                z.extractall(str(CKPT_DIR))
-            os.remove(zip_path)
-            for f in CKPT_DIR.rglob("*.pt"):
-                if "TrackNet" in f.name:
-                    f.rename(TRACKNET_PATH)
-                    break
-        except Exception as e:
-            print(f"  TrackNet download failed: {e}")
+        path = ensure_model("tracknet")
+        if path is None:
             print("  Shuttle tracking will use fallback")
 
     # Court keypoint model (SoloShuttlePose)
     if not COURT_KP_MODEL_PATH.exists():
-        try:
-            import gdown
-            print("  Downloading court keypoint model...")
-            gdown.download(id="1FGKyX-NudJGXvfsmKEpjiQYojDAWONdy", output=str(COURT_KP_MODEL_PATH), quiet=False)
-        except Exception as e:
-            print(f"  Court KP model download failed: {e}")
+        ensure_model("court_kprcnn")
 
+    # YOLOv8 (Ultralytics auto-downloads on first use)
     from ultralytics import YOLO
     YOLO(YOLOV8_MODEL)
 
-    rtmpose_dir = CKPT_DIR / "rtmpose"
-    rtmpose_dir.mkdir(parents=True, exist_ok=True)
+    # RTMPose (colab variant: _8xb64-270e_coco-256x192)
     if not RTMOPOSE_PATH.exists() and not RTMOPOSE_PATH_ALT.exists():
-        try:
-            import gdown
-            import zipfile
-            print("  Downloading RTMPose weights...")
-            zip_path = str(rtmpose_dir / "rtmpose.zip")
-            gdown.download(id="1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN", output=zip_path, quiet=False)
-            with zipfile.ZipFile(zip_path, 'r') as z:
-                z.extractall(str(rtmpose_dir))
-            os.remove(zip_path)
-            # Flatten: move any nested .onnx to top-level
-            for onnx in rtmpose_dir.rglob("*.onnx"):
-                dest = rtmpose_dir / "rtmpose.onnx"
-                if onnx != dest:
-                    import shutil
-                    shutil.move(str(onnx), str(dest))
-                    print(f"  Moved {onnx.name} -> {dest}")
-        except Exception as e:
-            print(f"  RTMPose download failed: {e}")
+        path = ensure_model("rtmpose_colab")
+        if path is None:
+            ensure_model("rtmpose")  # fall back to backend variant
 
-    bst_dir = CKPT_DIR / "bst"
-    bst_dir.mkdir(parents=True, exist_ok=True)
+    # BST (colab variant: bst_CG_JnB_bone_merged)
     if not BST_PATH.exists():
-        try:
-            import gdown
-            print("  Downloading BST weights...")
-            gdown.download(id="1yHLpW4s8Rk8FYIUKF_NvC29Z8b8XuDq2", output=str(BST_PATH), quiet=False)
-        except Exception as e:
-            print(f"  BST download failed: {e}")
+        ensure_model("bst_colab")
 
-    hrnet_dir = CKPT_DIR / "mmpose"
-    hrnet_dir.mkdir(parents=True, exist_ok=True)
-    if not HRNET_PATH.exists() and pose_model == "mmpose":
-        print("  Downloading pre-exported HRNet-W32 ONNX...")
-        try:
-            import gdown
-            gdown.download(id="1LFUEbHB-D3WCyjzf9aSJ_V_kVB8igsnr",
-                           output=str(HRNET_PATH), quiet=False)
-        except Exception as e:
-            print(f"  HRNet download failed: {e}")
-            print(f"  Falling back to RTMPose")
-        except Exception as e:
-            print(f"  HRNet auto-export failed: {e}")
-            print(f"  Falling back to RTMPose")
+    # HRNet (optional, for mmpose/hybrid mode)
+    if not HRNET_PATH.exists() and pose_model in ("mmpose", "hybrid"):
+        path = ensure_model("hrnet")
+        if path is None:
+            print("  HRNet not available, falling back to RTMPose")
 
     print("Models ready.\n")
 
