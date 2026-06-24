@@ -108,12 +108,13 @@ def ensure_model(name: str, *, force: bool = False,
                 gdown.download(id=gdrive_id, output=str(zip_path), quiet=False)
                 if zip_path.exists():
                     with zipfile.ZipFile(zip_path, 'r') as zf:
-                        # Extract ALL .pt and .onnx files from the zip to CKPT_DIR.
-                        # Many zips (e.g. TrackNet) bundle multiple checkpoints
-                        # (TrackNet_best.pt + InpaintNet_best.pt) in one archive.
+                        # Extract ALL .pt and .onnx files from the zip into
+                        # local_path.parent (e.g. ckpts/ for TrackNet,
+                        # ckpts/rtmpose/ for RTMPose). Many zips bundle
+                        # multiple checkpoints in one archive.
                         for member in zf.namelist():
                             if member.endswith('.onnx') or member.endswith('.pt'):
-                                dest = CKPT_DIR / Path(member).name
+                                dest = local_path.parent / Path(member).name
                                 dest.parent.mkdir(parents=True, exist_ok=True)
                                 dest.write_bytes(zf.read(member))
                                 logger.info("  extracted -> %s", dest)
@@ -136,7 +137,7 @@ def ensure_model(name: str, *, force: bool = False,
                 with zipfile.ZipFile(zip_path, 'r') as zf:
                     for member in zf.namelist():
                         if member.endswith('.onnx') or member.endswith('.pt'):
-                            dest = CKPT_DIR / Path(member).name
+                            dest = local_path.parent / Path(member).name
                             dest.parent.mkdir(parents=True, exist_ok=True)
                             dest.write_bytes(zf.read(member))
                             logger.info("  extracted -> %s", dest)
