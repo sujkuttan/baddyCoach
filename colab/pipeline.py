@@ -423,7 +423,18 @@ class YOLOv8Tracker:
                 all_det[global_idx] = dets
             del results
             import gc; gc.collect()
+        self._free_tracking_state()
         return all_det
+
+    def _free_tracking_state(self):
+        import torch, gc
+        predictor = getattr(self.model, 'predictor', None)
+        if predictor is not None:
+            predictor.trackers = []
+            predictor.tracker = None
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 class RTMPoseEstimator:
@@ -712,7 +723,7 @@ def stage_court_detection(corners):
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
 
-BATCH_SIZE = 1000
+BATCH_SIZE = 500
 
 
 def _generate_report(court, players_data, shots, rallies, coach,
