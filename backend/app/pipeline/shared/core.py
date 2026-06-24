@@ -36,10 +36,10 @@ STROKE_CLASSES = [
 def _get_gpu_batch_config(device: str) -> dict:
     """Detect GPU VRAM and return optimal batch sizes per pipeline stage."""
     tiers = [
-        (12, {"yolo_chunk": 1000, "yolo_batch": 64, "tracknet_chunk": 128, "rtmpose_chunk": 256, "bst_batch": 128}),
-        (6,  {"yolo_chunk": 500,  "yolo_batch": 32, "tracknet_chunk": 64,  "rtmpose_chunk": 128, "bst_batch": 64}),
-        (2,  {"yolo_chunk": 200,  "yolo_batch": 16, "tracknet_chunk": 16,  "rtmpose_chunk": 64,  "bst_batch": 32}),
-        (0,  {"yolo_chunk": 100,  "yolo_batch": 8,  "tracknet_chunk": 8,   "rtmpose_chunk": 32,  "bst_batch": 16}),
+        (12, {"yolo_chunk": 200, "yolo_batch": 16, "tracknet_chunk": 128, "rtmpose_chunk": 256, "bst_batch": 128}),
+        (6,  {"yolo_chunk": 100, "yolo_batch": 8,  "tracknet_chunk": 64,  "rtmpose_chunk": 128, "bst_batch": 64}),
+        (2,  {"yolo_chunk": 50,  "yolo_batch": 4,  "tracknet_chunk": 16,  "rtmpose_chunk": 64,  "bst_batch": 32}),
+        (0,  {"yolo_chunk": 25,  "yolo_batch": 2,  "tracknet_chunk": 8,   "rtmpose_chunk": 32,  "bst_batch": 16}),
     ]
     cpu_cfg = {"yolo_chunk": 100, "yolo_batch": 8, "tracknet_chunk": 8, "rtmpose_chunk": 32, "bst_batch": 16}
     if "cuda" not in device.lower():
