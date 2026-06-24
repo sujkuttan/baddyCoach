@@ -428,13 +428,10 @@ class YOLOv8Tracker:
 
     def _free_tracking_state(self):
         import torch, gc
-        predictor = getattr(self.model, 'predictor', None)
-        if predictor is not None:
-            predictor.trackers = []
-            predictor.tracker = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.synchronize()
 
 
 class RTMPoseEstimator:
