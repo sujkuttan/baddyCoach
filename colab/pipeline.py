@@ -778,7 +778,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         import torch
         if torch.cuda.is_available():
             props = torch.cuda.get_device_properties(0)
-            vram_gb = props.total_mem / (1024 ** 3)
+            vram_gb = (props.total_memory if hasattr(props, 'total_memory') else props.total_mem) / (1024 ** 3)
             print(f"  GPU: {props.name} ({vram_gb:.1f} GB)")
         else:
             print("  GPU: CUDA requested but not available, using CPU")
