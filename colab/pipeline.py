@@ -380,7 +380,7 @@ class CourtKeypointDetector:
 
 
 class YOLOv8Tracker:
-    def __init__(self, conf_threshold=0.3, device="cuda", yolo_chunk=200, yolo_batch=16):
+    def __init__(self, conf_threshold=0.3, device="cuda", yolo_chunk=100, yolo_batch=8):
         from ultralytics import YOLO
         self.model = YOLO(YOLOV8_MODEL)
         self.conf = conf_threshold
@@ -712,7 +712,7 @@ def stage_court_detection(corners):
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
 
-BATCH_SIZE = 2000
+BATCH_SIZE = 1000
 
 
 def _generate_report(court, players_data, shots, rallies, coach,
@@ -1213,6 +1213,10 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 1. Player tracking (YOLOv8)
     tqdm.write(f"{tag} | YOLOv8 tracking {len(frames)} frames...")
     batch_det = tracker.track_batch(frames, 0)
+    try:
+        import torch; torch.cuda.empty_cache()
+    except Exception:
+        pass
     if corners and len(corners) >= 4:
         court_mid_y = (corners[0][1] + corners[2][1]) / 2
     else:
@@ -1241,6 +1245,10 @@ def _process_batch(frames, global_indices, batch_start_offset,
     tqdm.write(f"{tag} | TrackNet shuttle tracking...")
     ow, oh = frames[0].shape[1], frames[0].shape[0]
     shuttle_preds = tracknet.predict_batch(frames, original_size=(ow, oh))
+    try:
+        import torch; torch.cuda.empty_cache()
+    except Exception:
+        pass
     for local_idx, global_idx in enumerate(global_indices):
         pred_idx = local_idx - 2
         if pred_idx >= 0 and pred_idx < len(shuttle_preds):
@@ -1319,6 +1327,12 @@ def _process_batch(frames, global_indices, batch_start_offset,
         import torch
         used_mb = torch.cuda.memory_allocated() / 1024 / 1024
         tqdm.write(f"  GPU memory: {used_mb:.0f} MB allocated")
+    del frames, batch_det, shuttle_preds, crop_list
+    import gc; gc.collect()
+    try:
+        import torch; torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":
