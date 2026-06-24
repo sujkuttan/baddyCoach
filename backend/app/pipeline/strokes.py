@@ -186,6 +186,9 @@ class StrokeClassificationStage:
         previous_shots = []
         hit_frames_sorted = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
+        # Phase 1: build all clips (fast, no model inference)
+        all_clips = []
+        clip_hit_pairs = []  # (frame, hit_dict, frames_list)
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
 
@@ -225,9 +228,15 @@ class StrokeClassificationStage:
             )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
+            all_clips.append(clip)
+            clip_hit_pairs.append((frame, hit, clip_frames))
 
-            stroke_type, confidence, raw_class_id = classifier.predict_single(clip)
+        # Phase 2: batch inference (GPU-efficient, all clips in one call)
+        batch_size = config.extra.get("bst_batch", 32)
+        all_results = classifier.predict_from_clips(all_clips, batch_size=batch_size)
 
+        # Phase 3: build shot records from results
+        for (frame, hit, clip_frames), (stroke_type, confidence, raw_class_id) in zip(clip_hit_pairs, all_results):
             # Track if this specific shot fell back to rule-based prediction
             # raw_class_id == 0 catches three paths:
             #   1. Model never loaded (all clips fallback)
