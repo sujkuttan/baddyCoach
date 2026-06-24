@@ -108,6 +108,10 @@ class BSTClassifier:
                 if 'embedding_tem' in k:
                     seq_len = v.shape[1] - 1
 
+            if n_classes != 25:
+                print(f"WARNING: BST checkpoint has {n_classes} output classes, expected 25. "
+                      "Predictions will be misaligned with SHUTTLESET_CLASSES mapping.")
+
             if seq_len is None:
                 print("BST checkpoint missing embedding_tem, cannot determine seq_len")
                 record_model_health("bst", {"loaded": False, "missing_frac": 1.0,

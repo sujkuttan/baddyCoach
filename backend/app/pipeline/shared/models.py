@@ -19,7 +19,8 @@ logger = logging.getLogger(__name__)
 _models: dict[str, Any] = {}
 _model_health: dict[str, dict] = {}
 
-CKPT_DIR = Path("ckpts")
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+CKPT_DIR = _PROJECT_ROOT / "ckpts"
 
 # ─── Centralized model registry ────────────────────────────────────────────
 # (local_path, gdrive_id, alt_download_url_or_None)
@@ -309,10 +310,8 @@ def get_bst():
     if "bst" not in _models:
         try:
             from app.models.bst import BSTClassifier
-            ensure_model("bst")
-            s = _get_settings()
-            path = str(s.bst_model_path) if s.bst_model_path else None
-            _models["bst"] = BSTClassifier(path, device=_get_device())
+            path = ensure_model("bst")
+            _models["bst"] = BSTClassifier(str(path) if path else None, device=_get_device())
         except ImportError:
             logger.warning("BST not available (standalone mode)")
             return None

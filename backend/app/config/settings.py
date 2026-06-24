@@ -14,13 +14,14 @@ class Settings(BaseSettings):
     sample_rate: int = 0  # 0=auto (10fps), 1=every frame, 2=every 2nd, etc.
 
     # Model paths
-    tracknet_model_path: Path = Path("ckpts/TrackNet_best.pt")
-    inpaintnet_model_path: Path = Path("ckpts/InpaintNet_best.pt")
-    court_kpRCNN_model_path: Path = Path("ckpts/court_kpRCNN.pth")
+    _project_root: Path = Path(__file__).resolve().parent.parent.parent.parent
+    tracknet_model_path: Path = _project_root / "ckpts/TrackNet_best.pt"
+    inpaintnet_model_path: Path = _project_root / "ckpts/InpaintNet_best.pt"
+    court_kpRCNN_model_path: Path = _project_root / "ckpts/court_kpRCNN.pth"
     yolov8_model_path: Path | None = None
-    rtmpose_model_path: Path | None = Path("ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx")
-    hrnet_model_path: Path | None = Path("ckpts/mmpose/hrnet_w32_coco_256x192.onnx")
-    bst_model_path: Path | None = Path("ckpts/bst/bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt")
+    rtmpose_model_path: Path | None = _project_root / "ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
+    hrnet_model_path: Path | None = _project_root / "ckpts/mmpose/hrnet_w32_coco_256x192.onnx"
+    bst_model_path: Path | None = _project_root / "ckpts/bst/bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"
     pose_model: str = "rtmpose"  # rtmpose, mmpose, hybrid
 
     # Environment variables
