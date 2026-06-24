@@ -7,10 +7,12 @@ Tiers are calibrated against T4 (15.5GB), A100 (40GB/80GB), and CPU fallback.
 
 _TIER_TABLE = [
     # (min_vram_gb, config)
-    (12, {"yolo_chunk": 1000, "yolo_batch": 64, "tracknet_chunk": 128, "rtmpose_chunk": 256, "bst_batch": 128}),
-    (6,  {"yolo_chunk": 500,  "yolo_batch": 32, "tracknet_chunk": 64,  "rtmpose_chunk": 128, "bst_batch": 64}),
-    (2,  {"yolo_chunk": 200,  "yolo_batch": 16, "tracknet_chunk": 16,  "rtmpose_chunk": 64,  "bst_batch": 32}),
-    (0,  {"yolo_chunk": 100,  "yolo_batch": 8,  "tracknet_chunk": 8,   "rtmpose_chunk": 32,  "bst_batch": 16}),
+    # T4 (15.5 GB) tuned: YOLO Conv2d spikes 750 MiB per sub-batch;
+    # fragmentation accumulates ~6 batches → OOM with larger chunks.
+    (12, {"yolo_chunk": 200,  "yolo_batch": 16, "tracknet_chunk": 16,  "rtmpose_chunk": 128, "bst_batch": 128}),
+    (6,  {"yolo_chunk": 100,  "yolo_batch": 8,  "tracknet_chunk": 8,   "rtmpose_chunk": 64,  "bst_batch": 64}),
+    (2,  {"yolo_chunk": 50,   "yolo_batch": 4,  "tracknet_chunk": 4,   "rtmpose_chunk": 32,  "bst_batch": 32}),
+    (0,  {"yolo_chunk": 25,   "yolo_batch": 2,  "tracknet_chunk": 2,   "rtmpose_chunk": 16,  "bst_batch": 16}),
 ]
 
 _CPU_CONFIG = {"yolo_chunk": 100, "yolo_batch": 8, "tracknet_chunk": 8, "rtmpose_chunk": 32, "bst_batch": 16}

@@ -740,7 +740,7 @@ def stage_court_detection(corners):
 
 # ─── Main Pipeline ───────────────────────────────────────────────────────────
 
-BATCH_SIZE = 500
+BATCH_SIZE = 300
 
 
 def _generate_report(court, players_data, shots, rallies, coach,
@@ -944,6 +944,10 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
+                try:
+                    import torch; torch.cuda.empty_cache()
+                except Exception:
+                    pass
         frame_idx += 1
         batch_pbar.update(1)
     batch_pbar.close()
