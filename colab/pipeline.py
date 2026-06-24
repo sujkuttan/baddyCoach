@@ -428,6 +428,15 @@ class YOLOv8Tracker:
 
     def _free_tracking_state(self):
         import torch, gc
+        predictor = getattr(self.model, 'predictor', None)
+        if predictor is not None:
+            dataset = getattr(predictor, 'dataset', None)
+            if dataset is not None:
+                dataset.vid_cap = None
+            predictor.vid_path = None
+            predictor.vid_writer = None
+            predictor.im0s = None
+            predictor.s = None
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
