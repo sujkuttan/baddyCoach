@@ -57,6 +57,8 @@ HRNET_PATH = MODEL_REGISTRY["hrnet"][0]
 
 
 def setup_models(device: str, pose_model: str = "rtmpose"):
+    import torch
+    torch.backends.cudnn.benchmark = False
     print("Setting up models...")
 
     # TrackNet (shuttle tracking)
@@ -381,6 +383,8 @@ class CourtKeypointDetector:
 
 class YOLOv8Tracker:
     def __init__(self, conf_threshold=0.3, device="cuda", yolo_chunk=100, yolo_batch=8):
+        import torch
+        torch.backends.cudnn.benchmark = False
         from ultralytics import YOLO
         self.model = YOLO(YOLOV8_MODEL)
         self.conf = conf_threshold
