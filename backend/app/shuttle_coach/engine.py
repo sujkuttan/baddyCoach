@@ -25,7 +25,17 @@ def analyze(data_dir: str) -> dict[str, Any]:
     for r in results:
         results_by_id[r.metric_id].append(r)
 
-    findings = derive_findings(results_by_id)
+    # Load quality.json if available (from DataQualityStage)
+    quality = None
+    quality_path = Path(data_dir) / "quality.json"
+    if quality_path.exists():
+        import json
+        try:
+            quality = json.loads(quality_path.read_text())
+        except Exception:
+            pass
+
+    findings = derive_findings(results_by_id, quality=quality)
     findings = prioritize_findings(findings)
 
     report_md = render_report(findings)
@@ -51,6 +61,7 @@ def analyze_from_pipeline(
     analytics: dict[str, Any],
     shuttle_metrics: dict[str, dict],
     player_id: str,
+    data_quality: dict | None = None,
 ) -> dict[str, Any]:
     """Unified coach evaluation for the backend pipeline.
 
@@ -61,13 +72,19 @@ def analyze_from_pipeline(
         analytics: full pipeline analytics dict
         shuttle_metrics: per-player shuttle_coach metric values
         player_id: the player to evaluate
+        data_quality: optional quality dict from DataQualityStage.
+                      When present, capability_trust flags suppress
+                      findings from untrusted capabilities.
 
     Returns:
         dict with strengths, weaknesses, improvements, drills, evidence, rally_stats
     """
     from app.shuttle_coach.feedback import derive_findings, prioritize_findings
 
-    # Build YAML rule findings
+    quality = data_quality or {}
+    capability_trust = quality.get("capability_trust", {})
+
+    # Build YAML rule findings (suppressed by capability_trust)
     player_analytics = {
         "tactical": analytics.get("tactical_analytics", {}).get(player_id, {}),
         "fitness": analytics.get("fitness_analytics", {}).get(player_id, {}),
@@ -80,6 +97,21 @@ def analyze_from_pipeline(
 
     yaml_findings = evaluate_yaml_rules(player_analytics, player_id)
 
+    # Suppress findings from untrusted capabilities
+    if not capability_trust.get("tactical", True):
+        yaml_findings = [f for f in yaml_findings
+                         if not f.code.startswith(("smash_", "shot_", "net_", "clear_",
+                                                    "drop_", "drive_", "rush_"))]
+    if not capability_trust.get("movement", True):
+        yaml_findings = [f for f in yaml_findings
+                         if not f.code in ("recovery_slow", "recovery_fast",
+                                           "distance_low", "distance_high",
+                                           "front_court_weak", "rear_court_dominant",
+                                           "left_bias", "right_bias", "balanced_court")]
+    if not capability_trust.get("technique", True):
+        yaml_findings = [f for f in yaml_findings
+                         if not f.code.startswith("technique_")]
+
     # Build shuttle_coach metric-based findings
     sc_metrics = shuttle_metrics.get(player_id, {})
     sc_results = []
@@ -89,6 +121,9 @@ def analyze_from_pipeline(
             player_id=player_id,
             value=val,
             unit="",
+            sample_size=1,
+            confidence=0.5,
+            context={},
         ))
     sc_results_by_id = defaultdict(list)
     for r in sc_results:
@@ -125,11 +160,20 @@ def analyze_from_pipeline(
             if label not in weaknesses:
                 weaknesses.append(label)
 
+    # Use the dynamic drill matcher instead of static strings
+    try:
+        from app.shuttle_coach.feedback.drill_matcher import select_drills, format_drill_flat
+        structured_drills = select_drills(all_findings, trends=None, quality=quality)
+        drills = [format_drill_flat(d) for d in structured_drills]
+    except Exception:
+        drills = []
+
     return {
         "strengths": strengths,
         "weaknesses": weaknesses,
         "top_3_improvements": improvements[:3],
         "recommended_drills": drills[:3],
+        "recommended_drills_detailed": structured_drills[:3],
         "evidence": evidence,
         "rally_stats": player_analytics.get("rally_stats"),
     }

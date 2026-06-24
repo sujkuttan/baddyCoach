@@ -48,7 +48,7 @@ export function FatigueTrendChart({ rallyIntensities }: FatigueTrendChartProps) 
               fontSize: '11px',
             }}
             labelFormatter={(v) => `Rally ${v}`}
-            formatter={(v: number) => [v.toFixed(2), 'Intensity']}
+            formatter={(v) => [Number(v).toFixed(2), 'Intensity']}
           />
           <ReferenceLine
             y={avg}

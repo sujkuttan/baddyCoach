@@ -79,6 +79,7 @@ class BSTClassifier:
 
     def _load_model(self, path: str):
         """Load BST_CG or BST_CG_AP model from checkpoint."""
+        from app.pipeline.shared.models import _checked_load, record_model_health
         try:
             import torch
             from app.models.bst_model import BST_CG, BST_CG_AP
@@ -87,6 +88,9 @@ class BSTClassifier:
 
             if not isinstance(checkpoint, dict):
                 print(f"BST checkpoint format not recognized: {type(checkpoint)}")
+                record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
+                                            "n_missing": 0, "n_unexpected": 0,
+                                            "core_missing": ["checkpoint not a dict"]})
                 return
 
             state_dict = checkpoint
@@ -109,11 +113,17 @@ class BSTClassifier:
 
             if seq_len is None:
                 print("BST checkpoint missing embedding_tem, cannot determine seq_len")
+                record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
+                                            "n_missing": 0, "n_unexpected": 0,
+                                            "core_missing": ["missing embedding_tem"]})
                 return
 
             has_positions = any('mlp_positions' in k for k in state_dict)
             if not has_positions:
                 print("BST checkpoint missing mlp_positions, cannot load")
+                record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
+                                            "n_missing": 0, "n_unexpected": 0,
+                                            "core_missing": ["missing mlp_positions"]})
                 return
 
             model_class = BST_CG_AP if has_ap else BST_CG
@@ -128,7 +138,15 @@ class BSTClassifier:
                 depth_inter=1,
             )
 
-            model.load_state_dict(state_dict, strict=False)
+            status = _checked_load(model, state_dict,
+                                   core_prefixes=("tcn_pose", "mlp_head", "embedding_tem"))
+            record_model_health("bst", status)
+
+            if not status["loaded"]:
+                print(f"WARNING: BST core layers missing ({status['core_missing']}). "
+                      "Model set to None — honest fallback.")
+                return
+
             model.to(self.device).eval()
 
             self.model = model
@@ -138,6 +156,9 @@ class BSTClassifier:
             print(f"BST load error: {e}")
             import traceback
             traceback.print_exc()
+            record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
+                                        "n_missing": 0, "n_unexpected": 0,
+                                        "core_missing": [str(e)]})
 
     def predict_from_clips(self, clips: list, batch_size: Optional[int] = None) -> list:
         """Predict stroke types from prepared BST clips.

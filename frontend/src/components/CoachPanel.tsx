@@ -11,17 +11,35 @@ interface RallyStats {
   first_shot_win_rate: number;
 }
 
+interface DrillDetail {
+  drill_id: string;
+  name: string;
+  focus: string;
+  level: string;
+  dosage: string;
+  success_criteria: string;
+  rationale: string;
+  linked_finding: string;
+}
+
 interface CoachPanelProps {
   strengths: string[];
   weaknesses: string[];
   improvements: string[];
   drills: string[];
+  drillsDetailed?: DrillDetail[];
   evidence: Evidence[];
   rallyStats?: RallyStats;
 }
 
-export function CoachPanel({ strengths, weaknesses, drills, evidence, rallyStats }: CoachPanelProps) {
+export function CoachPanel({ strengths, weaknesses, drills, drillsDetailed, evidence, rallyStats }: CoachPanelProps) {
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
+
+  const displayDrills = drillsDetailed && drillsDetailed.length > 0
+    ? drillsDetailed.filter(d => d && d.name)
+    : drills.filter(d => d).map(d => ({ name: d, level: '', dosage: '', success_criteria: '', rationale: '', drill_id: '', focus: '', linked_finding: '' }));
+
+  const hasDrills = displayDrills.length > 0;
 
   return (
     <div className="space-y-8">
@@ -97,8 +115,8 @@ export function CoachPanel({ strengths, weaknesses, drills, evidence, rallyStats
         </div>
       )}
 
-      {/* Recommended Drills */}
-      {drills.length > 0 && drills.some(d => d) && (
+      {/* Recommended Drills (structured when available) */}
+      {hasDrills && (
         <div className="animate-entrance" style={{ animationDelay: '300ms' }}>
           <div className="flex items-center gap-2 mb-3">
             <div className="w-6 h-6 rounded-md bg-shuttle-lime/15 flex items-center justify-center">
@@ -108,13 +126,39 @@ export function CoachPanel({ strengths, weaknesses, drills, evidence, rallyStats
             </div>
             <h3 className="font-display text-xl text-shuttle-lime tracking-wide">RECOMMENDED DRILLS</h3>
           </div>
-          <div className="space-y-2">
-            {drills.filter(d => d).map((d, i) => (
-              <div key={i} className="flex items-start gap-3 px-4 py-3 rounded-xl bg-shuttle-lime/5 border border-shuttle-lime/10">
-                <div className="w-6 h-6 rounded-full bg-shuttle-lime/15 flex items-center justify-center flex-shrink-0 mt-0.5">
-                  <span className="font-mono text-xs text-shuttle-lime font-semibold">{i + 1}</span>
+          <div className="space-y-3">
+            {displayDrills.map((d: any, i: number) => (
+              <div key={i} className="rounded-xl border border-shuttle-lime/10 overflow-hidden">
+                <div className="flex items-start gap-3 px-4 py-3 bg-shuttle-lime/5">
+                  <div className="w-6 h-6 rounded-full bg-shuttle-lime/15 flex items-center justify-center flex-shrink-0 mt-0.5">
+                    <span className="font-mono text-xs text-shuttle-lime font-semibold">{i + 1}</span>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-body text-sm text-text-primary font-medium">{d.name}</p>
+                    {(d.dosage || d.level) && (
+                      <div className="flex flex-wrap gap-2 mt-1">
+                        {d.level && (
+                          <span className="font-mono text-[10px] uppercase tracking-wider text-shuttle-lime bg-shuttle-lime/10 px-2 py-0.5 rounded-full">
+                            {d.level}
+                          </span>
+                        )}
+                        {d.dosage && (
+                          <span className="font-mono text-[10px] text-text-muted bg-court-surface/50 px-2 py-0.5 rounded-full">
+                            {d.dosage}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    {d.rationale && (
+                      <p className="font-mono text-xs text-text-secondary mt-1.5 leading-relaxed">{d.rationale}</p>
+                    )}
+                    {d.success_criteria && (
+                      <p className="font-mono text-[10px] text-feather-green mt-1">
+                        ✓ Success: {d.success_criteria}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <p className="font-body text-sm text-text-primary leading-relaxed">{d}</p>
               </div>
             ))}
           </div>

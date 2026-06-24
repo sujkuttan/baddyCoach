@@ -14,6 +14,7 @@ interface ReportViewProps {
   jobId: string | null;
   reportData?: any;
   onBack: () => void;
+  onViewProgress?: (playerKey: string) => void;
 }
 
 function getPlayers(report: any): string[] {
@@ -32,7 +33,7 @@ function playerLabel(id: string): string {
   return id.replace('player_', 'P');
 }
 
-export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
+export function ReportView({ jobId, reportData, onBack, onViewProgress }: ReportViewProps) {
   const [report, setReport] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState<'overview' | 'tactical' | 'technical' | 'fitness'>('overview');
@@ -188,6 +189,19 @@ export function ReportView({ jobId, reportData, onBack }: ReportViewProps) {
                 </button>
               ))}
             </div>
+
+            {/* View Progress button */}
+            {onViewProgress && (
+              <button
+                onClick={() => onViewProgress(selectedPlayer)}
+                className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg border border-shuttle-lime/30 text-shuttle-lime hover:bg-shuttle-lime/10 transition-colors"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+                </svg>
+                <span className="font-mono text-[10px] tracking-wider">VIEW PROGRESS</span>
+              </button>
+            )}
 
             {/* Export PDF button */}
             <button

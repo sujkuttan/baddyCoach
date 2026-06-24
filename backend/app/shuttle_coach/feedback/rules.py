@@ -68,8 +68,18 @@ def _check_high_unforced(results: list[MetricResult]) -> list[Finding]:
     return findings
 
 
-def derive_findings(results_by_id: dict[str, list[MetricResult]]) -> list[Finding]:
-    """Derive findings from metrics grouped by metric_id."""
+def derive_findings(results_by_id: dict[str, list[MetricResult]],
+                    quality: dict | None = None) -> list[Finding]:
+    """Derive findings from metrics grouped by metric_id.
+
+    Args:
+        results_by_id: MetricResults grouped by metric_id.
+        quality: Optional data-quality dict.  When present, capability_trust
+                 flags suppress findings from untrusted capabilities.
+
+    Returns:
+        List of Finding objects.
+    """
     findings: list[Finding] = []
     all_results = []
     for results in results_by_id.values():
@@ -78,6 +88,14 @@ def derive_findings(results_by_id: dict[str, list[MetricResult]]) -> list[Findin
     findings.extend(_check_slow_recovery(all_results))
     findings.extend(_check_weak_shots(all_results))
     findings.extend(_check_high_unforced(all_results))
+
+    # Pattern findings (requires patterns metric)
+    pattern_results = results_by_id.get("patterns.conditional_outcome", [])
+    pattern_results += results_by_id.get("patterns.transition_outcome", [])
+    if pattern_results:
+        from app.shuttle_coach.feedback.patterns import derive_pattern_findings as _dpf
+        findings.extend(_dpf(pattern_results, quality=quality))
+
     return findings
 
 

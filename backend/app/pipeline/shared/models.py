@@ -15,6 +15,49 @@ import logging
 logger = logging.getLogger(__name__)
 
 _models: dict[str, Any] = {}
+_model_health: dict[str, dict] = {}
+
+
+def _checked_load(model, state_dict, *, core_prefixes, max_missing_frac=0.05):
+    """Load a state_dict with strict key checking.
+
+    Returns a dict with status details so callers can decide whether
+    the model is usable and persist the result in model_health.json.
+
+    Args:
+        model: The nn.Module instance.
+        state_dict: The loaded checkpoint dict.
+        core_prefixes: Tuple of key prefixes whose absence means "not loaded".
+        max_missing_frac: Maximum fraction of missing keys allowed.
+
+    Returns:
+        dict with keys: loaded (bool), missing_frac (float), n_missing (int),
+        n_unexpected (int), core_missing (list).
+    """
+    import torch
+    incompat = model.load_state_dict(state_dict, strict=False)
+    missing, unexpected = list(incompat.missing_keys), list(incompat.unexpected_keys)
+    total = sum(1 for _ in model.state_dict())
+    missing_frac = len(missing) / max(total, 1)
+    core_missing = [k for k in missing if any(k.startswith(p) for p in core_prefixes)]
+    status = {
+        "loaded": not core_missing and missing_frac <= max_missing_frac,
+        "missing_frac": round(missing_frac, 4),
+        "n_missing": len(missing),
+        "n_unexpected": len(unexpected),
+        "core_missing": core_missing[:10],
+    }
+    return status
+
+
+def get_model_health() -> dict[str, dict]:
+    """Return the accumulated model health report for the current process."""
+    return dict(_model_health)
+
+
+def record_model_health(name: str, status: dict):
+    """Record health status for a model."""
+    _model_health[name] = status
 
 
 def _get_settings():

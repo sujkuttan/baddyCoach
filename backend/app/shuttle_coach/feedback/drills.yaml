@@ -1,0 +1,171 @@
+# Drill catalog — mapped to finding codes via glob patterns
+# The drill matcher selects the highest-severity match and sets the
+# difficulty level based on trend direction.
+
+drills:
+  - id: shadow_six_corner
+    targets:
+      - "slow_recovery"
+      - "pattern::*::rear_*::pressed"
+      - "front_court_weak"
+    focus: "court coverage + recovery to base"
+    levels:
+      foundational:
+        dosage: "3×30s, walk-through"
+        success: "return to base before next feed"
+      intermediate:
+        dosage: "4×45s, jog"
+        success: "<1.0s recovery, 8/10 reps"
+      advanced:
+        dosage: "5×60s, sprint + shadow swing"
+        success: "<0.8s recovery under fatigue"
+
+  - id: net_kill_block_reflex
+    targets:
+      - "pattern::block::front_*::*"
+      - "pattern::net_shot::*::pressed"
+      - "technique_net_*"
+    focus: "front-court reflex + tight blocks"
+    levels:
+      foundational:
+        dosage: "2×20 reps, partner feeds from net"
+        success: "clean contact on 7/10 feeds"
+      intermediate:
+        dosage: "3×30 reps, alternating block and net kill"
+        success: "8/10 kills, <0.5s reaction"
+      advanced:
+        dosage: "4×30 reps with movement from base"
+        success: "kill on 9/10, immediate recovery"
+
+  - id: smash_finishing
+    targets:
+      - "pattern::smash::*::*"
+      - "technique_smash_needs_work"
+      - "smash_efficiency"
+    focus: "smash power + placement + follow-through"
+    levels:
+      foundational:
+        dosage: "3×10 smashes, partner feeds from rear"
+        success: "6/10 land in deep half"
+      intermediate:
+        dosage: "4×12, alternating cross and down-the-line"
+        success: "9/12 in target zone, full extension"
+      advanced:
+        dosage: "5×15 with defensive recovery"
+        success: "12/15 kills, <1.0s recovery"
+
+  - id: clear_drop_combination
+    targets:
+      - "clear_heavy"
+      - "pattern::clear::*::*"
+      - "technique_clear_weak"
+    focus: "vary depth from rear court"
+    levels:
+      foundational:
+        dosage: "3×10, alternate clear and drop from rear"
+        success: "clear reaches baseline on 7/10"
+      intermediate:
+        dosage: "4×12, coach calls shot after preparation"
+        success: "disguise on 8/12, drop barely clears net"
+      advanced:
+        dosage: "5×15 with movement from base"
+        success: "opponent forced to lift 10/15"
+
+  - id: rally_patience
+    targets:
+      - "short_rallies"
+      - "pattern::*::*::pressed"
+      - "high_unforced_errors"
+    focus: "build sustained rallies + error reduction"
+    levels:
+      foundational:
+        dosage: "practice rallies, aim for 8-shot minimum"
+        success: "average rally length increases by 2 shots"
+      intermediate:
+        dosage: "no-smash rallies, use clears + drops + drives"
+        success: "sustain 12+ shot rallies consistently"
+      advanced:
+        dosage: "rally with purpose — end only on high-percentage shot"
+        success: "unforced error rate below 15%"
+
+  - id: shot_variety_expansion
+    targets:
+      - "shot_variety_predictable"
+      - "pattern_diversity_low"
+      - "predictable_pattern"
+    focus: "expand shot repertoire"
+    levels:
+      foundational:
+        dosage: "add 1 new shot type, 20 reps per session"
+        success: "use new shot in match play"
+      intermediate:
+        dosage: "forced variation — cannot use dominant shot >2× in a row"
+        success: "max shot percentage drops below 35%"
+      advanced:
+        dosage: "pattern-breaking drill: after 2 identical shots, forced switch"
+        success: "opponent cannot predict 3-shot sequence"
+
+  - id: opening_variation
+    targets:
+      - "rally_opener_pattern"
+    focus: "vary rally opening shots"
+    levels:
+      foundational:
+        dosage: "practice 3 different rally starts (serve, clear, drop)"
+        success: "use at least 2 different openers per game"
+      intermediate:
+        dosage: "5 different starts, randomised"
+        success: "first-shot win rate increases by 10%"
+      advanced:
+        dosage: "deceptive openers — disguise until last moment"
+        success: "opponent wrong-footed on 4/10 openers"
+
+  - id: footwork_ladder
+    targets:
+      - "distance_low"
+      - "left_bias"
+      - "right_bias"
+      - "rear_court_dominant"
+    focus: "court coverage + centre recovery"
+    levels:
+      foundational:
+        dosage: "6-corner footwork pattern, 3×30s walk"
+        success: "touch all 6 corners in <15s"
+      intermediate:
+        dosage: "4×45s, jog + shadow swing"
+        success: "touch all corners, return to centre each time"
+      advanced:
+        dosage: "5×60s sprint with racket preparation"
+        success: "full court coverage, centre after every shot"
+
+  - id: interval_endurance
+    targets:
+      - "fatigue_declining"
+      - "low_intensity"
+    focus: "match-condition endurance"
+    levels:
+      foundational:
+        dosage: "8× (30s high intensity + 60s rest)"
+        success: "maintain intensity through final interval"
+      intermediate:
+        dosage: "12× (30s high + 30s rest)"
+        success: "peak intensity within 10% of first interval"
+      advanced:
+        dosage: "15× (40s high + 20s rest)"
+        success: "rally intensity stable across all intervals"
+
+  - id: technique_fundamentals
+    targets:
+      - "technique_overall_needs_work"
+      - "technique_drive_weak"
+    focus: "fundamental stroke mechanics"
+    levels:
+      foundational:
+        dosage: "slow-motion shadow swings, 3×10 each stroke"
+        success: "consistent swing path on video review"
+      intermediate:
+        dosage: "wall rally: 3-min continuous drive"
+        success: "clean contact, 50+ consecutive hits"
+      advanced:
+        dosage: "record + review: compare to reference model"
+        success: "technique score improves by 0.15+"

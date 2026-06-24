@@ -48,9 +48,13 @@ class ReportGenerator:
         if coach:
             report.update(coach)
 
-        # Add data quality section
-        data_quality = self._generate_data_quality_report(artifacts)
-        report["data_quality"] = data_quality
+        # Prefer structured quality.json from DataQualityStage
+        quality_from_stage = artifacts.get("data_quality")
+        if quality_from_stage and quality_from_stage.get("quality_score") is not None:
+            report["data_quality"] = quality_from_stage
+        else:
+            data_quality = self._generate_data_quality_report(artifacts)
+            report["data_quality"] = data_quality
 
         # Add per-stage timings
         stage_timings = artifacts.get("stage_timings")

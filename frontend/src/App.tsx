@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { UploadView } from './views/UploadView';
 import { ProcessingView } from './views/ProcessingView';
 import { ReportView } from './views/ReportView';
+import { ProgressView } from './views/ProgressView';
 import { getJob } from './utils/api';
 
-type AppState = 'upload' | 'processing' | 'report';
+type AppState = 'upload' | 'processing' | 'report' | 'progress';
 
 const STORAGE_KEY = 'baddycoach_job_id';
 
@@ -13,6 +14,7 @@ function App() {
   const [jobId, setJobId] = useState<string | null>(null);
   const [loadedReport, setLoadedReport] = useState<any>(null);
   const [restoring, setRestoring] = useState(true);
+  const [progressPlayerKey, setProgressPlayerKey] = useState<string>('player_1');
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -55,6 +57,11 @@ function App() {
     setState('upload');
   };
 
+  const handleViewProgress = (playerKey: string = 'player_1') => {
+    setProgressPlayerKey(playerKey);
+    setState('progress');
+  };
+
   if (restoring) {
     return (
       <div className="min-h-screen court-pattern flex items-center justify-center">
@@ -72,7 +79,10 @@ function App() {
         <ProcessingView jobId={jobId} onComplete={() => setState('report')} />
       )}
       {state === 'report' && (
-        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} />
+        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} />
+      )}
+      {state === 'progress' && (
+        <ProgressView playerKey={progressPlayerKey} onBack={() => setState('report')} />
       )}
     </div>
   );

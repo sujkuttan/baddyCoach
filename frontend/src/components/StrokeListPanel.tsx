@@ -53,7 +53,7 @@ const STROKE_LABELS: Record<string, string> = {
   unknown: 'Unknown',
 };
 
-export function StrokeListPanel({ strokes, rallies, fps, onSeek }: StrokeListPanelProps) {
+export function StrokeListPanel({ strokes, rallies: _rallies, fps: _fps, onSeek }: StrokeListPanelProps) {
   const [filter, setFilter] = useState<string>('all');
 
   const uniqueTypes = Array.from(new Set(strokes.map(s => s.stroke_type))).sort();

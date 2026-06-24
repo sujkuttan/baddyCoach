@@ -250,6 +250,7 @@ class TrackNetV3:
             self._load_inpaintnet(inpaintnet_path)
 
     def _load_backbone(self, path: str):
+        from app.pipeline.shared.models import _checked_load, record_model_health
         try:
             checkpoint = torch.load(path, map_location=self.device)
             state_dict = checkpoint if isinstance(checkpoint, dict) else {}
@@ -265,6 +266,9 @@ class TrackNetV3:
                     break
 
             if in_channels == 27:
+                status = {"loaded": False, "missing_frac": 1.0, "n_missing": 0,
+                          "n_unexpected": 0, "core_missing": ["27-channel UNet weights incompatible"]}
+                record_model_health("tracknet", status)
                 print("WARNING: Detected 27-channel weights (old custom UNet format). "
                       "These are incompatible with the published VGG-style backbone. "
                       "The published TrackNetV3 uses 9 input channels (3 RGB frames).")
@@ -272,7 +276,16 @@ class TrackNetV3:
                 return
 
             self.model = TrackNetV3Backbone(in_channels=in_channels)
-            self.model.load_state_dict(state_dict, strict=False)
+            status = _checked_load(self.model, state_dict,
+                                   core_prefixes=("enc1", "enc5", "out"))
+            record_model_health("tracknet", status)
+
+            if not status["loaded"]:
+                print(f"WARNING: TrackNetV3 core layers missing ({status['core_missing']}). "
+                      "Model set to None — honest fallback.")
+                self.model = None
+                return
+
             self.model.to(self.device)
             self.model.eval()
             model_type = "TrackNetV3Backbone (VGG-style)"
@@ -282,6 +295,9 @@ class TrackNetV3:
             import traceback
             traceback.print_exc()
             self.model = None
+            status = {"loaded": False, "missing_frac": 1.0, "n_missing": 0,
+                      "n_unexpected": 0, "core_missing": [str(e)]}
+            record_model_health("tracknet", status)
             print("WARNING: TrackNetV3 expects the published VGG-style backbone "
                   "(9 input channels, 3 RGB frames), NOT the old custom UNet.")
 

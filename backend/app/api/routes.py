@@ -24,6 +24,8 @@ def run_pipeline(job_id: str):
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
     from app.pipeline.analytics.tactical import TacticalAnalyticsStage
     from app.pipeline.analytics.technical import TechnicalAnalyticsStage
+    from app.pipeline.analytics.shot_context import ShotContextStage
+    from app.pipeline.quality import DataQualityStage
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
     from app.api.websocket import ws_manager
@@ -83,11 +85,13 @@ def run_pipeline(job_id: str):
         ("stroke_classification", lambda: StrokeClassificationStage().run(store, config)),
         ("player_attribution", lambda: PlayerAttributionStage().run(store, config)),
         ("rally_segmentation", lambda: RallySegmentationStage().run(store, config)),
+        ("shot_context", lambda: ShotContextStage().run(store, config)),
         ("court_position_analytics", lambda: CourtPositionAnalyticsStage().run(store, config)),
         ("footwork_analytics", lambda: FootworkAnalyticsStage().run(store, config)),
         ("fitness_analytics", lambda: FitnessAnalyticsStage().run(store, config)),
         ("tactical_analytics", lambda: TacticalAnalyticsStage().run(store, config)),
         ("technical_analytics", lambda: TechnicalAnalyticsStage().run(store, config)),
+        ("data_quality", lambda: DataQualityStage().run(store, config)),
     ]
 
     for stage_name, stage_fn in stages:
@@ -115,6 +119,9 @@ def run_pipeline(job_id: str):
         "_shots_df": store.get_parquet("shots"),
     }
 
+    # Get data quality from the DataQualityStage
+    data_quality = store.get("data_quality") or {}
+
     # Try to get shuttle_coach metrics for richer coaching
     shuttle_metrics = {}
     try:
@@ -136,17 +143,53 @@ def run_pipeline(job_id: str):
 
     report = {
         "strengths": [], "weaknesses": [], "top_3_improvements": [],
-        "recommended_drills": [], "evidence": [], "rally_stats": None,
+        "recommended_drills": [], "recommended_drills_detailed": [],
+        "evidence": [], "rally_stats": None, "patterns": [],
+        "technique_reference": [], "progress": [],
     }
     for pid in sorted(all_players):
-        result = analyze_from_pipeline(analytics, shuttle_metrics, player_id=pid)
+        result = analyze_from_pipeline(analytics, shuttle_metrics, player_id=pid, data_quality=data_quality)
         report["strengths"].extend(result["strengths"])
         report["weaknesses"].extend(result["weaknesses"])
         report["top_3_improvements"].extend(result["top_3_improvements"])
         report["recommended_drills"].extend(result["recommended_drills"])
+        report["recommended_drills_detailed"].extend(result.get("recommended_drills_detailed", []))
         report["evidence"].extend(result["evidence"])
         if result.get("rally_stats") and report["rally_stats"] is None:
             report["rally_stats"] = result["rally_stats"]
+
+    # ── Patterns section ─────────────────────────────────────────
+    try:
+        sc_result = analyze(str(job_dir))
+        pattern_findings = [f for f in sc_result.get("findings", [])
+                           if f.get("code", "").startswith("pattern::")]
+        report["patterns"] = pattern_findings
+    except Exception:
+        pass
+
+    # ── Technique reference section ──────────────────────────────
+    tech_ref = []
+    for pid in sorted(all_players):
+        for mid, val in shuttle_metrics.get(pid, {}).items():
+            if mid == "technique.reference" and isinstance(val, dict):
+                tech_ref.append({"player_id": pid, **val})
+    report["technique_reference"] = tech_ref
+
+    # ── Progress section ─────────────────────────────────────────
+    try:
+        from app.storage.progress import compare_last_n
+        progress_data = {}
+        for pid in sorted(all_players):
+            headlines = compare_last_n(pid, n=5, player_id=pid)
+            if headlines:
+                progress_data[pid] = headlines
+        report["progress"] = progress_data
+    except Exception:
+        pass
+
+    # Include data quality in the report
+    if data_quality:
+        report["data_quality"] = data_quality
 
     # Try to generate Gemini narration (rule-aware) and add to report
     narration_text = _generate_narration(job_id, store, report)
@@ -155,12 +198,12 @@ def run_pipeline(job_id: str):
 
     store.set("report", report)
 
-    # Save cross-session progress data
+    # Save cross-session progress data with structured snapshots
     try:
         from app.storage.progress import save_player_session
+        player_key = job.get("player_key", "") or job_id[:8]
         for pid in sorted(all_players):
-            player_data = {k: v.get(pid, {}) for k, v in analytics.items() if isinstance(v, dict) and pid in v}
-            save_player_session(pid, job_id, player_data)
+            save_player_session(f"{player_key}_{pid}", job_id, analytics, data_quality=data_quality)
     except Exception:
         pass
 
@@ -247,7 +290,7 @@ async def health_check():
 
 
 @router.post("/upload")
-async def upload_video(file: UploadFile = File(...)):
+async def upload_video(file: UploadFile = File(...), player_key: str = ""):
     if not file.filename:
         raise HTTPException(400, "No filename")
 
@@ -279,7 +322,10 @@ async def upload_video(file: UploadFile = File(...)):
     if not is_valid and not (content[:3] == b"\x00\x00\x00" and b"ftyp" in content[:32]):
         is_valid = True  # lenient — accept unknown containers
 
+    import uuid
+    player_key = player_key.strip() or f"player_{uuid.uuid4().hex[:8]}"
     job_id = job_manager.create_job(video_path="", filename=file.filename)
+    job_manager.update_job(job_id, player_key=player_key)
 
     job_dir = settings.job_dir(job_id)
     video_path = job_dir / f"video.{ext}"
@@ -291,7 +337,7 @@ async def upload_video(file: UploadFile = File(...)):
     else:
         job_manager.update_job(job_id, video_path=str(video_path), status="uploaded")
 
-    return {"job_id": job_id, "status": "uploaded", "filename": file.filename}
+    return {"job_id": job_id, "status": "uploaded", "filename": file.filename, "player_key": player_key}
 
 
 @router.get("/jobs/{job_id}")
@@ -312,7 +358,8 @@ async def process_job(
     job_id: str,
     background_tasks: BackgroundTasks,
     pose_model: str = "rtmpose",
-    sample_rate: int = 0
+    sample_rate: int = 0,
+    player_key: str = "",
 ):
     job = job_manager.get_job(job_id)
     if job is None:
@@ -324,11 +371,13 @@ async def process_job(
     if not video_path or not Path(video_path).exists():
         raise HTTPException(404, "Video not found")
 
-    # Store pose_model and sample_rate in job for pipeline to use
-    job_manager.update_job(job_id, pose_model=pose_model, sample_rate=sample_rate)
+    # Use player_key from process param, then from upload, then fallback
+    existing_key = job.get("player_key", "")
+    resolved_key = player_key.strip() or existing_key or f"player_{job_id[:8]}"
+    job_manager.update_job(job_id, pose_model=pose_model, sample_rate=sample_rate, player_key=resolved_key)
 
     background_tasks.add_task(run_pipeline, job_id)
-    return {"job_id": job_id, "status": "processing", "pose_model": pose_model, "sample_rate": sample_rate}
+    return {"job_id": job_id, "status": "processing", "pose_model": pose_model, "sample_rate": sample_rate, "player_key": resolved_key}
 
 
 from app.report.generator import ReportGenerator
@@ -398,3 +447,42 @@ async def analyze_shuttle_coach(job_id: str, question: str = None):
             result["narration_error"] = str(e)
 
     return result
+
+
+@router.get("/players/{player_key}/progress")
+async def get_player_progress(player_key: str, window: int = 5):
+    """Get cross-session progress trends for a player."""
+    from app.storage.progress import (
+        get_player_history, compute_metric_trend, compare_last_n,
+    )
+
+    history = get_player_history(player_key)
+    if len(history) < 2:
+        return {"n_sessions": len(history), "trends": [], "headlines": [],
+                "detail": "Analyze at least 2 sessions to see progress trends"}
+
+    trends = {}
+    tracked_metrics = [
+        "fitness.rally_intensity", "fitness.peak_intensity",
+        "fitness.total_distance", "footwork.avg_recovery",
+        "fitness.late_rally_fatigue", "tactical.total_shots",
+    ]
+    for kp in tracked_metrics:
+        trend = compute_metric_trend(player_key, kp, window=window)
+        if trend["direction"] != "insufficient_data":
+            trends[kp] = trend
+
+    headlines = compare_last_n(player_key, n=window)
+
+    # Compute simple sparklines per metric
+    sparklines = {}
+    for kp, trend in trends.items():
+        sparklines[kp] = trend.get("sparkline", [])
+
+    return {
+        "n_sessions": len(history),
+        "trends": trends,
+        "headlines": headlines[:5],
+        "sparklines": sparklines,
+        "player_key": player_key,
+    }

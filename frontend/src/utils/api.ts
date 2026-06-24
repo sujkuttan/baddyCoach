@@ -31,3 +31,9 @@ export async function getReport(jobId: string): Promise<any> {
   if (!res.ok) throw new Error('Report not found');
   return res.json();
 }
+
+export async function getPlayerProgress(playerKey: string, window: number = 5): Promise<any> {
+  const res = await fetch(`${API_BASE}/players/${encodeURIComponent(playerKey)}/progress?window=${window}`);
+  if (!res.ok) throw new Error('Progress not found');
+  return res.json();
+}

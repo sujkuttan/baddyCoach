@@ -68,6 +68,30 @@ class Settings(BaseSettings):
     footwork_recovery_threshold_meters: float = 0.3
     footwork_recovery_lookahead_frames: int = 30
 
+    # Trust / Data quality
+    quality_shuttle_conf_thr: float = 0.5
+    quality_min_shots_tactical: int = 15
+    quality_max_fallback_patterns: float = 0.30
+    model_max_missing_frac: float = 0.05
+
+    # Shot context / pressure
+    pressure_time_s: float = 0.9
+    pressure_dist_m: float = 2.5
+    pattern_lookahead_k: int = 2
+
+    # Patterns
+    pattern_min_samples: int = 5
+    pattern_excess_loss: float = 0.15
+    pattern_loss_floor: float = 0.45
+
+    # Technique reference
+    technique_reference_tier: str = "intermediate"
+    technique_min_history_sessions: int = 3
+    technique_pressure_delta_deg: float = 8.0
+
+    # Progress
+    progress_default_window: int = 5
+
     def job_dir(self, job_id: str) -> Path:
         path = self.jobs_dir / job_id
         path.mkdir(parents=True, exist_ok=True)

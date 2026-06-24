@@ -1,4 +1,3 @@
-let videoFile: File | null = null;
 let currentUrl: string | null = null;
 
 export function setVideoFile(f: File | null) {
@@ -6,7 +5,6 @@ export function setVideoFile(f: File | null) {
     URL.revokeObjectURL(currentUrl);
     currentUrl = null;
   }
-  videoFile = f;
   if (f) {
     currentUrl = URL.createObjectURL(f);
   }
