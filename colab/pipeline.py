@@ -1006,6 +1006,19 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         store = ArtifactStore(Path(tmpdir))
         config = StageConfig(gpu_enabled=False)
 
+        # Convert numpy types to native Python for JSON serialization
+        def _to_json_safe(v):
+            if isinstance(v, dict):
+                return {k: _to_json_safe(v) for k, v in v.items()}
+            elif isinstance(v, list):
+                return [_to_json_safe(x) for x in v]
+            elif hasattr(v, 'tolist'):
+                return v.tolist()
+            elif hasattr(v, 'item'):
+                return v.item()
+            return v
+        court = _to_json_safe(court)
+
         store.set("court", court)
         store.set("video_resolution", {"width": vid_w, "height": vid_h})
         store.set("players", players_data)
