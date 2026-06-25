@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     court_length: float = 13.4
     court_width: float = 6.10
 
+    # Shuttle detection confidence gate
+    shuttle_min_conf: float = 0.30  # sub-threshold detections treated as missing
+
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280
     default_frame_height: int = 720

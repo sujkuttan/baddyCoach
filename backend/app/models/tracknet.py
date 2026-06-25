@@ -312,9 +312,11 @@ class TrackNetV3:
             self.inpaintnet.load_state_dict(state_dict, strict=False)
             self.inpaintnet.to(self.device)
             self.inpaintnet.eval()
-            print(f"InpaintNet loaded successfully from {path}")
+            from app.pipeline.shared.logging import logger
+            logger.info(f"InpaintNet loaded successfully from {path}")
         except Exception as e:
-            print(f"InpaintNet load error: {e}, proceeding without trajectory rectification")
+            from app.pipeline.shared.logging import logger
+            logger.warning(f"InpaintNet load error: {e}, proceeding without trajectory rectification")
             self.inpaintnet = None
 
     def _preprocess(self, frames: list[np.ndarray]) -> list[np.ndarray]:

@@ -131,6 +131,9 @@ def _build_clip(
         if shuttle_df is not None:
             s_row = shuttle_df[shuttle_df['frame'] == frame]
             if len(s_row) > 0:
+                s_conf = float(s_row.iloc[0].get('confidence', 1.0))
+                if s_conf < settings.shuttle_min_conf:
+                    continue
                 sx = float(s_row.iloc[0]['x'])
                 sy = float(s_row.iloc[0]['y'])
                 if settings.bst_shuttle_norm == "court" and homography is not None:

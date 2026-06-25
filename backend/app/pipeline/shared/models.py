@@ -282,9 +282,12 @@ def get_tracknet():
         try:
             from app.models.tracknet import TrackNetV3
             ensure_model("tracknet")
+            ensure_model("inpaintnet")
             s = _get_settings()
             path = str(s.tracknet_model_path)
-            ipath = str(s.inpaintnet_model_path) if s.inpaintnet_model_path and Path(s.inpaintnet_model_path).exists() else None
+            inpaintnet_available = s.inpaintnet_model_path and Path(s.inpaintnet_model_path).exists()
+            ipath = str(s.inpaintnet_model_path) if inpaintnet_available else None
+            logger.info(f"InpaintNet {'available' if inpaintnet_available else 'NOT FOUND'} at {s.inpaintnet_model_path}")
             _models["tracknet"] = TrackNetV3(path, device=_get_device(), inpaintnet_path=ipath)
         except ImportError:
             logger.warning("TrackNet not available (standalone mode)")
