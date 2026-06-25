@@ -192,13 +192,13 @@ class DataQualityStage:
         artifacts.set("data_quality", quality)
 
         # Persist to quality.json for downstream consumers
-        quality_path = Path(artifacts.base_dir) / "quality.json"
+        quality_path = Path(artifacts.job_dir) / "quality.json"
         quality_path.write_text(json.dumps(quality, indent=2, default=str))
 
         # Standalone model_health.json (for monitoring/debugging)
         model_health = get_model_health()
         if model_health:
-            mh_path = Path(artifacts.base_dir) / "model_health.json"
+            mh_path = Path(artifacts.job_dir) / "model_health.json"
             mh_path.write_text(json.dumps(model_health, indent=2, default=str))
 
         logger.info(f"Data quality: tier={quality['tier']}, score={quality['quality_score']}, "
