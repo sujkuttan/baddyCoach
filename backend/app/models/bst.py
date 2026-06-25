@@ -420,13 +420,16 @@ class BSTClassifier:
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory.
 
-        The clip shuttle is normalized by court dimensions:
+        The clip shuttle is already in court-normalized [0,1] range:
           channel 0 = court_x / court_length  (0=far end, 1=near end)
           channel 1 = court_y / court_width   (0=left, 1=right)
 
-        Thresholds were designed for pixel-space [0,1] where:
-          pixel_x (horizontal) maps to court_y (left-right)
-          pixel_y (vertical)   maps to court_x (far-near, inverted)
+        These map approximately 1:1 to pixel-normalized coordinates:
+          court_x (far→near) ≈ pixel_y (top→bottom)
+          court_y (left→right) ≈ pixel_x (left→right)
+
+        So the thresholds (designed for pixel-space [0,1]) work directly
+        on shuttle without any extra conversion.
 
         Only the POST-HIT half of the trajectory is analyzed to avoid the
         V-shaped averaging problem from between-2-hits clips (the trajectory
@@ -434,26 +437,13 @@ class BSTClassifier:
         """
         seq_len = self.seq_len if self.seq_len is not None else 30
         shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
-        vid_w = clip.get('vid_w', 1280)
-        vid_h = clip.get('vid_h', 720)
-        court_len = clip.get('court_length', 13.4)
-        court_wid = clip.get('court_width', 6.1)
 
         if len(shuttle) < 2:
             return "unknown"
 
-        # Convert court-space to pixel-space:
-        #   court_x (length, far→near) → pixel_y (vertical, top→bottom)
-        #   court_y (width, left→right) → pixel_x (horizontal, left→right)
-        court_x_m = shuttle[:, 0] * court_len
-        court_y_m = shuttle[:, 1] * court_wid
-        pixel_shuttle = np.zeros_like(shuttle)
-        pixel_shuttle[:, 0] = court_y_m / vid_w  # width → horizontal
-        pixel_shuttle[:, 1] = court_x_m / vid_h  # length → vertical
-
         # Use only post-hit half of the trajectory
-        mid = len(pixel_shuttle) // 2
-        post_hit = pixel_shuttle[mid:]
+        mid = len(shuttle) // 2
+        post_hit = shuttle[mid:]
 
         valid = (post_hit[:, 0] != 0) | (post_hit[:, 1] != 0)
         if valid.sum() < 2:
