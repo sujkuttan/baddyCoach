@@ -138,11 +138,11 @@ def _build_clip(
                 sy = float(s_row.iloc[0]['y'])
                 if settings.bst_shuttle_norm == "court" and homography is not None:
                     sx, sy = image_to_court(homography, (sx, sy))
-                    shuttle[t, 0] = sx / court_length if court_length > 0 else 0
-                    shuttle[t, 1] = sy / court_width if court_width > 0 else 0
+                    shuttle[t, 0] = max(0.0, min(1.0, sx / court_length if court_length > 0 else 0))
+                    shuttle[t, 1] = max(0.0, min(1.0, sy / court_width if court_width > 0 else 0))
                 else:
-                    shuttle[t, 0] = sx / vid_w if vid_w > 0 else 0
-                    shuttle[t, 1] = sy / vid_h if vid_h > 0 else 0
+                    shuttle[t, 0] = max(0.0, min(1.0, sx / vid_w if vid_w > 0 else 0))
+                    shuttle[t, 1] = max(0.0, min(1.0, sy / vid_h if vid_h > 0 else 0))
 
     # DO NOT interpolate missing shuttle coordinates. The shuttle array
     # keeps zeros for frames without detections, preserving the sparsity
