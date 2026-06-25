@@ -110,10 +110,20 @@ def _build_clip(
         interpolated_bboxes[pid] = _interpolate_bboxes(det_bbox_lookup[pid], clip_frames_set)
 
     # Debug counters for missing data
+    bbox_diags = {}
+    for pid, iboxes in interpolated_bboxes.items():
+        diags = [np.sqrt((b[2]-b[0])**2 + (b[3]-b[1])**2) for _, b in iboxes.items()]
+        if diags:
+            bbox_diags[f"bbox_diag_{pid}_mean"] = float(np.mean(diags))
+            bbox_diags[f"bbox_diag_{pid}_std"] = float(np.std(diags))
+
     debug_clip_stats = {
         "n_frames": min(len(frames), seq_len),
         "n_missing_bbox": 0,
         "n_missing_pose": 0,
+        "frame_start": int(frames[0]) if frames else 0,
+        "frame_end": int(frames[-1]) if frames else 0,
+        **bbox_diags,
     }
 
     for t, frame in enumerate(frames[:seq_len]):
@@ -324,10 +334,40 @@ class StrokeClassificationStage:
 
             # Add clip debug info (level 1+)
             if debug_level >= 1 and i < len(all_clips):
-                debug_clip = all_clips[i].get('_debug_clip', {})
+                clip = all_clips[i]
+                debug_clip = clip.get('_debug_clip', {})
                 shot["clip_n_frames"] = debug_clip.get("n_frames", 0)
                 shot["clip_n_missing_bbox"] = debug_clip.get("n_missing_bbox", 0)
                 shot["clip_n_missing_pose"] = debug_clip.get("n_missing_pose", 0)
+                shot["clip_frame_start"] = debug_clip.get("frame_start", 0)
+                shot["clip_frame_end"] = debug_clip.get("frame_end", 0)
+
+                # Shuttle coverage: how many frames have valid detections
+                sv = (clip['shuttle'][:, 0] != 0) | (clip['shuttle'][:, 1] != 0)
+                shot["clip_shuttle_valid"] = int(sv.sum())
+
+                # JnB variance within the clip
+                shot["clip_jnb_std"] = float(clip['JnB'].std())
+
+                # Per-player foot position mean (pos is the only absolute-position feature)
+                for p_idx, side in enumerate(["far", "near"]):
+                    px = clip['pos'][:, p_idx, 0]
+                    py = clip['pos'][:, p_idx, 1]
+                    valid = (px != 0) | (py != 0)
+                    if valid.any():
+                        shot[f"clip_pos_{side}_x_mean"] = float(px[valid].mean())
+                        shot[f"clip_pos_{side}_y_mean"] = float(py[valid].mean())
+                    else:
+                        shot[f"clip_pos_{side}_x_mean"] = 0.0
+                        shot[f"clip_pos_{side}_y_mean"] = 0.0
+
+                # Bbox diagonal per player from debug stats
+                for pid_key in ['player_1', 'player_2']:
+                    d_mean = debug_clip.get(f"bbox_diag_{pid_key}_mean")
+                    d_std = debug_clip.get(f"bbox_diag_{pid_key}_std")
+                    if d_mean is not None:
+                        shot[f"bbox_diag_{pid_key}"] = d_mean
+                        shot[f"bbox_diag_{pid_key}_std"] = d_std
 
             shots.append(shot)
 
