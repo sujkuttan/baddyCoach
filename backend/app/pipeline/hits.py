@@ -45,6 +45,20 @@ class HitFrameLocalizationStage:
                 "confidence": float(combined[idx]),
             })
 
+        # Write debug hit scores if debug_level >= 2
+        if config.debug_level >= 2:
+            debug_hit_df = pd.DataFrame({
+                "frame": shuttle_df["frame"].values,
+                "trajectory_raw": trajectory_score,
+                "speed_raw": speed_score,
+                "proximity_raw": proximity_score,
+                "swing_raw": swing_score,
+                "combined": combined,
+                "is_peak": False,
+            })
+            debug_hit_df.loc[peaks, "is_peak"] = True
+            artifacts.set_parquet("debug_hit_scores", debug_hit_df)
+
         if len(hits) > 1:
             fps = float(config.processing_fps or settings.fps)
             min_gap = max(3, int(fps * settings.hit_dedup_gap_seconds))

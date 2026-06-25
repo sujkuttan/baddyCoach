@@ -11,6 +11,7 @@ class StageConfig:
     gpu_enabled: bool = True
     processing_fps: int = settings.processing_fps
     extra: dict[str, Any] = field(default_factory=dict)
+    debug_level: int = 0  # 0=off, 1=basic, 2=verbose, 3=dump tensors
 
 
 @dataclass

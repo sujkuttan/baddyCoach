@@ -75,6 +75,47 @@ def _build_clip(
             for d in p.get("detections", []):
                 det_bbox_lookup[pid][d["frame"]] = d["bbox"]
 
+    def _interpolate_bboxes(lookup, target_frames):
+        """Linearly interpolate bbox for missing frames."""
+        existing = sorted(lookup.keys())
+        if not existing:
+            return {}
+        result = {}
+        for f in target_frames:
+            if f in lookup:
+                result[f] = lookup[f]
+            else:
+                before = [ef for ef in existing if ef <= f]
+                after = [ef for ef in existing if ef >= f]
+                if before and after:
+                    bf, af = before[-1], after[0]
+                    if bf == af:
+                        result[f] = lookup[bf]
+                    else:
+                        ratio = (f - bf) / (af - bf)
+                        result[f] = tuple(
+                            lookup[bf][i] + ratio * (lookup[af][i] - lookup[bf][i])
+                            for i in range(4)
+                        )
+                elif before:
+                    result[f] = lookup[before[-1]]
+                elif after:
+                    result[f] = lookup[after[0]]
+        return result
+
+    # Build interpolated bbox lookups for each player
+    clip_frames_set = set(frames[:seq_len])
+    interpolated_bboxes = {}
+    for pid in list(det_bbox_lookup.keys()):
+        interpolated_bboxes[pid] = _interpolate_bboxes(det_bbox_lookup[pid], clip_frames_set)
+
+    # Debug counters for missing data
+    debug_clip_stats = {
+        "n_frames": min(len(frames), seq_len),
+        "n_missing_bbox": 0,
+        "n_missing_pose": 0,
+    }
+
     for t, frame in enumerate(frames[:seq_len]):
         if shuttle_df is not None:
             s_row = shuttle_df[shuttle_df['frame'] == frame]
@@ -102,8 +143,11 @@ def _build_clip(
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
             if kps is not None:
                 coords = kps[:, :2]
-                # Use detection bbox for stable normalization (issue 3 fix)
-                det_bbox = det_bbox_lookup.get(pid, {}).get(frame)
+                # Use interpolated detection bbox for stable normalization
+                det_bbox = interpolated_bboxes.get(pid, {}).get(frame)
+                if det_bbox is None:
+                    # Fall back to keypoint bbox if no detection at all
+                    debug_clip_stats["n_missing_bbox"] += 1
                 joints[t, p_idx] = normalize_joints(coords, det_bbox=det_bbox)
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
@@ -115,6 +159,8 @@ def _build_clip(
                 else:
                     pos[t, p_idx, 0] = feet_x / vid_w
                     pos[t, p_idx, 1] = feet_y / vid_h
+            else:
+                debug_clip_stats["n_missing_pose"] += 1
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     for i in range(2):
@@ -126,6 +172,11 @@ def _build_clip(
         'shuttle': shuttle,
         'pos': pos,
         'video_len': min(n_frames_orig, seq_len),
+        'vid_w': vid_w,
+        'vid_h': vid_h,
+        'court_length': court_length,
+        'court_width': court_width,
+        '_debug_clip': debug_clip_stats,
     }
 
 
@@ -236,10 +287,17 @@ class StrokeClassificationStage:
 
         # Phase 2: batch inference (GPU-efficient, all clips in one call)
         batch_size = config.extra.get("bst_batch", 32)
-        all_results = classifier.predict_from_clips(all_clips, batch_size=batch_size)
+        debug_level = config.debug_level
+
+        # Collect debug info if debug_level >= 1
+        bst_debug_collector = [] if debug_level >= 1 else None
+        all_results = classifier.predict_from_clips(
+            all_clips, batch_size=batch_size,
+            debug_collector=bst_debug_collector,
+        )
 
         # Phase 3: build shot records from results
-        for (frame, hit, clip_frames), (stroke_type, confidence, raw_class_id) in zip(clip_hit_pairs, all_results):
+        for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id)) in enumerate(zip(clip_hit_pairs, all_results)):
             # Track if this specific shot fell back to rule-based prediction
             # raw_class_id == 0 catches three paths:
             #   1. Model never loaded (all clips fallback)
@@ -256,6 +314,14 @@ class StrokeClassificationStage:
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
+
+            # Add clip debug info (level 1+)
+            if debug_level >= 1 and i < len(all_clips):
+                debug_clip = all_clips[i].get('_debug_clip', {})
+                shot["clip_n_frames"] = debug_clip.get("n_frames", 0)
+                shot["clip_n_missing_bbox"] = debug_clip.get("n_missing_bbox", 0)
+                shot["clip_n_missing_pose"] = debug_clip.get("n_missing_pose", 0)
+
             shots.append(shot)
 
             previous_shots.append({
@@ -267,10 +333,12 @@ class StrokeClassificationStage:
         # Post-classification temporal smoothing: correct low-confidence or
         # unknown strokes to match the majority of nearby shots.
         if len(shots) > 2:
+            LOW_CONF_THRESH = 0.2
             for i in range(len(shots)):
                 conf = shots[i]["stroke_confidence"]
                 stype = shots[i]["stroke_type"]
-                if stype != "unknown":
+                # Smooth if unknown OR low-confidence determinate prediction
+                if stype != "unknown" and conf > LOW_CONF_THRESH:
                     continue
                 neighbors = []
                 win = settings.stroke_smoothing_window

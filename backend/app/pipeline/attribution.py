@@ -66,8 +66,11 @@ class PlayerAttributionStage:
         # Initialize player_id column if it doesn't exist
         if "player_id" not in shots_df.columns:
             shots_df["player_id"] = None
+        # Initialize attribution_tier debug column
+        if config.debug_level >= 1:
+            shots_df["attribution_tier"] = "none"
 
-        # Try to use BST shuttleset_class_id for Top/Bottom attribution
+        # Try to use BST shuttleset_class_id for Top/Bottom attribution (Tier 1)
         from app.models.bst import get_shuttleset_class_info, SHUTTLESET_CLASSES
         bst_side_to_playerside = {"top": "far", "bottom": "near"}
         if "shuttleset_class_id" in shots_df.columns:
@@ -89,16 +92,20 @@ class PlayerAttributionStage:
                 for p in players_data.get("players", []):
                     if p.get("side") == player_side:
                         shots_df.at[idx, "player_id"] = p["id"]
+                        if config.debug_level >= 1:
+                            shots_df.at[idx, "attribution_tier"] = "bst_side"
                         break
 
-        # Per-shot shuttle direction for unassigned shots
+        # Per-shot shuttle direction for unassigned shots (Tier 2)
         for idx, shot in shots_df.iterrows():
             if pd.isna(shot.get("player_id")):
                 result = _shuttle_direction_at(int(shot["frame"]))
                 if result:
                     shots_df.at[idx, "player_id"] = result
+                    if config.debug_level >= 1:
+                        shots_df.at[idx, "attribution_tier"] = "shuttle_direction"
 
-        # Rally-based sequential alternation for remaining unassigned shots
+        # Rally-based sequential alternation for remaining unassigned shots (Tier 3)
         # Uses the last assigned/filled shot to determine the next player,
         # preserving alternation (physical law in badminton) without
         # overwriting model predictions.
@@ -119,6 +126,8 @@ class PlayerAttributionStage:
                     elif last_player is not None:
                         next_player = "player_2" if last_player == "player_1" else "player_1"
                         shots_df.at[s.name, "player_id"] = next_player
+                        if config.debug_level >= 1:
+                            shots_df.at[s.name, "attribution_tier"] = "rally_alternation"
                         last_player = next_player
                     else:
                         # No assigned shot yet in this rally — serve alternates by rally_id
@@ -129,15 +138,24 @@ class PlayerAttributionStage:
                             y_at = shuttle_y_map.get(int(s["frame"]), 0)
                             fallback = "player_1" if y_at > court_mid_y else "player_2"
                         shots_df.at[s.name, "player_id"] = fallback
+                        if config.debug_level >= 1:
+                            shots_df.at[s.name, "attribution_tier"] = "rally_fallback"
                         last_player = fallback
 
-        # Final fallback: court-position heuristic for any still-unassigned shots
+        # Final fallback: court-position heuristic for any still-unassigned shots (Tier 4)
         unassigned = shots_df["player_id"].isna()
         if unassigned.any():
             def _final_fallback(f):
                 y = shuttle_y_map.get(int(f), 0)
                 return "player_1" if y > 1 and y > court_mid_y else "player_2"
-            shots_df.loc[unassigned, "player_id"] = shots_df.loc[unassigned, "frame"].apply(_final_fallback)
+            assigned = shots_df.loc[unassigned, "frame"].apply(_final_fallback)
+            shots_df.loc[unassigned, "player_id"] = assigned
+            if config.debug_level >= 1:
+                shots_df.loc[unassigned, "attribution_tier"] = "final_fallback"
+
+        if config.debug_level >= 1:
+            tier_counts = shots_df["attribution_tier"].value_counts().to_dict()
+            logger.info("Attribution tiers: %s", tier_counts)
 
         if H is not None and pose_df is not None:
             for idx, shot in shots_df.iterrows():
@@ -166,7 +184,7 @@ class PlayerAttributionStage:
         if rallies_df is not None and len(rallies_df) > 0:
             from app.pipeline.rallies import _compute_rally_winner_after_attribution
             for idx, rally in rallies_df.iterrows():
-                winner = _compute_rally_winner_after_attribution(rally, shots_df)
+                winner = _compute_rally_winner_after_attribution(rally, shots_df, shuttle_df)
                 rallies_df.at[idx, "winner_player_id"] = winner
             artifacts.set_parquet("rallies", rallies_df)
 

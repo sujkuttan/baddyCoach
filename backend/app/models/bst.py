@@ -4,9 +4,13 @@ Integrates the official BST_CG / BST_CG_AP model from:
 https://github.com/Va6lue/BST-Badminton-Stroke-type-Transformer
 """
 
+import json
+import logging
 import numpy as np
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("bst")
 
 
 COACH_STROKE_CLASSES = [
@@ -64,6 +68,7 @@ class BSTClassifier:
         self.device = device
         self.model = None
         self.seq_len = default_seq_len
+        self.n_classes = 25
         self.classes = COACH_STROKE_CLASSES
         self.batch_size = batch_size if batch_size is not None else self._default_batch_size()
         self.temperature = temperature if temperature is not None else 1.0
@@ -90,7 +95,7 @@ class BSTClassifier:
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
 
             if not isinstance(checkpoint, dict):
-                print(f"BST checkpoint format not recognized: {type(checkpoint)}")
+                logger.error("BST checkpoint format not recognized: %s", type(checkpoint))
                 record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
                                             "n_missing": 0, "n_unexpected": 0,
                                             "core_missing": ["checkpoint not a dict"]})
@@ -112,11 +117,11 @@ class BSTClassifier:
                     seq_len = v.shape[1] - 1
 
             if n_classes != 25:
-                print(f"WARNING: BST checkpoint has {n_classes} output classes, expected 25. "
-                      "Predictions will be misaligned with SHUTTLESET_CLASSES mapping.")
+                logger.warning("BST checkpoint has %d output classes, expected 25. "
+                               "Predictions will be misaligned with SHUTTLESET_CLASSES mapping.", n_classes)
 
             if seq_len is None:
-                print("BST checkpoint missing embedding_tem, cannot determine seq_len")
+                logger.error("BST checkpoint missing embedding_tem, cannot determine seq_len")
                 record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
                                             "n_missing": 0, "n_unexpected": 0,
                                             "core_missing": ["missing embedding_tem"]})
@@ -124,7 +129,7 @@ class BSTClassifier:
 
             has_positions = any('mlp_positions' in k for k in state_dict)
             if not has_positions:
-                print("BST checkpoint missing mlp_positions, cannot load")
+                logger.error("BST checkpoint missing mlp_positions, cannot load")
                 record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
                                             "n_missing": 0, "n_unexpected": 0,
                                             "core_missing": ["missing mlp_positions"]})
@@ -152,18 +157,19 @@ class BSTClassifier:
             record_model_health("bst", status)
 
             if not status["loaded"]:
-                print(f"WARNING: BST core layers missing ({status['core_missing']}). "
-                      "Model set to None — honest fallback.")
+                logger.warning("BST core layers missing (%s). Model set to None.", status['core_missing'])
                 return
 
             model.to(self.device).eval()
 
             self.model = model
             self.seq_len = seq_len
+            self.n_classes = n_classes
             self._load_temperature()
-            print(f"BST loaded: class=BST_CG_AP (AimPlayer), in_dim={in_dim}, seq_len={seq_len}, n_classes={n_classes}, temperature={self.temperature:.3f}")
+            logger.info("BST loaded: class=BST_CG_AP, in_dim=%d, seq_len=%d, n_classes=%d, temperature=%.3f",
+                        in_dim, seq_len, n_classes, self.temperature)
         except Exception as e:
-            print(f"BST load error: {e}")
+            logger.error("BST load error: %s", e)
             import traceback
             traceback.print_exc()
             record_model_health("bst", {"loaded": False, "missing_frac": 1.0,
@@ -192,9 +198,9 @@ class BSTClassifier:
                     data = json.load(f)
                 cached = float(data.get("temperature", 1.0))
                 self.temperature = cached
-                print(f"  Loaded cached temperature: T={cached:.3f}")
+                logger.info("Loaded cached temperature: T=%.3f", cached)
             except Exception as e:
-                print(f"  Could not load cached temperature: {e}")
+                logger.warning("Could not load cached temperature: %s", e)
 
     @staticmethod
     def _save_temperature(temperature: float):
@@ -207,9 +213,9 @@ class BSTClassifier:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
                 json.dump({"temperature": float(temperature)}, f)
-            print(f"  Saved temperature T={temperature:.3f} -> {cache_path}")
+            logger.info("Saved temperature T=%.3f -> %s", temperature, cache_path)
         except Exception as e:
-            print(f"  Could not save temperature: {e}")
+            logger.warning("Could not save temperature: %s", e)
 
     @staticmethod
     def compute_optimal_temperature(logits: np.ndarray, labels: np.ndarray) -> float:
@@ -225,7 +231,7 @@ class BSTClassifier:
         try:
             import torch
         except ImportError:
-            print("  Torch not available for temperature calibration")
+            logger.warning("Torch not available for temperature calibration")
             return 1.0
 
         try:
@@ -249,16 +255,19 @@ class BSTClassifier:
                 return 1.0
             return max(0.01, min(T_opt, 100.0))
         except Exception as e:
-            print(f"  Temperature optimization failed: {e}")
+            logger.warning("Temperature optimization failed: %s", e)
             return 1.0
 
-    def predict_from_clips(self, clips: list, batch_size: Optional[int] = None) -> list:
+    def predict_from_clips(self, clips: list, batch_size: Optional[int] = None,
+                           debug_collector: Optional[list] = None) -> list:
         """Predict stroke types from prepared BST clips.
 
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
             batch_size: Number of clips to process in parallel.
                        Defaults to self.batch_size (auto-detected from GPU VRAM).
+            debug_collector: If provided, append per-shot debug dicts with
+                             full softmax distribution and feature stats.
 
         Returns:
             List of (stroke_type, confidence, raw_class_id) tuples
@@ -276,50 +285,106 @@ class BSTClassifier:
             batch_clips = clips[batch_start:batch_end]
 
             try:
-                JnB = torch.from_numpy(
-                    np.stack([c['JnB'] for c in batch_clips])
-                ).float().to(self.device)
-                shuttle = torch.from_numpy(
-                    np.stack([c['shuttle'] for c in batch_clips])
-                ).float().to(self.device)
-                pos = torch.from_numpy(
-                    np.stack([c['pos'] for c in batch_clips])
-                ).float().to(self.device)
+                JnB_np = np.stack([c['JnB'] for c in batch_clips])
+                shuttle_np = np.stack([c['shuttle'] for c in batch_clips])
+                pos_np = np.stack([c['pos'] for c in batch_clips])
+
+                JnB = torch.from_numpy(JnB_np).float().to(self.device)
+                shuttle = torch.from_numpy(shuttle_np).float().to(self.device)
+                pos = torch.from_numpy(pos_np).float().to(self.device)
                 video_len = torch.tensor(
                     [c['video_len'] for c in batch_clips], dtype=torch.long
                 ).to(self.device)
 
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
+                    logits_np = logits.float().cpu().numpy()
                     probs = torch.softmax(logits.float() / self.temperature, dim=1).cpu().numpy()
 
+                # Feature stats for debug (level 2+)
+                jnb_min = float(JnB_np.min())
+                jnb_max = float(JnB_np.max())
+                jnb_mean = float(JnB_np.mean())
+                jnb_zero_frac = float((JnB_np == 0.0).mean())
+
                 for j in range(len(batch_clips)):
-                    pred_idx = int(np.argmax(probs[j]))
-                    confidence = float(probs[j][pred_idx])
+                    prob_dist = probs[j]
+                    pred_idx = int(np.argmax(prob_dist))
+                    confidence = float(prob_dist[pred_idx])
+
+                    debug_info = None
+                    if debug_collector is not None:
+                        logit_class_0 = float(logits_np[j, 0])
+                        logit_max = float(logits_np[j].max())
+                        sorted_idxs = np.argsort(prob_dist)[::-1]
+                        top5 = [(int(sorted_idxs[k]), float(prob_dist[sorted_idxs[k]]))
+                                for k in range(5)]
+
+                        debug_info = {
+                            "pred_class_id": pred_idx,
+                            "pred_confidence": confidence,
+                            "logit_class_0": logit_class_0,
+                            "logit_max": logit_max,
+                            "top5": top5,
+                            "jnb_zero_frac": jnb_zero_frac,
+                            "jnb_min": jnb_min,
+                            "jnb_max": jnb_max,
+                        }
 
                     if pred_idx == 0:
-                        second_idx = int(np.argsort(probs[j])[-2])
-                        second_conf = float(probs[j][second_idx])
+                        second_idx = int(np.argsort(prob_dist)[-2])
+                        second_conf = float(prob_dist[second_idx])
                         if second_conf > 0.3:
                             pred_idx = second_idx
                             confidence = second_conf
+                            if debug_info:
+                                debug_info["is_second_best_override"] = True
+                                debug_info["second_best_class_id"] = second_idx
+                                debug_info["second_best_confidence"] = second_conf
                         else:
-                            # Model confidently predicted "unknown" with no viable
-                            # second-best — fall back to rule-based with low confidence
                             fallback = self._rule_based_predict(batch_clips[j])
                             rule_conf = min(confidence, 0.3)
+                            if debug_info:
+                                debug_info["is_rule_based"] = True
+                                debug_info["fallback_stroke_type"] = fallback
+                            if debug_collector is not None:
+                                debug_collector.append(debug_info)
                             results[batch_start + j] = (fallback, rule_conf, 0)
                             continue
 
                     stroke_type = map_to_coach_class(pred_idx)
+                    if debug_info:
+                        debug_info["stroke_type"] = stroke_type
+                    if debug_collector is not None:
+                        debug_collector.append(debug_info)
                     results[batch_start + j] = (stroke_type, confidence, pred_idx)
 
             except Exception as e:
-                print(f"BST batch inference error: {e}")
+                logger.error("BST batch inference error: %s", e)
                 for j in range(len(batch_clips)):
                     if results[batch_start + j] is None:
                         fallback = self._rule_based_predict(batch_clips[j])
+                        if debug_collector is not None:
+                            debug_collector.append({
+                                "pred_class_id": 0,
+                                "pred_confidence": 0.0,
+                                "is_rule_based": True,
+                                "fallback_stroke_type": fallback,
+                                "error": str(e),
+                            })
                         results[batch_start + j] = (fallback, 0.5, 0)
+
+        # Log class activation warning (Fix 3: detect ordering mismatch)
+        if self.model is not None and hasattr(self, 'n_classes'):
+            activated = set(r[2] for r in results if r[2] != 0)
+            all_classes = set(range(self.n_classes))
+            never_activated = all_classes - activated
+            if never_activated and len(never_activated) > len(all_classes) * 0.5:
+                logger.warning(
+                    "BST: %d/%d classes never activated (%s). Possible class ordering mismatch.",
+                    len(never_activated), len(all_classes),
+                    sorted(never_activated),
+                )
 
         return results
 
@@ -335,30 +400,46 @@ class BSTClassifier:
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory.
 
-        Only classifies when the trajectory clearly matches one of the
-        heuristics below. Returns 'unknown' for ambiguous trajectories,
-        matching the BST model's class 0 semantics, so downstream stages
-        can distinguish genuine predictions from forced guesses.
+        The clip shuttle is normalized by court dimensions (x/13.4, y/6.1).
+        We first denormalize to court-space meters, then renormalize to
+        pixel-space (x/vid_w, y/vid_h) so the thresholds (designed for
+        [0,1] pixel range) work correctly.
+
+        Only the POST-HIT half of the trajectory is analyzed to avoid the
+        V-shaped averaging problem from between-2-hits clips (the trajectory
+        reverses direction at the hit point).
         """
         seq_len = self.seq_len if self.seq_len is not None else 30
         shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
+        vid_w = clip.get('vid_w', 1280)
+        vid_h = clip.get('vid_h', 720)
+        court_len = clip.get('court_length', 13.4)
+        court_wid = clip.get('court_width', 6.1)
 
         if len(shuttle) < 2:
             return "unknown"
 
-        valid = (shuttle[:, 0] != 0) | (shuttle[:, 1] != 0)
+        # Denormalize to court-space meters, then to pixel-space [0,1]
+        court_shuttle = shuttle * np.array([court_len, court_wid])
+        pixel_shuttle = court_shuttle / np.array([vid_w, vid_h])
+
+        # Use only post-hit half of the trajectory
+        mid = len(pixel_shuttle) // 2
+        post_hit = pixel_shuttle[mid:]
+
+        valid = (post_hit[:, 0] != 0) | (post_hit[:, 1] != 0)
         if valid.sum() < 2:
             return "unknown"
-        shuttle = shuttle[valid]
+        valid_traj = post_hit[valid]
 
-        dy = np.diff(shuttle[:, 1])
-        dx = np.diff(shuttle[:, 0])
+        dy = np.diff(valid_traj[:, 1])
+        dx = np.diff(valid_traj[:, 0])
         speed = np.sqrt(dx**2 + dy**2)
 
         mean_speed = float(np.mean(speed))
         max_speed = float(np.max(speed))
         mean_dy = float(np.mean(dy))
-        end_y = float(shuttle[-1, 1])
+        end_y = float(valid_traj[-1, 1])
 
         if max_speed > 0.15 and mean_dy > 0.05:
             return "smash"

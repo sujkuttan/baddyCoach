@@ -6,7 +6,7 @@ from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
 from app.config.settings import settings
 
 
-def _compute_rally_winner_after_attribution(rally_df, shots_df):
+def _compute_rally_winner_after_attribution(rally_df, shots_df, shuttle_df=None):
     """Compute rally winner after player attribution is complete.
     
     This function recomputes rally winners based on player attribution
@@ -24,8 +24,20 @@ def _compute_rally_winner_after_attribution(rally_df, shots_df):
     stroke_type = last_shot.get("stroke_type", "clear")
     stroke_confidence = last_shot.get("stroke_confidence", 0.5)
     
+    # Compute shuttle speed at last shot for speed-based winner detection
+    last_shot_speed = None
+    if shuttle_df is not None and stroke_type == "smash":
+        frame = int(last_shot["frame"])
+        window = shuttle_df[(shuttle_df['frame'] >= frame - 2) & (shuttle_df['frame'] <= frame + 2)]
+        if len(window) >= 2:
+            dx = window['x'].diff().iloc[-1]
+            dy = window['y'].diff().iloc[-1]
+            speed = np.sqrt(dx**2 + dy**2) if not (np.isnan(dx) or np.isnan(dy)) else None
+            if speed is not None and speed > 0:
+                last_shot_speed = float(speed * 30.0)  # frames to m/s at 30fps
+    
     # Infer end reason
-    end_reason = _infer_end_reason(stroke_type, stroke_confidence)
+    end_reason = _infer_end_reason(stroke_type, stroke_confidence, last_shot_speed)
     
     # Compute winner based on end reason and player attribution
     if end_reason == "winner":

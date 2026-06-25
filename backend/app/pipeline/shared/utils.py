@@ -157,17 +157,22 @@ def _get_playing_arm_kps(kps: np.ndarray, handedness: str) -> dict:
 
 # ─── Rally segmentation helpers ──────────────────────────────────────────────
 
-def _infer_end_reason(stroke_type: str, confidence: float) -> str:
+def _infer_end_reason(stroke_type: str, confidence: float,
+                      last_shot_speed: float | None = None) -> str:
     """Infer rally end reason from the last shot.
 
     Rules:
-    - High-confidence smash/drop/kill -> winner (aggressive finishing shot)
+    - Smash/drop/kill with moderate confidence -> winner (aggressive finishing shot)
+    - High-speed smash (>8 m/s) or smash within 2m of net -> winner
     - Net shot -> net (hitter hit the net)
     - Low-confidence clear/drive/lift -> unforced_error (weak basic shot)
     - Everything else -> forced_error (opponent won, not necessarily an error by hitter)
     """
-    if stroke_type in ("smash", "drop", "kill") and confidence >= 0.5:
-        return "winner"
+    if stroke_type in ("smash", "drop", "kill"):
+        if confidence >= 0.3:
+            return "winner"
+        if stroke_type == "smash" and last_shot_speed is not None and last_shot_speed > 8.0:
+            return "winner"
     if stroke_type in ("net_shot",):
         return "net"
     if stroke_type in ("clear", "drive", "lift") and confidence < 0.35:
