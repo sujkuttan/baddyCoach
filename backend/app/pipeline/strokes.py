@@ -120,8 +120,12 @@ def _build_clip(
         if shuttle_df is not None:
             s_row = shuttle_df[shuttle_df['frame'] == frame]
             if len(s_row) > 0:
-                shuttle[t, 0] = float(s_row.iloc[0]['x']) / court_length
-                shuttle[t, 1] = float(s_row.iloc[0]['y']) / court_width
+                sx = float(s_row.iloc[0]['x'])
+                sy = float(s_row.iloc[0]['y'])
+                if homography is not None:
+                    sx, sy = image_to_court(homography, (sx, sy))
+                shuttle[t, 0] = sx / court_length if court_length > 0 else 0
+                shuttle[t, 1] = sy / court_width if court_width > 0 else 0
 
     # Interpolate missing shuttle coordinates (0.0 = missing)
     for dim in range(2):

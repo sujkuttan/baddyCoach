@@ -260,6 +260,30 @@ python -m pytest -m "not gpu and not model"
 - **Was:** `bst_debug_collector` list collected per-shot debug info but was never saved to parquet — data existed in memory only
 - **Fix:** After `predict_from_clips`, save `artifacts.set_parquet("debug_bst_outputs", df)` when debug_level >= 1
 
+### ✅ Full Logits Capture for Temperature Calibration (Fixed — 2025-06-26)
+- **Was:** Debug collector captured only `logit_class_0`, `logit_max`, and `top5` — insufficient for temperature recalibration. Cached T=1.4224 was computed from 12-class test data with broken InpaintNet features, so it's invalid for the fixed pipeline.
+- **Fix:** Added `logits_all` field (JSON string of full 25-class logits vector) to each debug entry in `bst.py:328`. This enables post-hoc calibration via:
+  ```python
+  df = pd.read_parquet("debug_bst_outputs.parquet")
+  logits = np.array([json.loads(s) for s in df["logits_all"]])
+  labels = df["pred_class_id"].values
+  T = BSTClassifier.compute_optimal_temperature(logits, labels)
+  BSTClassifier._save_temperature(T)
+  ```
+- **`_load_temperature`** updated with inline docstring recipe and startup warning that cached temperature may be stale after InpaintNet fix.
+
+### ⚠️ Double InpaintNet + Missing Homography Conversion (Fixed — 2025-06-26)
+- **Issue:** Shuttle coordinates had range x ∈ [-7.32, 14.14] far beyond court (13.4×6.1m). `_build_clip` divided these by court_length/court_width (treating them as meters), producing garbage inputs to BST.
+- **Root cause:** Two separate bugs compounded:
+  1. **Double InpaintNet:** TrackNetV3 internally runs `_rectify_trajectory` (linear interpolation + moving average smoothing). The colab pipeline then ran a **second** `InpaintNet` instance on the already-rectified pixel coords, completely overwriting them with garbage values from a checkpoint trained on a different coordinate space.
+  2. **Missing homography:** Neither pipeline applied `image_to_court(homography, (x, y))` to TrackNet's pixel output. The shuttle coordinates (pixels) were divided directly by court_length (13.4m), e.g., 1920px / 13.4m ≈ 143 — until the double InpaintNet warped them to intermediate garbage values.
+- **Impact:** Feature quality collapsed — JnB and shuttle stats nearly identical across all classes (zero_frac=0.0535, jnb_min=-0.569, jnb_max=0.682 for class_23, other_BST, and unknown). Model saw negligible discriminative signal.
+- **Fix (colab pipeline `colab/pipeline.py:972-988`):** Removed the second InpaintNet pass entirely. Added `image_to_court(H, (x, y))` to convert pixel → court-space meters before storing shuttle data.
+- **Fix (backend `backend/app/pipeline/strokes.py:121-128`):** Added `image_to_court(homography, (sx, sy))` in `_build_clip` alongside the existing foot position homography conversion.
+
+### ✅ Colab Re-run with Double InpaintNet + Homography Fix (2025-06-26)
+- **Expected:** Shuttle range should shrink to ±6.7m × ±3.05m (court dimensions). Feature diversity should increase as JnB/shuttle inputs are no longer garbage. BST should escape the 49% short_serve bias.
+
 ## 2025-06-25: Stroke Classification Root Cause Analysis
 
 ### ⚠️ Rule-Based Classifier: Court-Space vs Pixel-Space Normalization (Fixed)
@@ -282,16 +306,21 @@ python -m pytest -m "not gpu and not model"
 - **Fix (initial):** Smooth any stroke with confidence < 0.2, not just "unknown"
 - **Fix (revised):** Reverted to unknown-only smoothing. The expanded scope caused rule-based "net_shot" bias (78 shots, conf~0.22) to overwrite 13 determinate BST predictions (lift, smash, short_serve, etc.) to net_shot via majority vote. Determinate predictions, even low-confidence, are preserved to avoid rule-based neighborhood dominance.
 
-### ⚠️ Rally Winner Logic Fragile (Fixed — 2025-06-25)
-- **Issue:** `_infer_end_reason` requires confidence ≥ 0.5 for "winner" → no shot in Run 2 qualifies (max conf 0.633 for BST, 0.3 for rule-based). 13/14 rallies end in "unforced_error". Winner = "player who didn't hit last shot" — accidentally correct for errors but wrong for genuine winners/net shots.
-- **Sequence:** `_infer_end_reason(stroke_type, confidence)` at `rallies.py:28` → `end_reason = "unforced_error"` for most low-confidence shots → `winner = other_player` at line 35.
+### ✅ Rally Winner Logic Fragile (Fixed — 2025-06-25)
+- **Was:** `_infer_end_reason` required confidence ≥ 0.5 for "winner" → no shot in Run 2 qualifies (max conf 0.633 for BST, 0.3 for rule-based). 13/14 rallies end in "unforced_error". Winner = "player who didn't hit last shot" — accidentally correct for errors but wrong for genuine winners/net shots.
 - **Fix:** Lower winner confidence threshold to 0.3, or add trajectory-speed-based winner detection (smash/kill near net = likely winner).
 
-### Key Verification Data (Run 2, `results/mmpose_results/debug/`)
-- **Shots:** 204 total (135 BST, 69 rule-based). BST: 97 clear, 22 smash, 14 lift, 1 drive, 1 short_serve. Rule-based: 69 drive (all).
-- **BST classes used:** 3 (22), 4 (6), 5 (53), 16 (8), 17 (44), 18 (1), 23 (1). Classes 0-2, 6-15, 19-22, 24 NEVER activated.
-- **Shuttle range:** x ∈ [-2.35, 32.72], y ∈ [-16.21, 3.99] — far outside court dimensions (13.4×6.1m), suggesting InpaintNet rectification produces extreme values.
-- **Player tracking:** 166 unique YOLO track_ids for 18,000 detections across 2 players — no temporal linking, causing feature gaps in clips.
+### ⚠️ Double InpaintNet + Missing Homography Conversion (Fixed — 2025-06-26)
+- **Issue:** Shuttle coordinates had range x ∈ [-7.32, 14.14] far beyond court (13.4×6.1m). `_build_clip` divided these by court_length/court_width (treating them as meters), producing garbage inputs to BST.
+- **Root cause:** Two separate bugs compounded:
+  1. **Double InpaintNet:** TrackNetV3 internally runs `_rectify_trajectory` (linear interpolation + moving average smoothing). The colab pipeline then ran a **second** `InpaintNet` instance on the already-rectified pixel coords, completely overwriting them with garbage values from a checkpoint trained on a different coordinate space.
+  2. **Missing homography:** Neither pipeline applied `image_to_court(homography, (x, y))` to TrackNet's pixel output. The shuttle coordinates (pixels) were divided directly by court_length (13.4m), e.g., 1920px / 13.4m ≈ 143 — until the double InpaintNet warped them to intermediate garbage values.
+- **Impact:** Feature quality collapsed — JnB and shuttle stats nearly identical across all classes (zero_frac=0.0535, jnb_min=-0.569, jnb_max=0.682 for class_23, other_BST, and unknown). Model saw negligible discriminative signal.
+- **Fix (colab pipeline `colab/pipeline.py:972-988`):** Removed the second InpaintNet pass entirely. Added `image_to_court(H, (x, y))` to convert pixel → court-space meters before storing shuttle data.
+- **Fix (backend `backend/app/pipeline/strokes.py:121-128`):** Added `image_to_court(homography, (sx, sy))` in `_build_clip` alongside the existing foot position homography conversion.
+
+### ✅ Colab Re-run with Double InpaintNet + Homography Fix (2025-06-26)
+- **Expected:** Shuttle range should shrink to ±6.7m × ±3.05m (court dimensions). Feature diversity should increase as JnB/shuttle inputs are no longer garbage. BST should escape the 49% short_serve bias.
 
 ## Recommended Actions (Priority)
 

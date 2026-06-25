@@ -187,7 +187,23 @@ class BSTClassifier:
             return None
 
     def _load_temperature(self):
-        """Load cached temperature, unless overridden by constructor param."""
+        """Load cached temperature, unless overridden by constructor param.
+
+        NOTE: The cached temperature (T=1.4224 as of 2025-06-26) was computed
+        from 12-class calibration data with broken InpaintNet features. After
+        the InpaintNet/homography fix, features are in proper court-space and
+        the logit distribution has changed significantly. Re-run calibration:
+
+            python -c "
+            import json, pandas as pd, numpy as np
+            from app.models.bst import BSTClassifier
+            df = pd.read_parquet('results/mmpose_results/debug/debug_bst_outputs.parquet')
+            logits = np.array([json.loads(s) for s in df['logits_all']])
+            labels = df['pred_class_id'].values
+            T = BSTClassifier.compute_optimal_temperature(logits, labels)
+            BSTClassifier._save_temperature(T)
+            "
+        """
         if self.temperature != 1.0:
             return
         cache_path = self._temperature_cache_path()
@@ -199,6 +215,8 @@ class BSTClassifier:
                 cached = float(data.get("temperature", 1.0))
                 self.temperature = cached
                 logger.info("Loaded cached temperature: T=%.3f", cached)
+                logger.info("NOTE: This temperature may be stale after InpaintNet fix. "
+                           "Re-calibrate via scripts/calibrate_bst.py or the inline recipe in _load_temperature docstring.")
             except Exception as e:
                 logger.warning("Could not load cached temperature: %s", e)
 
@@ -326,6 +344,7 @@ class BSTClassifier:
                             "logit_class_0": logit_class_0,
                             "logit_max": logit_max,
                             "top5": top5,
+                            "logits_all": json.dumps([float(v) for v in logits_np[j]]),
                             "jnb_zero_frac": jnb_zero_frac,
                             "jnb_min": jnb_min,
                             "jnb_max": jnb_max,
