@@ -137,14 +137,11 @@ def _build_clip(
                 shuttle[t, 0] = sx / court_length if court_length > 0 else 0
                 shuttle[t, 1] = sy / court_width if court_width > 0 else 0
 
-    # Interpolate missing shuttle coordinates (0.0 = missing)
-    for dim in range(2):
-        shuttle_series = pd.Series(shuttle[:, dim])
-        mask = shuttle_series == 0.0
-        if mask.any() and (~mask).any():
-            shuttle_series = shuttle_series.replace(0, np.nan)
-            shuttle_series = shuttle_series.interpolate(method='linear').bfill().ffill()
-            shuttle[:, dim] = shuttle_series.values
+    # DO NOT interpolate missing shuttle coordinates. The shuttle array
+    # keeps zeros for frames without detections, preserving the sparsity
+    # pattern so the model can distinguish real vs missing positions.
+    # Interpolation was creating fake continuous trajectories (100/100
+    # frames "valid" for every clip), destroying the discriminative signal.
 
     for t, frame in enumerate(frames[:seq_len]):
         # Resolve active players for THIS frame
