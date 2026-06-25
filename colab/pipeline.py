@@ -1018,7 +1018,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         side = d.get("side", "near")
         pid = "player_1" if side == "near" else "player_2"
         players[pid]["detections"].append(d)
-    players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"])} for p in players.values()]}
+    players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"]), "detections": p["detections"]} for p in players.values()]}
 
     # Free ML models from GPU
     del tracker, tracknet, pose_estimator, pose_estimator_secondary
@@ -1114,6 +1114,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []
         print(f"  Attributed {len(shots)} shots")
         pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
+
+        # Copy debug parquet files from store to output dir
+        for debug_key in ["debug_bst_outputs", "debug_hit_scores"]:
+            df = store.get_parquet(debug_key)
+            if df is not None and len(df) > 0:
+                df.to_parquet(debug_dir / f"{debug_key}.parquet", index=False)
 
         # Enrich rallies with winner/end_reason
         for rally in rallies:
