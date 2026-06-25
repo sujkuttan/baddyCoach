@@ -39,10 +39,12 @@ class Settings(BaseSettings):
     max_players: int = 2
 
     # Hit detection weights & thresholds
-    hit_trajectory_weight: float = 0.4
-    hit_speed_weight: float = 0.3
-    hit_proximity_weight: float = 0.2
-    hit_swing_weight: float = 0.1
+    hit_reversal_weight: float = 0.45
+    hit_trajectory_weight: float = 0.20
+    hit_speed_weight: float = 0.15
+    hit_swing_weight: float = 0.15
+    hit_proximity_weight: float = 0.05
+    hit_proximity_gate: float = 0.3  # minimum proximity to allow any hit signal
     hit_confidence_threshold: float = 0.7
     hit_dedup_gap_seconds: float = 0.5
 
