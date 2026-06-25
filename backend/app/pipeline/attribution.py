@@ -6,6 +6,7 @@ from app.pipeline.shared.court import (
     image_to_court, foot_midpoint_from_pose, foot_point_from_bbox,
     COURT_LENGTH, COURT_WIDTH,
 )
+from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
 
@@ -67,21 +68,28 @@ class PlayerAttributionStage:
             shots_df["player_id"] = None
 
         # Try to use BST shuttleset_class_id for Top/Bottom attribution
+        from app.models.bst import get_shuttleset_class_info, SHUTTLESET_CLASSES
+        bst_side_to_playerside = {"top": "far", "bottom": "near"}
         if "shuttleset_class_id" in shots_df.columns:
+            max_known_id = len(SHUTTLESET_CLASSES) - 1
+            warned_range = False
             for idx, shot in shots_df.iterrows():
                 class_id = shot.get("shuttleset_class_id", 0)
                 if class_id <= 0:
                     continue
-                if 1 <= class_id <= 12:
-                    for p in players_data.get("players", []):
-                        if p.get("side") == "far":
-                            shots_df.at[idx, "player_id"] = p["id"]
-                            break
-                elif 13 <= class_id <= 24:
-                    for p in players_data.get("players", []):
-                        if p.get("side") == "near":
-                            shots_df.at[idx, "player_id"] = p["id"]
-                            break
+                if class_id > max_known_id:
+                    if not warned_range:
+                        logger.warning(f"BST class_id={class_id} exceeds SHUTTLESET_CLASSES range ({max_known_id})")
+                        warned_range = True
+                    continue
+                stroke_type, side = get_shuttleset_class_info(class_id)
+                if side is None:
+                    continue
+                player_side = bst_side_to_playerside[side]
+                for p in players_data.get("players", []):
+                    if p.get("side") == player_side:
+                        shots_df.at[idx, "player_id"] = p["id"]
+                        break
 
         # Per-shot shuttle direction for unassigned shots
         for idx, shot in shots_df.iterrows():
@@ -122,17 +130,6 @@ class PlayerAttributionStage:
                             fallback = "player_1" if y_at > court_mid_y else "player_2"
                         shots_df.at[s.name, "player_id"] = fallback
                         last_player = fallback
-
-        # Try to use tracking data for any remaining unassigned shots
-        tracked_players = artifacts.get("tracked_players")
-        if tracked_players:
-            for frame, players in tracked_players.items():
-                if len(players) >= 2:
-                    idx_mask = (shots_df["frame"] == frame) & shots_df["player_id"].isna()
-                    if idx_mask.any():
-                        sorted_players = sorted(players, key=lambda p: p["bbox"][1], reverse=True)
-                        assigned = "player_1" if sorted_players[0]["bbox"][1] > court_mid_y else "player_2"
-                        shots_df.loc[idx_mask, "player_id"] = assigned
 
         # Final fallback: court-position heuristic for any still-unassigned shots
         unassigned = shots_df["player_id"].isna()

@@ -29,6 +29,8 @@ class ShuttleTrackingStage:
 
         if frames:
             shuttle_data = self._run_tracknet(frames)
+            if shuttle_data is None:
+                return StageResult.from_error("TrackNet model not available, cannot perform shuttle tracking")
             self._store_resolution(artifacts, frames)
             return self._store_data(artifacts, shuttle_data)
 
@@ -45,7 +47,7 @@ class ShuttleTrackingStage:
         model = get_tracknet()
         if model is None:
             logger.error("TrackNet model not available")
-            return []
+            return None
 
         original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (settings.default_frame_width, settings.default_frame_height)
         predictions = model.predict_batch(frames, original_size=original_size)

@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     default_frame_width: int = 1280
     default_frame_height: int = 720
 
+    # Player tracking
+    max_players: int = 2
+
     # Hit detection weights & thresholds
     hit_trajectory_weight: float = 0.4
     hit_speed_weight: float = 0.3

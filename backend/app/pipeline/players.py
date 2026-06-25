@@ -1,6 +1,10 @@
 import numpy as np
 from pathlib import Path
 
+from collections import defaultdict
+
+import numpy as np
+
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT
 from app.config.settings import settings
@@ -109,33 +113,44 @@ class PlayerTrackingStage:
     ) -> StageResult:
         """Process detections and assign players to sides.
 
-        Uses relative comparison: the detection with larger center_y is 'near',
-        smaller center_y is 'far'. This is robust to camera angles where both
-        players' bboxes may be on the same side of the court midline.
+        Groups detections by track_id (from Ultralytics tracker) — each track
+        becomes one player. Side (near/far) is assigned via the median center_y
+        across the entire track, preventing per-frame identity flips.
+
+        Detections without track_id fall back to frame-by-frame court-midline.
         """
         if not detections:
             return StageResult.from_error("No player detections provided")
 
-        from collections import defaultdict
-        by_frame = defaultdict(list)
+        # Group by track_id (preferred) or per-frame (fallback)
+        track_groups = defaultdict(list)
         for det in detections:
-            by_frame[det["frame"]].append(det)
+            tid = det.get("track_id")
+            if tid is not None:
+                gid = f"track_{tid}"
+            else:
+                cy = (det["bbox"][1] + det["bbox"][3]) / 2
+                side = "near" if cy >= court_mid_y else "far"
+                gid = f"frame_{det['frame']}_{side}"
+            track_groups[gid].append(det)
 
         players = {}
-        for frame_dets in by_frame.values():
-            if len(frame_dets) < 2:
-                if len(frame_dets) == 1:
-                    d = frame_dets[0]
-                    center_y = (d["bbox"][1] + d["bbox"][3]) / 2
-                    side = "near" if center_y >= court_mid_y else "far"
-                    self._add_to_player(players, d, side)
-                continue
+        max_players = settings.max_players
 
-            sorted_dets = sorted(frame_dets, key=lambda d: (d["bbox"][1] + d["bbox"][3]) / 2, reverse=True)
-            near_det = sorted_dets[0]
-            far_det = sorted_dets[1]
-            self._add_to_player(players, near_det, "near")
-            self._add_to_player(players, far_det, "far")
+        for gid, group in track_groups.items():
+            if len(players) >= max_players:
+                break
+            center_ys = [(d["bbox"][1] + d["bbox"][3]) / 2 for d in group]
+            median_cy = float(np.median(center_ys))
+            side = "near" if median_cy >= court_mid_y else "far"
+            pid = f"player_{len(players) + 1}"
+            players[pid] = {
+                "id": pid,
+                "side": side,
+                "track_id": gid if isinstance(gid, int) else None,
+                "detections": sorted(group, key=lambda d: d["frame"]),
+                "is_synthetic": any(d.get("is_synthetic", False) for d in group),
+            }
 
         if not players:
             return StageResult.from_error("No player detections grouped")
@@ -160,45 +175,3 @@ class PlayerTrackingStage:
             artifacts={"players": artifacts.path("players")},
             metadata={"player_count": len(players), "has_synthetic": has_synthetic}
         )
-
-    @staticmethod
-    def _add_to_player(players: dict, det: dict, side: str):
-        track_id = det.get("track_id")
-
-        if track_id is not None:
-            for pid, player in players.items():
-                if player.get("track_id") == track_id:
-                    player["detections"].append(det)
-                    return
-
-        for pid, player in players.items():
-            if player["side"] != side:
-                continue
-            last_bbox = player["detections"][-1]["bbox"]
-            iou = PlayerTrackingStage._compute_iou(det["bbox"], last_bbox)
-            if iou > 0.3:
-                player["detections"].append(det)
-                return
-
-        pid = f"player_{len(players) + 1}"
-        players[pid] = {
-            "id": pid,
-            "side": side,
-            "track_id": track_id,
-            "detections": [det],
-            "is_synthetic": det.get("is_synthetic", False),
-        }
-
-    @staticmethod
-    def _compute_iou(bbox1: tuple, bbox2: tuple) -> float:
-        x1 = max(bbox1[0], bbox2[0])
-        y1 = max(bbox1[1], bbox2[1])
-        x2 = min(bbox1[2], bbox2[2])
-        y2 = min(bbox1[3], bbox2[3])
-
-        intersection = max(0, x2 - x1) * max(0, y2 - y1)
-        area1 = (bbox1[2] - bbox1[0]) * (bbox1[3] - bbox1[1])
-        area2 = (bbox2[2] - bbox2[0]) * (bbox2[3] - bbox2[1])
-        union = area1 + area2 - intersection
-
-        return intersection / union if union > 0 else 0.0
