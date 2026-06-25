@@ -254,6 +254,7 @@ class TrackNetV3:
 
     def _rectify_trajectory(self, raw_detections: list[tuple | None],
                             orig_w: int, orig_h: int) -> list[tuple]:
+        import torch
         n = len(raw_detections)
 
         xs = np.array([d[0] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
