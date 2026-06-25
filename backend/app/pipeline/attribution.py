@@ -88,6 +88,9 @@ class PlayerAttributionStage:
                 stroke_type, side = get_shuttleset_class_info(class_id)
                 if side is None:
                     continue
+                # Skip BST side when confidence is too low — shuttle direction is more reliable
+                if shot.get("stroke_confidence", 0) < settings.attribution_bst_min_conf:
+                    continue
                 player_side = bst_side_to_playerside[side]
                 for p in players_data.get("players", []):
                     if p.get("side") == player_side:

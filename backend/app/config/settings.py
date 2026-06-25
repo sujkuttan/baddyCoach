@@ -60,6 +60,7 @@ class Settings(BaseSettings):
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5
+    attribution_bst_min_conf: float = 0.5
 
     # Rally segmentation thresholds
     rally_gap_threshold: int = 90

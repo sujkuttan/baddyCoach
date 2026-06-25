@@ -46,6 +46,7 @@ CKPT_DIR.mkdir(exist_ok=True)
 
 # Resolve model paths via the centralized registry
 TRACKNET_PATH = MODEL_REGISTRY["tracknet"][0]
+INPAINTNET_PATH = MODEL_REGISTRY.get("inpaintnet", (CKPT_DIR / "InpaintNet_best.pt",))[0]
 YOLOV8_MODEL = str(MODEL_REGISTRY["yolov8s"][0])
 RTMOPOSE_PATH = MODEL_REGISTRY["rtmpose_colab"][0]
 COURT_KP_MODEL_PATH = MODEL_REGISTRY["court_kprcnn"][0]
@@ -73,6 +74,12 @@ def setup_models(device: str, pose_model: str = "rtmpose"):
         path = ensure_model("tracknet")
         if path is None:
             print("  Shuttle tracking will use fallback")
+
+    # InpaintNet (trajectory rectification)
+    if not INPAINTNET_PATH.exists():
+        path = ensure_model("inpaintnet")
+        if path is None:
+            print("  InpaintNet will not be available")
 
     # Court keypoint model (SoloShuttlePose)
     if not COURT_KP_MODEL_PATH.exists():
@@ -162,15 +169,33 @@ def _export_hrnet_onnx():
 
 
 class TrackNetV3:
-    def __init__(self, model_path: str, device: str = "cuda", chunk_size: int = 16):
+    def __init__(self, model_path: str, device: str = "cuda", chunk_size: int = 16,
+                 inpaintnet_path: str | None = None):
         import torch
         import torch.nn as nn
 
         self.device = device
         self.model = None
+        self.inpaintnet = None
         self.input_height = 288
         self.input_width = 512
         self._tracknet_chunk = chunk_size
+
+        if inpaintnet_path and Path(inpaintnet_path).exists():
+            try:
+                from app.models.tracknet import InpaintNet
+                checkpoint = torch.load(inpaintnet_path, map_location=device, weights_only=False)
+                state_dict = checkpoint if isinstance(checkpoint, dict) else {}
+                if 'model' in state_dict:
+                    state_dict = state_dict['model']
+                self.inpaintnet = InpaintNet()
+                self.inpaintnet.load_state_dict(state_dict, strict=False)
+                self.inpaintnet.to(device).eval()
+                if device == "cuda":
+                    self.inpaintnet = self.inpaintnet.half()
+                print(f"  InpaintNet loaded from {Path(inpaintnet_path).name}")
+            except Exception as e:
+                print(f"  InpaintNet load failed: {e}")
 
         if not Path(model_path).exists():
             return
@@ -227,6 +252,59 @@ class TrackNetV3:
             print(f"  TrackNet load failed: {e}")
             self.model = None
 
+    def _rectify_trajectory(self, raw_detections: list[tuple | None],
+                            orig_w: int, orig_h: int) -> list[tuple]:
+        n = len(raw_detections)
+
+        xs = np.array([d[0] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
+        ys = np.array([d[1] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
+        confs = np.array([d[2] if d is not None else 0.0 for d in raw_detections], dtype=np.float32)
+
+        mask = ~np.isnan(xs)
+        if mask.sum() >= 2:
+            indices = np.arange(n)
+            xs = np.interp(indices, indices[mask], xs[mask])
+            ys = np.interp(indices, indices[mask], ys[mask])
+            confs = np.interp(indices, indices[mask], confs[mask])
+        elif mask.sum() == 1:
+            xs[:] = xs[mask][0]
+            ys[:] = ys[mask][0]
+            confs[:] = confs[mask][0] * 0.5
+        else:
+            return raw_detections
+
+        if self.inpaintnet is not None:
+            window = self.inpaintnet.window_size
+            if n >= window:
+                with torch.no_grad():
+                    inpaint_input = np.stack([xs, ys, confs], axis=0)[np.newaxis, :, :]
+                    inpaint_tensor = torch.from_numpy(inpaint_input).float().to(self.device)
+                    if self.device == "cuda":
+                        inpaint_tensor = inpaint_tensor.half()
+                    refined = self.inpaintnet(inpaint_tensor).cpu().numpy()[0]
+                    xs = 0.7 * xs + 0.3 * refined[0]
+                    ys = 0.7 * ys + 0.3 * refined[1]
+
+        window_smooth = 3
+        if n >= window_smooth:
+            kernel = np.ones(window_smooth) / window_smooth
+            xs = np.concatenate([
+                xs[:window_smooth // 2],
+                np.convolve(xs, kernel, mode='valid'),
+                xs[-(window_smooth // 2):],
+            ])[:n]
+            ys = np.concatenate([
+                ys[:window_smooth // 2],
+                np.convolve(ys, kernel, mode='valid'),
+                ys[-(window_smooth // 2):],
+            ])[:n]
+
+        xs = np.clip(xs, 0, orig_w)
+        ys = np.clip(ys, 0, orig_h)
+        confs = np.clip(confs, 0, 1)
+
+        return [(float(xs[i]), float(ys[i]), float(confs[i])) for i in range(n)]
+
     def predict_batch(self, frames, original_size=None):
         import torch
         if self.model is None or len(frames) < 3:
@@ -243,7 +321,7 @@ class TrackNetV3:
         del frames
 
         CHUNK = self._tracknet_chunk
-        results = [{"x": 0, "y": 0, "confidence": 0} for _ in range(len(preprocessed))]
+        raw_results = [None for _ in range(len(preprocessed))]
 
         for chunk_start in range(0, len(preprocessed), CHUNK):
             chunk_end = min(chunk_start + CHUNK, len(preprocessed))
@@ -266,13 +344,15 @@ class TrackNetV3:
             for j in range(len(windows)):
                 hm = heatmaps[j]
                 y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
-                results[chunk_start + j] = {
-                    "x": float(x_idx * ow / self.input_width),
-                    "y": float(y_idx * oh / self.input_height),
-                    "confidence": float(hm.max()),
-                }
+                raw_results[chunk_start + j] = (
+                    float(x_idx * ow / self.input_width),
+                    float(y_idx * oh / self.input_height),
+                    float(hm.max()),
+                )
             del tensor, out, heatmaps, batch, windows
-        return results
+
+        rectified = self._rectify_trajectory(raw_results, ow, oh)
+        return [{"x": r[0], "y": r[1], "confidence": r[2]} for r in rectified]
 
 
 class CourtKeypointDetector:
@@ -874,7 +954,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     # ── Initialize ML models ──
     print("\n  Loading ML models...")
     tracker = YOLOv8Tracker(conf_threshold=0.5, device=device, yolo_chunk=gpu_cfg["yolo_chunk"], yolo_batch=gpu_cfg["yolo_batch"])
-    tracknet = TrackNetV3(str(TRACKNET_PATH), device=device, chunk_size=gpu_cfg["tracknet_chunk"])
+    tracknet = TrackNetV3(str(TRACKNET_PATH), device=device, chunk_size=gpu_cfg["tracknet_chunk"],
+                          inpaintnet_path=str(INPAINTNET_PATH) if INPAINTNET_PATH.exists() else None)
     pose_estimator = None
     pose_estimator_secondary = None
 
