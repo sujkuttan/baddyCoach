@@ -969,23 +969,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     print(f"    Players: {len(all_player_detections)} detections")
     print(f"    Pose:    {len(all_pose)} frames")
 
-    # ── Convert pixel → court space via homography ──
     # TrackNet outputs pixel coordinates (already rectified internally by
-    # linear interpolation + moving average smoothing). Convert to court-space
-    # metres so downstream stages (stroke classification, analytics) can
-    # normalize by court dimensions correctly.
-    H = np.array(court.get("homography"))
-    if H.shape == (3, 3) and len(all_shuttle) > 0:
-        converted = 0
-        for s in all_shuttle:
-            if s.get("confidence", 0) > 0:
-                cx, cy = image_to_court(H, (s["x"], s["y"]))
-                s["x"] = cx
-                s["y"] = cy
-                converted += 1
-        print(f"  Converted {converted}/{len(all_shuttle)} detections to court-space")
-    else:
-        print(f"  No valid homography, keeping pixel coordinates")
+    # linear interpolation + moving average smoothing). The pixel→court-space
+    # conversion happens inside _build_clip (strokes.py) via image_to_court:
+    # the single homography transform that both pipelines share. Do NOT apply
+    # another image_to_court here — that would double-transform the coordinates.
 
     # Build player summary
     players = {"player_1": {"id": "player_1", "side": "near", "detections": []},
