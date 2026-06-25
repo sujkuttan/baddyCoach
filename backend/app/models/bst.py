@@ -319,16 +319,17 @@ class BSTClassifier:
                     logits_np = logits.float().cpu().numpy()
                     probs = torch.softmax(logits.float() / self.temperature, dim=1).cpu().numpy()
 
-                # Feature stats for debug (level 2+)
-                jnb_min = float(JnB_np.min())
-                jnb_max = float(JnB_np.max())
-                jnb_mean = float(JnB_np.mean())
-                jnb_zero_frac = float((JnB_np == 0.0).mean())
-
                 for j in range(len(batch_clips)):
                     prob_dist = probs[j]
                     pred_idx = int(np.argmax(prob_dist))
                     confidence = float(prob_dist[pred_idx])
+
+                    # Per-clip feature stats (NOT batch-level — each clip has
+                    # different joint positions and shuttle trajectories)
+                    clip_jnb = batch_clips[j]['JnB']
+                    jnb_min = float(clip_jnb.min())
+                    jnb_max = float(clip_jnb.max())
+                    jnb_zero_frac = float((clip_jnb == 0.0).mean())
 
                     debug_info = None
                     if debug_collector is not None:
@@ -419,10 +420,13 @@ class BSTClassifier:
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory.
 
-        The clip shuttle is normalized by court dimensions (x/13.4, y/6.1).
-        We first denormalize to court-space meters, then renormalize to
-        pixel-space (x/vid_w, y/vid_h) so the thresholds (designed for
-        [0,1] pixel range) work correctly.
+        The clip shuttle is normalized by court dimensions:
+          channel 0 = court_x / court_length  (0=far end, 1=near end)
+          channel 1 = court_y / court_width   (0=left, 1=right)
+
+        Thresholds were designed for pixel-space [0,1] where:
+          pixel_x (horizontal) maps to court_y (left-right)
+          pixel_y (vertical)   maps to court_x (far-near, inverted)
 
         Only the POST-HIT half of the trajectory is analyzed to avoid the
         V-shaped averaging problem from between-2-hits clips (the trajectory
@@ -438,9 +442,14 @@ class BSTClassifier:
         if len(shuttle) < 2:
             return "unknown"
 
-        # Denormalize to court-space meters, then to pixel-space [0,1]
-        court_shuttle = shuttle * np.array([court_len, court_wid])
-        pixel_shuttle = court_shuttle / np.array([vid_w, vid_h])
+        # Convert court-space to pixel-space:
+        #   court_x (length, far→near) → pixel_y (vertical, top→bottom)
+        #   court_y (width, left→right) → pixel_x (horizontal, left→right)
+        court_x_m = shuttle[:, 0] * court_len
+        court_y_m = shuttle[:, 1] * court_wid
+        pixel_shuttle = np.zeros_like(shuttle)
+        pixel_shuttle[:, 0] = court_y_m / vid_w  # width → horizontal
+        pixel_shuttle[:, 1] = court_x_m / vid_h  # length → vertical
 
         # Use only post-hit half of the trajectory
         mid = len(pixel_shuttle) // 2
