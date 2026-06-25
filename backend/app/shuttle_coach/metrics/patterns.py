@@ -157,7 +157,8 @@ class ConditionalShotOutcome(Metric):
                 cy = row.get("court_y")
                 if pd.notna(cx) and pd.notna(cy):
                     ev.at[idx, "zone"] = _get_zone_from_court(
-                        float(cx), float(cy), court_length, court_width)
+                        float(cx), float(cy), court_length, court_width,
+                        player_id=row.get("player_id"))
         return ev
 
     @staticmethod

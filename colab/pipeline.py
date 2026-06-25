@@ -280,11 +280,11 @@ class CourtKeypointDetector:
     
     Detects 6 court keypoints per frame:
     - KP 0: far-left corner   (court: 0, 0)
-    - KP 1: far-right corner  (court: 0, 5.18)
+    - KP 1: far-right corner  (court: 0, 6.10)
     - KP 2: net-left          (court: 6.7, 0)   — unreliable, often duplicates KP0
-    - KP 3: net-right         (court: 6.7, 5.18)
+    - KP 3: net-right         (court: 6.7, 6.10)
     - KP 4: near-left corner  (court: 13.4, 0)
-    - KP 5: near-right corner (court: 13.4, 5.18)
+    - KP 5: near-right corner (court: 13.4, 6.10)
     
     Only KP0, KP1, KP4, KP5 (4 outer corners) are used for homography.
     Falls back to proportional estimation if model unavailable.
@@ -715,7 +715,7 @@ def detect_court_from_frame(frame):
         
         if avg_w > 0 and avg_h > 0:
             aspect = max(avg_w, avg_h) / min(avg_w, avg_h)
-            # Badminton court aspect ratio is ~2.59 (13.4/5.18)
+            # Badminton court aspect ratio is ~2.20 (13.4/6.10)
             if 1.5 < aspect < 4.0:
                 return corners
     

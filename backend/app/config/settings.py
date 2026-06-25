@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     fps: float = 30.0
     court_length: float = 13.4
-    court_width: float = 5.18
+    court_width: float = 6.10
 
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280

@@ -29,7 +29,7 @@ def test_stroke_classification_labels_shots(tmp_job_dir):
     })
     store.set_parquet("pose", pose_df)
 
-    court_data = {"court_length": 13.4, "court_width": 5.18}
+    court_data = {"court_length": 13.4, "court_width": 6.10}
     store.set("court", court_data)
 
     stage = StrokeClassificationStage()

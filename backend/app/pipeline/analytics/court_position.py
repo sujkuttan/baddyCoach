@@ -4,11 +4,29 @@ from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH
 from app.pipeline.shared.logging import logger
 
+# row 0 = rear (near own baseline), row 1 = mid, row 2 = front (near net)
 ZONE_NAMES = [
-    "front_left", "front_center", "front_right",
-    "mid_left", "mid_center", "mid_right",
     "rear_left", "rear_center", "rear_right",
+    "mid_left", "mid_center", "mid_right",
+    "front_left", "front_center", "front_right",
 ]
+
+
+def _get_zone_from_court(court_x: float, court_y: float,
+                          court_length: float, court_width: float,
+                          player_id: str | None = None) -> str:
+    if player_id in ("player_1", "player_2"):
+        half = court_length / 2.0
+        if player_id == "player_1":
+            offset = court_length - court_x
+        else:
+            offset = court_x
+        offset = max(0.0, min(offset, half))
+        row = min(int(offset / half * 3), 2)
+    else:
+        row = min(int(court_x / court_length * 3), 2)
+    col = min(int(court_y / court_width * 3), 2)
+    return ZONE_NAMES[row * 3 + col]
 
 
 class CourtPositionAnalyticsStage:
@@ -37,9 +55,10 @@ class CourtPositionAnalyticsStage:
                 court_y = shot.get("court_y")
                 if pd.isna(court_x) or pd.isna(court_y):
                     continue
-                zone = self._get_zone_from_court(
+                zone = _get_zone_from_court(
                     float(court_x), float(court_y),
                     court_length, court_width,
+                    player_id=shot.get("player_id"),
                 )
                 zone_transitions.append({
                     "frame": int(shot["frame"]),
@@ -68,8 +87,3 @@ class CourtPositionAnalyticsStage:
             }
         )
 
-    @staticmethod
-    def _get_zone_from_court(court_x: float, court_y: float, court_length: float, court_width: float) -> str:
-        row = min(int(court_x / court_length * 3), 2)
-        col = min(int(court_y / court_width * 3), 2)
-        return ZONE_NAMES[row * 3 + col]

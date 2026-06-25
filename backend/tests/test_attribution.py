@@ -12,7 +12,7 @@ def test_attribution_assigns_player_to_shots(tmp_job_dir):
         "valid": True,
         "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)],
         "court_length": 13.4,
-        "court_width": 5.18,
+        "court_width": 6.10,
     }
     store.set("court", court_data)
 

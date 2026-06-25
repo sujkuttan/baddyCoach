@@ -102,7 +102,7 @@ def synthetic_court_data():
         "homography": np.eye(3, dtype=np.float64).tolist(),
         "corners_pixel": [[100, 400], [500, 400], [100, 100], [500, 100]],
         "court_length": 13.4,
-        "court_width": 5.18,
+        "court_width": 6.10,
         "net_height": 1.55,
         "valid": True,
     }
@@ -133,7 +133,7 @@ class TestSharedCourtConsistency:
             COURT_LENGTH as P_LEN, COURT_WIDTH as P_WID, NET_HEIGHT as P_NET,
         )
         assert S_LEN == P_LEN == 13.4
-        assert S_WID == P_WID == 5.18
+        assert S_WID == P_WID == 6.10
         assert S_NET == P_NET == 1.55
 
     def test_homography_consistency(self):
@@ -149,7 +149,7 @@ class TestSharedCourtConsistency:
 
         cx, cy = shared_itc(H, (300, 250))
         assert 0.0 <= cx <= 13.4 or abs(cx) < 2
-        assert 0.0 <= cy <= 5.18 or abs(cy) < 2
+        assert 0.0 <= cy <= 6.10 or abs(cy) < 2
 
 
     def test_rule_based_shuttle_consistency(self):
@@ -271,7 +271,7 @@ class TestUnificationEdgeCases:
         from app.pipeline.analytics.court_position import CourtPositionAnalyticsStage
 
         store = ArtifactStore(tmp_job_dir)
-        store.set("court", {"court_length": 13.4, "court_width": 5.18, "valid": True})
+        store.set("court", {"court_length": 13.4, "court_width": 6.10, "valid": True})
 
         shots_df = pd.DataFrame({
             "frame": [0, 10, 20],
@@ -292,7 +292,7 @@ class TestUnificationEdgeCases:
         from app.pipeline.analytics.footwork import FootworkAnalyticsStage
 
         store = ArtifactStore(tmp_job_dir)
-        store.set("court", {"court_length": 13.4, "court_width": 5.18})
+        store.set("court", {"court_length": 13.4, "court_width": 6.10})
 
         stage = FootworkAnalyticsStage()
         result = stage.run(store, StageConfig())

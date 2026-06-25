@@ -23,16 +23,17 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** `rally_segmentation` ran before `player_attribution`, misattributing winners to player_1
 - **Fix:** Reordered so `player_attribution` (index 6) runs before `rally_segmentation` (index 7), with rally alternation algorithm for winner determination
 
-### ⚠️ BST Model Integration
+### ✅ BST Model Integration (Fixed)
 - **Issue:** BST likely not running due to sequence-length mismatch
 - **Details:** Clip uses hardcoded `SEQ_LEN=30` (`strokes.py:14`), but model expects `seq_len=100`
 - **Impact:** 20-40% "unknown" predictions, falls back to rule-based classification (`bst.py:152-160`)
-- **Fix:** Read `classifier.seq_len` in `strokes.py` instead of constant
+- **Fix:** Read `classifier.seq_len` in `strokes.py` instead of constant; dynamic n_classes detection; temperature scaling (P6)
 
-### ⚠️ Model Path Inconsistency
+### ✅ Model Path Inconsistency (Fixed)
 - **Settings path:** `BST/weight/bst_CG_JnB_bone_merged.pt` (`settings.py:22`)
 - **Downloader path:** `ckpts/bst/bst_CG_AP.pt` (`model_downloader.py:27`)
 - **Impact:** Configured path doesn't exist after download, silent fallback
+- **Fix:** CKPT_DIR anchored via `parents[5]`; settings paths made absolute; `get_bst()` uses `ensure_model()` return path; stale 35-class ckpt copies removed
 
 ### ⚠️ TrackNetV3 Architecture
 - **Issue:** Custom UNet with `in_channels=27, num_classes=8` (not published TrackNetV3)
@@ -72,6 +73,12 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** `routes.py` called `await file.read()` at line 268 (validation) and again at line 294 (write) — second read on consumed `UploadFile` returned `b""`, writing empty videos
 - **Fix:** Reuse the `content` buffer from the validation read; dropped the redundant second read
 
+### ⚠️ GPU OOM on T4 (YOLO Conv2d Fragmentation)
+- **Symptom:** CUDA OOM at batch 7/18 despite 3.78 GiB reserved but unallocated
+- **Root cause:** `gpu_batch.py` ≥12GB tier had `yolo_chunk=1000, yolo_batch=64`. Each YOLO batch allocated ~750 MiB Conv2d tensors that fragment the allocator; by batch 7, no contiguous 750 MiB block available.
+- **Tier values were never committed from initial fix** — AGENTS.md described the reduction but `gpu_batch.py` still had aggressive values
+- **Fix (commit `080eb9b`):** (1) `gpu_batch.py` tiers actually reduced — ≥12GB: `yolo_chunk=200, yolo_batch=16, tracknet_chunk=16, rtmpose_chunk=128` (was 1000/64/128/256). (2) `colab/pipeline.py` `BATCH_SIZE`: 500→300. (3) `torch.cuda.empty_cache()` added between batches.
+
 ## Testing & Development
 
 ### Hardware-Aware Testing
@@ -80,7 +87,7 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Minimum requirements:** 4GB RAM, CUDA GPU for GPU tests, model checkpoints
 
 ### Test Structure
-- 39 test files covering all major components
+- 220 tests (42 spec + 178 core), 9 skipped (hardware-dependent), 0 failed
 - Most tests use synthetic inputs and mocked models
 - Integration tests require real model checkpoints
 
@@ -154,7 +161,7 @@ GEMINI_API_KEY=your_api_key_here
 
 ### ✅ Architecture Conflicts (Resolved)
 - Two coaching engines merged into `shuttle_coach/`; `coach/engine.py` and `coach/rules.yaml` deleted
-- Colab pipeline reduced from ~1,966 to ~1,354 lines — removed `_prepare_stroke_classification`, `CoachEngine`, shuttle-coach functions; uses `analyze_from_pipeline`
+- Colab pipeline reduced from ~1,966 to ~1,411 lines — removed `_prepare_stroke_classification`, `CoachEngine`, shuttle-coach functions; uses `analyze_from_pipeline`
 - Model abstraction layer created: `shared/models.py` with lazy singleton registry (`get_yolov8`, `get_tracknet`, `get_rtmpose`, `get_bst`)
 
 ### ⚠️ Security & Reliability
@@ -219,7 +226,7 @@ python -m pytest -m "not gpu and not model"
 ## Recommended Actions (Priority)
 
 ### Critical (correctness)
-1. Fix BST seq_len wiring and weight path
+1. ~~Fix BST seq_len wiring and weight path~~ (Done — P5/P6)
 2. ~~Reorder stages for correct rally winners~~ (Done)
 3. ~~Fix RTMPose x/y rescale transpose~~ (Done)
 4. ~~Fix recovery-time pixel/meter mismatch~~ (Done — homography-based court-space comparison)

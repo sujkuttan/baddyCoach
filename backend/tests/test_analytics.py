@@ -8,7 +8,7 @@ def test_court_zones_computed(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
-    court_data = {"court_length": 13.4, "court_width": 5.18, "valid": True}
+    court_data = {"court_length": 13.4, "court_width": 6.10, "valid": True}
     store.set("court", court_data)
 
     shots_df = pd.DataFrame({
@@ -41,7 +41,7 @@ def test_footwork_metrics_computed(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
-    court_data = {"court_length": 13.4, "court_width": 5.18}
+    court_data = {"court_length": 13.4, "court_width": 6.10}
     store.set("court", court_data)
 
     pose_df = pd.DataFrame({
@@ -130,12 +130,12 @@ def test_tactical_analytics_shot_distribution(tmp_job_dir):
     })
     store.set_parquet("shots", shots_df)
 
-    court_data = {"court_length": 13.4, "court_width": 5.18}
+    court_data = {"court_length": 13.4, "court_width": 6.10}
     store.set("court", court_data)
 
     shuttle_df = pd.DataFrame({
         "frame": list(range(20)),
-        "x": np.random.uniform(0, 5.18, 20),
+        "x": np.random.uniform(0, 6.10, 20),
         "y": np.random.uniform(0, 13.4, 20),
         "confidence": [0.95] * 20,
     })
@@ -178,7 +178,7 @@ def test_technical_analytics_evaluates_shots(tmp_job_dir):
     })
     store.set_parquet("shuttle", shuttle_df)
 
-    court_data = {"court_length": 13.4, "court_width": 5.18}
+    court_data = {"court_length": 13.4, "court_width": 6.10}
     store.set("court", court_data)
 
     bst_clips = {

@@ -9,8 +9,11 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
 # Court model definition (metres) — origin at top-left, x=along length, y=along width
+# Default COURT_WIDTH = 6.10 (doubles). Some videos may show singles court (5.18m wide
+# with inner sidelines); stages should use court_width from store if available.
 COURT_LENGTH = 13.4
-COURT_WIDTH = 5.18
+COURT_WIDTH = 6.10
+SINGLES_WIDTH = 5.18
 NET_HEIGHT = 1.55
 
 COURT_MODEL = {
@@ -18,9 +21,14 @@ COURT_MODEL = {
     "outer_tr": (0.0, COURT_WIDTH),
     "outer_bl": (COURT_LENGTH, 0.0),
     "outer_br": (COURT_LENGTH, COURT_WIDTH),
+    # Singles reference lines (inside doubles court)
+    "singles_tl": (0.0, (COURT_WIDTH - SINGLES_WIDTH) / 2),
+    "singles_tr": (0.0, (COURT_WIDTH + SINGLES_WIDTH) / 2),
+    "singles_bl": (COURT_LENGTH, (COURT_WIDTH - SINGLES_WIDTH) / 2),
+    "singles_br": (COURT_LENGTH, (COURT_WIDTH + SINGLES_WIDTH) / 2),
 }
 
-COURT_ASPECT_RATIO = COURT_LENGTH / COURT_WIDTH  # ≈ 2.587
+COURT_ASPECT_RATIO = COURT_LENGTH / COURT_WIDTH  # ≈ 2.197
 
 
 def _detect_court_color_line(frame: np.ndarray):

@@ -13,7 +13,7 @@ COURT_LENGTH_M = COURT_LENGTH
 def _pixel_to_meter_scale(court: dict) -> float:
     """Estimate pixels-per-meter from court corner pixel coordinates.
 
-    Uses the average of near-side and far-side pixel widths (court is 5.18m wide).
+    Uses the average of near-side and far-side pixel widths (court is 6.10m wide).
     Falls back to 1.0 if corners unavailable.
     """
     corners = court.get("corners_pixel", [])

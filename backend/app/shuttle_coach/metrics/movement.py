@@ -61,7 +61,6 @@ class CourtCoverage(Metric):
     metric_id = "movement.court_coverage"
     requires = {"movement"}
 
-    ZONE_EDGES_X = [0.0, 4.0, 8.0, 13.4]
     ZONE_EDGES_Y = [0.0, 3.05, 6.10]
     ZONE_NAMES = ["rear_left", "rear_right", "mid_left", "mid_right", "front_left", "front_right"]
 
@@ -76,7 +75,17 @@ class CourtCoverage(Metric):
             cx = pos["court_x"].values
             cy = pos["court_y"].values
 
-            x_bins = np.searchsorted(self.ZONE_EDGES_X[1:], cx, side="right")
+            # Player-relative x zones: distance from own baseline
+            half = 13.4 / 2.0
+            if pid == "player_1":
+                offset = 13.4 - cx
+            elif pid == "player_2":
+                offset = cx
+            else:
+                offset = cx
+            offset = np.clip(offset, 0.0, half)
+            x_edges = [0.0, half / 3, 2 * half / 3, half]
+            x_bins = np.searchsorted(x_edges[1:], offset, side="right")
             y_bins = np.searchsorted(self.ZONE_EDGES_Y[1:], cy, side="right")
 
             zone_indices = y_bins * 2 + x_bins

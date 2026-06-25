@@ -23,7 +23,7 @@ class TestSharedCourtModule:
     def test_court_constants(self):
         from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT
         assert COURT_LENGTH == 13.4
-        assert COURT_WIDTH == 5.18
+        assert COURT_WIDTH == 6.10
         assert NET_HEIGHT == 1.55
 
     def test_court_model(self):

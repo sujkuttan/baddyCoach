@@ -20,11 +20,11 @@ class CourtKeypointDetector:
 
     The model outputs 6 keypoints in this order:
       0: far-left corner   (court metres: 0, 0)
-      1: far-right corner  (court metres: 0, 5.18)
+      1: far-right corner  (court metres: 0, 6.10)
       2: net-left          (court metres: 6.7, 0)   — unreliable at broadcast angles
-      3: net-right         (court metres: 6.7, 5.18)
+      3: net-right         (court metres: 6.7, 6.10)
       4: near-left corner  (court metres: 13.4, 0)
-      5: near-right corner (court metres: 13.4, 5.18)
+      5: near-right corner (court metres: 13.4, 6.10)
 
     Only KP0, KP1, KP4, KP5 (the 4 outer corners) are used for homography.
     KP2/KP3 are ignored because KP2 often duplicates KP0 at broadcast camera angles.
