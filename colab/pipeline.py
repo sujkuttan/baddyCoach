@@ -744,11 +744,13 @@ BATCH_SIZE = 300
 
 
 def _generate_report(court, players_data, shots, rallies, coach,
-                     tactical, fitness, footwork, technical, court_analytics, fps=30):
+                     tactical, fitness, footwork, technical, court_analytics, fps=30,
+                     data_quality=None):
     """Build the final report dict from all analytics."""
     shot_dist = {}
     for pid, data in tactical.items():
         shot_dist.update(data.get("shot_distribution", {}))
+    data_quality = data_quality or {}
 
     shots_with_ts = []
     for shot_idx, s in enumerate(shots, 1):
@@ -772,6 +774,8 @@ def _generate_report(court, players_data, shots, rallies, coach,
         "rally_stats": coach.get("rally_stats", {}),
         "rallies": rallies, "shot_count": len(shots),
         "shots": shots_with_ts,
+        "data_quality": {k: v for k, v in data_quality.items()
+                         if k != "court_valid" and k != "model_health"},
     }
 
 
@@ -792,6 +796,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
     from app.pipeline.analytics.tactical import TacticalAnalyticsStage
     from app.pipeline.analytics.technical import TechnicalAnalyticsStage
+    from app.pipeline.quality import DataQualityStage
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
 
@@ -1114,12 +1119,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         FitnessAnalyticsStage().run(store, config)
         TacticalAnalyticsStage().run(store, config)
         TechnicalAnalyticsStage().run(store, config)
+        DataQualityStage().run(store, config)
 
         court_analytics = store.get("court_analytics") or {}
         footwork = store.get("footwork_analytics") or {}
         fitness = store.get("fitness_analytics") or {}
         tactical = store.get("tactical_analytics") or {}
         technical = store.get("technical_analytics") or {}
+        data_quality = store.get("data_quality") or {}
         print(f"  Court: {len(court_analytics.get('zone_transitions', []))} transitions")
 
         # ── Coach recommendations (backend engine) ──
@@ -1140,7 +1147,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                 "_rallies_df": rallies_df,
                 "_shots_df": shots_df,
             }
-            result = analyze_from_pipeline(analytics, {}, player_id=pid)
+            result = analyze_from_pipeline(analytics, {}, player_id=pid, data_quality=data_quality)
             for key in coach:
                 if key in result:
                     if isinstance(coach[key], list):
@@ -1154,7 +1161,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     # ── Build and save report ──
     report = _generate_report(court, players_data, shots, rallies, coach,
-                              tactical, fitness, footwork, technical, court_analytics, fps=video_fps)
+                              tactical, fitness, footwork, technical, court_analytics,
+                              fps=video_fps, data_quality=data_quality)
 
     output = Path(output_path)
     output.write_text(json.dumps(report, indent=2, default=str))

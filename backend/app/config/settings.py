@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     quality_shuttle_conf_thr: float = 0.5
     quality_min_shots_tactical: int = 15
     quality_max_fallback_patterns: float = 0.30
+    quality_min_stroke_conf: float = 0.30  # below this → penalized + distrusted
     model_max_missing_frac: float = 0.05
 
     # Shot context / pressure

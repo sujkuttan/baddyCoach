@@ -114,6 +114,9 @@ def compute_quality(artifacts: ArtifactStore) -> dict:
     if pose_cov < 0.3:
         score -= 0.10
         penalties.append("low_pose_coverage")
+    if mean_conf < settings.quality_min_stroke_conf:
+        score -= 0.10
+        penalties.append("low_stroke_confidence")
 
     q_score = max(0.0, min(1.0, score))
     if q_score >= 0.75:
@@ -128,11 +131,11 @@ def compute_quality(artifacts: ArtifactStore) -> dict:
     rtmpose_loaded = rtmpose_health.get("loaded", True) if rtmpose_health else True
 
     capability_trust = {
-        "tactical": court_valid and bst_fb < 0.4 and n_shots >= settings.quality_min_shots_tactical,
+        "tactical": court_valid and bst_fb < 0.4 and n_shots >= settings.quality_min_shots_tactical and mean_conf >= settings.quality_min_stroke_conf,
         "patterns": court_valid and bst_fb < settings.quality_max_fallback_patterns
-                    and xy_cov > 0.6 and n_shots >= 20,
+                    and xy_cov > 0.6 and n_shots >= 20 and mean_conf >= settings.quality_min_stroke_conf,
         "technique": pose_cov > 0.5 and rtmpose_loaded,
-        "movement": court_valid and xy_cov > 0.3 and n_shots >= 5,
+        "movement": court_valid and xy_cov > 0.3 and n_shots >= 5 and mean_conf >= settings.quality_min_stroke_conf,
         "progress": q_score >= 0.45,
     }
 
@@ -148,6 +151,8 @@ def compute_quality(artifacts: ArtifactStore) -> dict:
         caveats.append(f"Low pose coverage ({pose_cov:.0%} of frames)")
     if n_shots < settings.quality_min_shots_tactical:
         caveats.append(f"Only {n_shots} shots — insufficient for tactical analysis")
+    if mean_conf < settings.quality_min_stroke_conf:
+        caveats.append(f"Low mean stroke confidence ({mean_conf:.2f})")
     untrusted = [k for k, v in capability_trust.items() if not v]
     if untrusted:
         caveats.append(f"Low-confidence run — {', '.join(untrusted)} insights hidden")
