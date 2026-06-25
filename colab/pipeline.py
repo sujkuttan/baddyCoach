@@ -1036,7 +1036,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     with tempfile.TemporaryDirectory() as tmpdir:
         store = ArtifactStore(Path(tmpdir))
-        config = StageConfig(gpu_enabled=False)
+        config = StageConfig(gpu_enabled=False, debug_level=3)
 
         # Convert numpy types to native Python for JSON serialization
         def _to_json_safe(v):
