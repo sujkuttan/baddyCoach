@@ -296,6 +296,9 @@ class StrokeClassificationStage:
             debug_collector=bst_debug_collector,
         )
 
+        if bst_debug_collector is not None and len(bst_debug_collector) > 0:
+            artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
+
         # Phase 3: build shot records from results
         for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id)) in enumerate(zip(clip_hit_pairs, all_results)):
             # Track if this specific shot fell back to rule-based prediction
@@ -330,15 +333,14 @@ class StrokeClassificationStage:
                 "stroke_confidence": confidence,
             })
 
-        # Post-classification temporal smoothing: correct low-confidence or
-        # unknown strokes to match the majority of nearby shots.
+        # Post-classification temporal smoothing: overwrite unknown strokes
+        # with the majority type from nearby shots. Determinate predictions
+        # (even low-confidence) are preserved to avoid rule-based bias from
+        # dominating the neighborhood vote.
         if len(shots) > 2:
-            LOW_CONF_THRESH = 0.2
             for i in range(len(shots)):
-                conf = shots[i]["stroke_confidence"]
                 stype = shots[i]["stroke_type"]
-                # Smooth if unknown OR low-confidence determinate prediction
-                if stype != "unknown" and conf > LOW_CONF_THRESH:
+                if stype != "unknown":
                     continue
                 neighbors = []
                 win = settings.stroke_smoothing_window

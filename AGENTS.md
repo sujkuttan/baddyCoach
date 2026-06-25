@@ -235,17 +235,34 @@ python -m pytest -m "not gpu and not model"
 - **Was:** Per-frame YOLO tracking → 166 unique track IDs → `det_bbox_lookup` fails for 30-40% of frames → joints normalized with fallback keypoint bbox → garbled BST features
 - **Fix:** Added `_interpolate_bboxes()` in `_build_clip` that linearly interpolates bbox for missing frames per player. Tracks missing bbox/pose counts in `_debug_clip` stats.
 
-### ✅ Temporal Smoothing Scope (Fixed — 2025-06-25)
+### ✅ Temporal Smoothing Scope (Fixed — 2025-06-25, Revised)
 - **Was:** `if stype != "unknown": continue` — only unknown strokes smoothed; low-confidence "drive" (conf=0.089) never corrected
-- **Fix:** Now smooths any stroke with confidence < 0.2, not just "unknown"
+- **Fix (initial):** Smooth any stroke with confidence < 0.2, not just "unknown"
+- **Fix (revised):** Reverted to unknown-only smoothing. The expanded scope caused rule-based "net_shot" bias (78 shots, conf~0.22) to overwrite 13 determinate BST predictions (lift, smash, short_serve, etc.) to net_shot via majority vote. Determinate predictions, even low-confidence, are preserved to avoid rule-based neighborhood dominance.
 
 ### ✅ Rally Winner Threshold (Fixed — 2025-06-25)
 - **Was:** `_infer_end_reason` required conf ≥ 0.5 for "winner"; max BST conf 0.633 → 13/14 rallies ended in "unforced_error"
 - **Fix:** Lowered winner threshold to 0.3; added speed-based winner detection (smash > 8 m/s = winner); `_compute_rally_winner_after_attribution` passes shuttle speed to `_infer_end_reason`
 
+### ✅ Re-run Validation (2025-06-25, new 5-min video with fixes)
+- **Bbox interpolation (Fix 2) is the single biggest win:** missing bbox 199→0 per clip; player balance 27%/73%→50%/50%; player_1 BST coverage 22%→69%
+- **BST class diversity:** 10 classes active (was 8), including **drop** for first time
+- **BST shots:** 122/200 (61%), up from 108/200 (54%)
+- **Rule-based:** 78/200 (39%), down from 92/200 (46%), still 78/78 → "net_shot"
+- **Mean confidence unchanged** (~0.22), needs temperature scaling re-investigation
+- **15/25 classes still never activated** — model can't predict 0-2, 6-12, 18, 20-22, 24
+
+### ✅ PipelineLogger Formatting (Fixed — 2025-06-25)
+- **Was:** `logger.info("Attribution tiers: %s", tier_counts)` — PipelineLogger.info() takes only `message` as positional, causing TypeError
+- **Fix:** Changed to `logger.info("Attribution tiers", tiers=str(tier_counts))`
+
+### ✅ Debug BST Output Persistence (Fixed — 2025-06-25)
+- **Was:** `bst_debug_collector` list collected per-shot debug info but was never saved to parquet — data existed in memory only
+- **Fix:** After `predict_from_clips`, save `artifacts.set_parquet("debug_bst_outputs", df)` when debug_level >= 1
+
 ## 2025-06-25: Stroke Classification Root Cause Analysis
 
-### ⚠️ Rule-Based Classifier: Court-Space vs Pixel-Space Normalization (Unfixed)
+### ⚠️ Rule-Based Classifier: Court-Space vs Pixel-Space Normalization (Fixed)
 - **Issue:** All 69 rule-based shots (33.8%) predict "drive" regardless of actual trajectory
 - **Root cause:** Clip construction (`strokes.py:82-83`) normalizes shuttle by court dimensions (`x/13.4`, `y/6.1`), but rule-based thresholds (`bst.py:363-376`) were designed for pixel-space normalization (`x/1920`, `y/1080` → range [0,1])
 - **Impact:** `end_y` ALWAYS negative after court-normalization → "lift" (needs `end_y > 0.5`) and "drop" (needs `end_y > 0.7`) can NEVER trigger; `mean_speed > 0.03` always → "net_shot" can NEVER trigger; most trajectories fall through to "drive" or "unknown".
@@ -260,11 +277,12 @@ python -m pytest -m "not gpu and not model"
 - **Root cause (hypothesized):** (a) Per-frame YOLO tracking with no temporal ID linking → `det_bbox_lookup` fails when player track ID changes mid-clip (166 unique track_ids for 18,000 detections across 2 players). Missing detections → zeros in joints/bbox → garbled features. (b) Class ordering in `SHUTTLESET_CLASSES` may not match training checkpoint order — checkpoint filename `CG_JnB_bone_merged` uses ShuttleSet ordering, but code defines extra classes (block, short_serve, long_serve) at different positions.
 - **Fix:** (a) Add temporal detection smoothing: interpolate bbox across frames when track ID switches. (b) Verify class ordering by running inference on a labeled ShuttleSet sample.
 
-### ⚠️ Temporal Smoothing Skips Non-Unknown Strokes (Unfixed)
+### ⚠️ Temporal Smoothing Skips Non-Unknown Strokes (Revised 2025-06-25)
 - **Issue:** Line 273: `if stype != "unknown": continue` — smoothing only corrects unknown strokes. Low-confidence "drive" (1 BST drive at conf=0.089) and other determinate predictions remain untouched even when surrounded by opposite stroke types.
-- **Fix:** Extend smoothing to correct low-confidence predictions below an entropy/confidence threshold (e.g., `confidence < 0.2`), not just "unknown".
+- **Fix (initial):** Smooth any stroke with confidence < 0.2, not just "unknown"
+- **Fix (revised):** Reverted to unknown-only smoothing. The expanded scope caused rule-based "net_shot" bias (78 shots, conf~0.22) to overwrite 13 determinate BST predictions (lift, smash, short_serve, etc.) to net_shot via majority vote. Determinate predictions, even low-confidence, are preserved to avoid rule-based neighborhood dominance.
 
-### ⚠️ Rally Winner Logic Fragile (Unfixed)
+### ⚠️ Rally Winner Logic Fragile (Fixed — 2025-06-25)
 - **Issue:** `_infer_end_reason` requires confidence ≥ 0.5 for "winner" → no shot in Run 2 qualifies (max conf 0.633 for BST, 0.3 for rule-based). 13/14 rallies end in "unforced_error". Winner = "player who didn't hit last shot" — accidentally correct for errors but wrong for genuine winners/net shots.
 - **Sequence:** `_infer_end_reason(stroke_type, confidence)` at `rallies.py:28` → `end_reason = "unforced_error"` for most low-confidence shots → `winner = other_player` at line 35.
 - **Fix:** Lower winner confidence threshold to 0.3, or add trajectory-speed-based winner detection (smash/kill near net = likely winner).

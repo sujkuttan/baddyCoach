@@ -155,7 +155,7 @@ class PlayerAttributionStage:
 
         if config.debug_level >= 1:
             tier_counts = shots_df["attribution_tier"].value_counts().to_dict()
-            logger.info("Attribution tiers: %s", tier_counts)
+            logger.info("Attribution tiers", tiers=str(tier_counts))
 
         if H is not None and pose_df is not None:
             for idx, shot in shots_df.iterrows():
