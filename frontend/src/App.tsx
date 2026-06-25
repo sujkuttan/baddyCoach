@@ -3,15 +3,18 @@ import { UploadView } from './views/UploadView';
 import { ProcessingView } from './views/ProcessingView';
 import { ReportView } from './views/ReportView';
 import { ProgressView } from './views/ProgressView';
+import { CourtCornerSetup } from './views/CourtCornerSetup';
 import { getJob } from './utils/api';
 
-type AppState = 'upload' | 'processing' | 'report' | 'progress';
+type AppState = 'upload' | 'setup_court' | 'processing' | 'report' | 'progress';
 
 const STORAGE_KEY = 'baddycoach_job_id';
 
 function App() {
   const [state, setState] = useState<AppState>('upload');
   const [jobId, setJobId] = useState<string | null>(null);
+  const [poseModel, setPoseModel] = useState<string>('rtmpose');
+  const [sampleRate, setSampleRate] = useState<number>(0);
   const [loadedReport, setLoadedReport] = useState<any>(null);
   const [restoring, setRestoring] = useState(true);
   const [progressPlayerKey, setProgressPlayerKey] = useState<string>('player_1');
@@ -38,16 +41,22 @@ function App() {
     }).finally(() => setRestoring(false));
   }, []);
 
-  const handleJobCreated = (id: string) => {
+  const handleJobCreated = (id: string, opts?: { poseModel?: string; sampleRate?: number }) => {
     localStorage.setItem(STORAGE_KEY, id);
     setJobId(id);
-    setState('processing');
+    setPoseModel(opts?.poseModel ?? 'rtmpose');
+    setSampleRate(opts?.sampleRate ?? 0);
+    setState('setup_court');
   };
 
   const handleLoadReport = (report: any) => {
     setLoadedReport(report);
     setJobId(null);
     setState('report');
+  };
+
+  const handleCourtComplete = () => {
+    setState('processing');
   };
 
   const handleBack = () => {
@@ -74,6 +83,9 @@ function App() {
     <div className="min-h-screen bg-court-dark">
       {state === 'upload' && (
         <UploadView onJobCreated={handleJobCreated} onLoadReport={handleLoadReport} />
+      )}
+      {state === 'setup_court' && jobId && (
+        <CourtCornerSetup jobId={jobId} poseModel={poseModel} sampleRate={sampleRate} onComplete={handleCourtComplete} onBack={handleBack} />
       )}
       {state === 'processing' && jobId && (
         <ProcessingView jobId={jobId} onComplete={() => setState('report')} />

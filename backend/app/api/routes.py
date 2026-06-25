@@ -28,6 +28,7 @@ def run_pipeline(job_id: str):
     from app.pipeline.quality import DataQualityStage
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
+    from fastapi.responses import Response
     from app.api.websocket import ws_manager
     from app.pipeline.shared.utils import get_video_info
 
@@ -76,8 +77,12 @@ def run_pipeline(job_id: str):
         if not ret:
             court_frame = None
 
+    # Use manual corners if available, otherwise fall back to auto-detection
+    manual_corners = job.get("manual_corners")
+    court_kwargs = {"frame": court_frame} if manual_corners is None else {"corners": manual_corners}
+
     stages = [
-        ("court_detection", lambda: CourtDetectionStage().run(store, config, frame=court_frame)),
+        ("court_detection", lambda: CourtDetectionStage().run(store, config, **court_kwargs)),
         ("player_tracking", lambda: PlayerTrackingStage().run(store, config, frames=frames if frames else None)),
         ("shuttle_tracking", lambda: ShuttleTrackingStage().run(store, config, frames=frames if frames else None)),
         ("pose_estimation", lambda: PoseEstimationStage().run(store, config, frames=frames if frames else None)),
@@ -415,6 +420,41 @@ async def stream_video(job_id: str):
         raise HTTPException(404, "Video not found")
 
     return FileResponse(video_path)
+
+
+@router.get("/jobs/{job_id}/frame")
+async def get_first_frame(job_id: str):
+    """Return the first video frame as JPEG for court-corner setup."""
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    video_path = job.get("video_path", "")
+    if not video_path or not Path(video_path).exists():
+        raise HTTPException(404, "Video not found")
+
+    cap = cv2.VideoCapture(video_path)
+    ret, frame = cap.read()
+    cap.release()
+
+    if not ret or frame is None:
+        raise HTTPException(500, "Could not read first frame")
+
+    _, jpeg = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+    return Response(content=jpeg.tobytes(), media_type="image/jpeg")
+
+
+@router.put("/jobs/{job_id}/court-corners")
+async def set_court_corners(job_id: str, corners: list[list[int]]):
+    """Store manual court corners for a job. Expected: [[bl_x,bl_y], [br_x,br_y], [tl_x,tl_y], [tr_x,tr_y]]."""
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+    if len(corners) != 4:
+        raise HTTPException(400, "Exactly 4 corner points required: [bl, br, tl, tr]")
+
+    job_manager.update_job(job_id, manual_corners=corners)
+    return {"job_id": job_id, "corners": corners}
 
 
 @router.get("/shuttle-coach/analyze/{job_id}")

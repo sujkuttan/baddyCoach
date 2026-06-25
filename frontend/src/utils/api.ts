@@ -37,3 +37,18 @@ export async function getPlayerProgress(playerKey: string, window: number = 5): 
   if (!res.ok) throw new Error('Progress not found');
   return res.json();
 }
+
+export async function getFrame(jobId: string): Promise<Blob> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/frame`);
+  if (!res.ok) throw new Error('Frame not found');
+  return res.blob();
+}
+
+export async function setCourtCorners(jobId: string, corners: number[][]): Promise<void> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/court-corners`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ corners }),
+  });
+  if (!res.ok) throw new Error(await res.text());
+}

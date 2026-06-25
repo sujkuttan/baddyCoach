@@ -3,7 +3,7 @@ import { uploadVideo, processVideo } from '../utils/api';
 import { setVideoFile } from '../utils/videoStore';
 
 interface UploadViewProps {
-  onJobCreated: (jobId: string) => void;
+  onJobCreated: (jobId: string, opts?: { poseModel?: string; sampleRate?: number }) => void;
   onLoadReport?: (report: any) => void;
 }
 
@@ -62,8 +62,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
     try {
       const { job_id } = await uploadVideo(file);
       localStorage.setItem('baddycoach_job_id', job_id);
-      await processVideo(job_id, poseModel, sampleRate);
-      onJobCreated(job_id);
+      onJobCreated(job_id, { poseModel, sampleRate });
     } catch (e: any) {
       setError(e.message || 'Upload failed');
     } finally {
@@ -73,11 +72,7 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
 
   const handleResume = (job: Job) => {
     localStorage.setItem('baddycoach_job_id', job.id);
-    if (job.status === 'completed') {
-      onJobCreated(job.id);
-    } else {
-      onJobCreated(job.id);
-    }
+    onJobCreated(job.id);
   };
 
   const statusColor = (s: string) => {

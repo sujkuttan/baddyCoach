@@ -162,6 +162,25 @@ def image_to_court(H, uv):
     return float(out[0, 0, 0]), float(out[0, 0, 1])
 
 
+def clamp_to_court(x: float, y: float) -> tuple[float, float]:
+    """Clamp court-space metres to valid court dimensions."""
+    return max(0.0, min(COURT_LENGTH, x)), max(0.0, min(COURT_WIDTH, y))
+
+
+def clamp_to_unit(x: float, y: float) -> tuple[float, float]:
+    """Clamp unit-space ([0,1]) coordinates — used after dividing by court dims."""
+    return max(0.0, min(1.0, x)), max(0.0, min(1.0, y))
+
+
+def court_to_unit(cx: float, cy: float,
+                  court_length: float = COURT_LENGTH,
+                  court_width: float = COURT_WIDTH) -> tuple[float, float]:
+    """Convert court metres to unit [0,1], clamped."""
+    ux = max(0.0, min(1.0, cx / court_length if court_length > 0 else 0))
+    uy = max(0.0, min(1.0, cy / court_width if court_width > 0 else 0))
+    return ux, uy
+
+
 class HomographySmoother:
     """Smooths the FOUR outer court corners (in image space) over time,
     then recomputes H from the smoothed corners. Robust to per-frame flicker."""

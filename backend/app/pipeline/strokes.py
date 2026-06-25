@@ -3,7 +3,7 @@ import pandas as pd
 
 from app.config.settings import settings
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
 from app.pipeline.shared.bst_preproc import normalize_joints, create_bones, BONE_PAIRS
 
 
@@ -172,11 +172,13 @@ def _build_clip(
                 feet_y = max(coords[15, 1], coords[16, 1])
                 if homography is not None:
                     court_x, court_y = image_to_court(homography, (feet_x, feet_y))
-                    pos[t, p_idx, 0] = court_x / court_length if court_length > 0 else 0
-                    pos[t, p_idx, 1] = court_y / court_width if court_width > 0 else 0
+                    court_x, court_y = clamp_to_unit(court_x / court_length if court_length > 0 else 0,
+                                                     court_y / court_width  if court_width  > 0 else 0)
+                    pos[t, p_idx, 0] = court_x
+                    pos[t, p_idx, 1] = court_y
                 else:
-                    pos[t, p_idx, 0] = feet_x / vid_w
-                    pos[t, p_idx, 1] = feet_y / vid_h
+                    pos[t, p_idx, 0] = max(0.0, min(1.0, feet_x / vid_w))
+                    pos[t, p_idx, 1] = max(0.0, min(1.0, feet_y / vid_h))
             else:
                 debug_clip_stats["n_missing_pose"] += 1
 
