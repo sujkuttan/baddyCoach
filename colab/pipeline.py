@@ -37,7 +37,7 @@ from app.pipeline.shared.court import (
     _correct_court_points, compute_homography, image_to_court, HomographySmoother,
 )
 from app.pipeline.shared.utils import (
-    _infer_end_reason, stage_rally_stats,
+    stage_rally_stats,
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
 from app.pipeline.shared.models import ensure_model, MODEL_REGISTRY
@@ -870,6 +870,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     """
     import tempfile
     from app.pipeline.base import StageConfig
+    from app.pipeline.players import stitch_tracks
     from app.pipeline.hits import HitFrameLocalizationStage
     from app.pipeline.strokes import StrokeClassificationStage
     from app.pipeline.attribution import PlayerAttributionStage
@@ -1067,14 +1068,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     # the single homography transform that both pipelines share. Do NOT apply
     # another image_to_court here — that would double-transform the coordinates.
 
-    # Build player summary
-    players = {"player_1": {"id": "player_1", "side": "near", "detections": []},
-               "player_2": {"id": "player_2", "side": "far", "detections": []}}
-    for d in all_player_detections:
-        side = d.get("side", "near")
-        pid = "player_1" if side == "near" else "player_2"
-        players[pid]["detections"].append(d)
-    players_data = {"players": [{"id": p["id"], "side": p["side"], "detection_count": len(p["detections"]), "detections": p["detections"]} for p in players.values()]}
+    # Build player summary via shared stitch_tracks (nearest-centroid joint assignment)
+    court_mid_y = (corners[0][1] + corners[2][1]) / 2 if corners and len(corners) >= 4 else (vid_h * 0.5)
+    players_data = stitch_tracks(all_player_detections, court_mid_y)
 
     # Free ML models from GPU
     del tracker, tracknet, pose_estimator, pose_estimator_secondary
@@ -1192,27 +1188,10 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             if df is not None and len(df) > 0:
                 df.to_parquet(debug_dir / f"{debug_key}.parquet", index=False)
 
-        # Enrich rallies with winner/end_reason
-        for rally in rallies:
-            rally_shots_list = [s for s in shots if s.get("rally_id") == rally["rally_id"]]
-            rally_shots_list.sort(key=lambda s: s["frame"])
-            if rally_shots_list:
-                last_shot = rally_shots_list[-1]
-                rally["end_reason"] = _infer_end_reason(
-                    last_shot.get("stroke_type", "clear"),
-                    last_shot.get("stroke_confidence", 0.5),
-                )
-                last_hitter = last_shot.get("player_id", "player_1")
-                if rally["end_reason"] == "winner":
-                    rally["winner_player_id"] = last_hitter
-                elif rally["end_reason"] in ("forced_error", "unforced_error", "net"):
-                    rally["winner_player_id"] = "player_2" if last_hitter == "player_1" else "player_1"
-                else:
-                    rally["winner_player_id"] = None
-            else:
-                rally["winner_player_id"] = None
-                rally["end_reason"] = "unknown"
-            rally["serving_player_id"] = "player_1" if rally["rally_id"] % 2 == 1 else "player_2"
+        # RallySegmentationStage already computes winner_player_id/end_reason
+        # with shuttle-landing logic (Spec 2B). Write as-is — no override needed.
+        if rallies_df is not None and len(rallies_df) > 0:
+            rallies = rallies_df.to_dict("records")
         pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
 
         # Analytics stages

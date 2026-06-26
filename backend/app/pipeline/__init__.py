@@ -25,7 +25,7 @@ from .shared.core import STROKE_CLASSES, _get_gpu_batch_config
 # where settings/model dependencies are not available)
 try:
     from .court import CourtDetectionStage, CourtKeypointDetector
-    from .players import PlayerTrackingStage
+    from .players import PlayerTrackingStage, stitch_tracks
     from .shuttle import ShuttleTrackingStage
     from .pose import PoseEstimationStage
     from .hits import HitFrameLocalizationStage
@@ -100,6 +100,9 @@ __all__ = [
     '_validate_court_geometry',
     'HomographySmoother',
     
+    # Player tracking
+    'stitch_tracks',
+
     # Stage classes
     'CourtDetectionStage',
     'CourtKeypointDetector',
