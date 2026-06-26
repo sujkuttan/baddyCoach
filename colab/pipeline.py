@@ -991,6 +991,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         print(f"  Using RTMPose (fast)")
         pose_estimator = RTMPoseEstimator(pose_path, device=device, onnx_chunk=gpu_cfg["rtmpose_chunk"])
 
+    pose_display_name = {"mmpose": "MMPose HRNet-W32", "hybrid": "MMPose HRNet-W32", "rtmpose": "RTMPose"}.get(pose_model, "RTMPose")
     print("  Models loaded")
 
     # ── ML batch loop (GPU) ──
@@ -1027,7 +1028,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                                all_shuttle, all_det, all_pose, all_player_detections,
                                batch_count, total_batches,
                                pose_estimator_secondary=pose_estimator_secondary,
-                               all_pose_secondary=all_pose_secondary, corners=corners)
+                               all_pose_secondary=all_pose_secondary,
+                               pose_model_name=pose_display_name, corners=corners)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -1046,7 +1048,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                        all_shuttle, all_det, all_pose, all_player_detections,
                        batch_count, total_batches,
                        pose_estimator_secondary=pose_estimator_secondary,
-                       all_pose_secondary=all_pose_secondary, corners=corners)
+                       all_pose_secondary=all_pose_secondary,
+                       pose_model_name=pose_display_name, corners=corners)
         gc.collect()
 
     cap.release()
@@ -1294,7 +1297,7 @@ def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
                    all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0,
                    pose_estimator_secondary=None, all_pose_secondary=None,
-                   corners=None):
+                   pose_model_name="rtmpose", corners=None):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
@@ -1394,7 +1397,7 @@ def _process_batch(frames, global_indices, batch_start_offset,
         if far_det:
             crop_list.append((global_idx, "player_2", far_det["bbox"], frame))
 
-    tqdm.write(f"{tag} | RTMPose batch estimation ({len(crop_list)} crops)...")
+    tqdm.write(f"{tag} | {pose_model_name} batch estimation ({len(crop_list)} crops)...")
     BATCH_CHUNK = 128
     for crop_chunk_start in range(0, len(crop_list), BATCH_CHUNK):
         chunk = crop_list[crop_chunk_start:crop_chunk_start + BATCH_CHUNK]
@@ -1405,7 +1408,7 @@ def _process_batch(frames, global_indices, batch_start_offset,
 
     # Secondary pose estimation (for hybrid mode)
     if pose_estimator_secondary is not None and all_pose_secondary is not None:
-        tqdm.write(f"{tag} | Secondary RTMPose estimation ({len(crop_list)} crops)...")
+        tqdm.write(f"{tag} | RTMPose (secondary) estimation ({len(crop_list)} crops)...")
         for crop_chunk_start in range(0, len(crop_list), BATCH_CHUNK):
             chunk = crop_list[crop_chunk_start:crop_chunk_start + BATCH_CHUNK]
             crops = [(c[2], c[3]) for c in chunk]
