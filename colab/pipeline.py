@@ -1145,11 +1145,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         bst_settings.bst_joint_norm = "court"
         shots_result = StrokeClassificationStage().run(store, config)
         shots_df = store.get_parquet("shots")
-        if shots_df is None or len(shots_df) == 0:
-            print("  Backend stroke classification produced no shots, using colab BST fallback")
-            shots = []
-        else:
-            shots = shots_df.to_dict("records")
+        shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []
         print(f"  Classified {len(shots)} shots")
         for shot_idx, s in enumerate(shots, 1):
             s["shot_id"] = shot_idx
