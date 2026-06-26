@@ -4,7 +4,7 @@ import pandas as pd
 from app.config.settings import settings
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
-from app.pipeline.shared.bst_preproc import normalize_joints, create_bones, BONE_PAIRS
+from app.pipeline.shared.bst_preproc import normalize_joints, normalize_joints_court, create_bones, BONE_PAIRS
 
 
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
@@ -166,7 +166,10 @@ def _build_clip(
                 if det_bbox is None:
                     # Fall back to keypoint bbox if no detection at all
                     debug_clip_stats["n_missing_bbox"] += 1
-                joints[t, p_idx] = normalize_joints(coords, det_bbox=det_bbox)
+                if settings.bst_joint_norm == "court" and homography is not None:
+                    joints[t, p_idx] = normalize_joints_court(coords, homography)
+                else:
+                    joints[t, p_idx] = normalize_joints(coords, det_bbox=det_bbox)
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
                 feet_y = max(coords[15, 1], coords[16, 1])

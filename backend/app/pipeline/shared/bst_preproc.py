@@ -5,6 +5,8 @@ Canonical BST preprocessing functions shared by backend and colab pipelines.
 import numpy as np
 import pandas as pd
 
+from app.pipeline.shared.court import image_to_court, COURT_LENGTH, COURT_WIDTH
+
 BONE_PAIRS = [
     (0,1),(0,2),(1,2),(1,3),(2,4),
     (3,5),(4,6),
@@ -77,6 +79,34 @@ def normalize_joints_batched(
         y_normalized -= c_normalized[:, None, 1]
 
     return np.stack((x_normalized, y_normalized), axis=-1)
+
+
+def normalize_joints_court(
+    coords: np.ndarray,
+    homography: np.ndarray,
+    court_length: float = COURT_LENGTH,
+    court_width: float = COURT_WIDTH,
+) -> np.ndarray:
+    """Normalize joints in court-space via homography.
+
+    Preserves absolute position while providing scale-invariant
+    joint positions matched to the fixed court dimensions.
+
+    Args:
+        coords: (17, 2) keypoints in pixel coords.
+        homography: 3x3 homography matrix (pixel → court).
+        court_length: court length in meters (default 13.4).
+        court_width: court width in meters (default 6.1).
+
+    Returns:
+        (17, 2) normalized joints, range [-0.5, 0.5].
+    """
+    court_coords = np.array([
+        image_to_court(homography, (float(x), float(y)))
+        for x, y in coords
+    ])
+    normalized = court_coords / np.array([court_length, court_width])
+    return (normalized - 0.5).astype(np.float32)
 
 
 def create_bones(joints: np.ndarray) -> np.ndarray:
