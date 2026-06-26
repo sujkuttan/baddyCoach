@@ -1,0 +1,44 @@
+{
+  "smash": {
+    "elbow_extension": {"p10": 20.0, "p50": 35.0, "p90": 50.0},
+    "peak_shoulder_angle": {"p10": 100.0, "p50": 140.0, "p90": 170.0},
+    "hip_shoulder_sep": {"p10": 10.0, "p50": 22.0, "p90": 35.0},
+    "min_knee_angle": {"p10": 130.0, "p50": 155.0, "p90": 170.0},
+    "follow_through": {"p10": 10.0, "p50": 25.0, "p90": 40.0}
+  },
+  "clear": {
+    "elbow_extension": {"p10": 15.0, "p50": 30.0, "p90": 45.0},
+    "peak_shoulder_angle": {"p10": 90.0, "p50": 130.0, "p90": 165.0},
+    "hip_shoulder_sep": {"p10": 8.0, "p50": 18.0, "p90": 30.0},
+    "min_knee_angle": {"p10": 130.0, "p50": 155.0, "p90": 170.0},
+    "follow_through": {"p10": 5.0, "p50": 15.0, "p90": 30.0}
+  },
+  "net_shot": {
+    "elbow_extension": {"p10": 5.0, "p50": 12.0, "p90": 22.0},
+    "peak_shoulder_angle": {"p10": 40.0, "p50": 60.0, "p90": 85.0},
+    "hip_shoulder_sep": {"p10": 3.0, "p50": 8.0, "p90": 15.0},
+    "min_knee_angle": {"p10": 60.0, "p50": 80.0, "p90": 100.0},
+    "follow_through": {"p10": 2.0, "p50": 8.0, "p90": 18.0}
+  },
+  "drive": {
+    "elbow_extension": {"p10": 10.0, "p50": 20.0, "p90": 35.0},
+    "peak_shoulder_angle": {"p10": 60.0, "p50": 85.0, "p90": 120.0},
+    "hip_shoulder_sep": {"p10": 5.0, "p50": 12.0, "p90": 22.0},
+    "min_knee_angle": {"p10": 120.0, "p50": 145.0, "p90": 165.0},
+    "follow_through": {"p10": 5.0, "p50": 12.0, "p90": 25.0}
+  },
+  "drop": {
+    "elbow_extension": {"p10": 8.0, "p50": 15.0, "p90": 28.0},
+    "peak_shoulder_angle": {"p10": 50.0, "p50": 75.0, "p90": 110.0},
+    "hip_shoulder_sep": {"p10": 5.0, "p50": 10.0, "p90": 18.0},
+    "min_knee_angle": {"p10": 80.0, "p50": 110.0, "p90": 140.0},
+    "follow_through": {"p10": 3.0, "p50": 10.0, "p90": 20.0}
+  },
+  "lift": {
+    "elbow_extension": {"p10": 12.0, "p50": 22.0, "p90": 38.0},
+    "peak_shoulder_angle": {"p10": 70.0, "p50": 100.0, "p90": 140.0},
+    "hip_shoulder_sep": {"p10": 5.0, "p50": 14.0, "p90": 25.0},
+    "min_knee_angle": {"p10": 50.0, "p50": 70.0, "p90": 95.0},
+    "follow_through": {"p10": 5.0, "p50": 12.0, "p90": 22.0}
+  }
+}

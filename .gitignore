@@ -1,0 +1,42 @@
+__pycache__/
+*.pyc
+.env
+data/jobs/
+*.egg-info/
+dist/
+build/
+node_modules/
+frontend/dist/
+.venv/
+
+# Large model weights / checkpoints
+ckpts/
+backend/ckpts/
+ckpts_old/
+BST/
+RTMPose/
+hrnetmodels/
+*.pt
+*.pth
+*.onnx
+*.tar.gz
+*.zip
+
+# Videos
+videos/
+*.mp4
+*.avi
+*.mov
+*.mkv
+
+# Pipeline results / outputs
+results/
+outputs/
+debug/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*Zone.Identifier

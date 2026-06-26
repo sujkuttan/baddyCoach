@@ -1,0 +1,434 @@
+rules:
+  # ─── Tactical Rules ────────────────────────────────────────
+  - name: smash_efficiency
+    check:
+      field: tactical.shot_distribution.smash
+      operator: "<"
+      threshold: 0.08
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Smash usage is below 8% ({tactical.shot_distribution.smash:.1%}). Smashes are your primary attacking weapon — use them more when opponents return high."
+    category: weakness
+    drill: "Feed drills: partner lifts to rear court, practice 10 smashes to each corner."
+    context_fields: ["tactical.shot_distribution.smash", "tactical.total_shots"]
+
+  - name: smash_strength
+    check:
+      field: tactical.shot_distribution.smash
+      operator: ">"
+      threshold: 0.15
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Excellent smash frequency ({tactical.shot_distribution.smash:.1%}) — maintaining attacking pressure."
+    category: strength
+    context_fields: ["tactical.shot_distribution.smash"]
+
+  - name: shot_variety_predictable
+    check:
+      field: tactical.max_shot_percentage
+      operator: ">"
+      threshold: 0.45
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Shot selection is predictable — dominant stroke accounts for {tactical.max_shot_percentage:.1%} of shots. Opponents can read your patterns."
+    category: weakness
+    drill: "Pattern-breaking drill: after 2 identical shots, forced switch to a different stroke."
+    context_fields: ["tactical.max_shot_percentage"]
+
+  - name: shot_variety_good
+    check:
+      field: tactical.max_shot_percentage
+      operator: "<"
+      threshold: 0.3
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Good shot variety — no single stroke dominates. This keeps opponents guessing."
+    category: strength
+
+  - name: net_play_dominant
+    check:
+      field: tactical.shot_distribution.net_shot
+      operator: ">"
+      threshold: 0.2
+      min_shots: tactical.total_shots >= 10
+    recommendation: "Strong net play ({tactical.shot_distribution.net_shot:.1%}) — use this to force lifts and create smash opportunities."
+    category: strength
+    context_fields: ["tactical.shot_distribution.net_shot"]
+
+  - name: net_play_weak
+    check:
+      field: tactical.shot_distribution.net_shot
+      operator: "<"
+      threshold: 0.05
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Net shots are rare ({tactical.shot_distribution.net_shot:.1%}). Improve front court presence to control rallies."
+    category: weakness
+    drill: "Net kill drills: partner feeds to net, practice tight spinning net shots."
+    context_fields: ["tactical.shot_distribution.net_shot"]
+
+  - name: clear_heavy
+    check:
+      field: tactical.shot_distribution.clear
+      operator: ">"
+      threshold: 0.35
+      min_shots: tactical.total_shots >= 10
+    recommendation: "Heavy reliance on clears ({tactical.shot_distribution.clear:.1%}) — mix with drops and smashes to vary pace."
+    category: weakness
+    drill: "Clear-drop combination: alternate clear and drop from rear court."
+    context_fields: ["tactical.shot_distribution.clear"]
+
+  - name: drop_shot_effective
+    check:
+      field: tactical.shot_distribution.drop
+      operator: ">"
+      threshold: 0.12
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Good use of drop shots ({tactical.shot_distribution.drop:.1%}) — keeps opponents off balance."
+    category: strength
+    context_fields: ["tactical.shot_distribution.drop"]
+
+  - name: drive_effective
+    check:
+      field: tactical.shot_distribution.drive
+      operator: ">"
+      threshold: 0.15
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Strong drive game ({tactical.shot_distribution.drive:.1%}) — flat exchanges keep pressure on opponents."
+    category: strength
+    context_fields: ["tactical.shot_distribution.drive"]
+
+  - name: rush_game
+    check:
+      field: tactical.shot_distribution.rush
+      operator: ">"
+      threshold: 0.1
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Active rush game ({tactical.shot_distribution.rush:.1%}) — taking the shuttle early creates time pressure."
+    category: strength
+    context_fields: ["tactical.shot_distribution.rush"]
+
+  # ─── Fitness Rules ─────────────────────────────────────────
+  - name: fatigue_declining
+    check:
+      field: fitness.fatigue_trend
+      operator: "=="
+      value: "declining"
+    recommendation: "Performance declines in later rallies (fatigue trend: declining). Late-match intensity drops by {fitness.late_rally_fatigue:.0%}."
+    category: weakness
+    drill: "Interval training: 12x (30s high intensity + 30s rest). Simulate match demands."
+    context_fields: ["fitness.late_rally_fatigue", "fitness.peak_intensity"]
+
+  - name: fatigue_improving
+    check:
+      field: fitness.fatigue_trend
+      operator: "=="
+      value: "improving"
+    recommendation: "Great stamina — performance improves in later rallies. You outlast opponents."
+    category: strength
+    context_fields: ["fitness.late_rally_fatigue"]
+
+  - name: low_intensity
+    check:
+      field: fitness.rally_intensity
+      operator: "<"
+      threshold: 1.0
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Rally intensity is low ({fitness.rally_intensity:.2f} shots/sec). Increase pace to pressure opponents."
+    category: weakness
+    drill: "Speed rallies: 50-shot rallies at maximum pace."
+    context_fields: ["fitness.rally_intensity"]
+
+  - name: high_intensity
+    check:
+      field: fitness.peak_intensity
+      operator: ">"
+      threshold: 3.0
+      min_shots: tactical.total_shots >= 15
+    recommendation: "High peak intensity ({fitness.peak_intensity:.2f} shots/sec) — explosive rallies when needed."
+    category: strength
+    context_fields: ["fitness.peak_intensity"]
+
+  - name: distance_low
+    check:
+      field: fitness.total_distance
+      operator: "<"
+      threshold: 500
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Court coverage is limited ({fitness.total_distance:.0f} m). Work on movement to reach more shots."
+    category: weakness
+    drill: "6-corner footwork: shadow movement to all court positions."
+    context_fields: ["fitness.total_distance"]
+
+  - name: distance_high
+    check:
+      field: fitness.total_distance
+      operator: ">"
+      threshold: 1500
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Excellent court coverage ({fitness.total_distance:.0f} m) — you cover the full court effectively."
+    category: strength
+    context_fields: ["fitness.total_distance"]
+
+  # ─── Footwork Rules ────────────────────────────────────────
+  - name: recovery_slow
+    check:
+      field: footwork.avg_recovery
+      operator: ">"
+      threshold: 1.5
+    recommendation: "Recovery to base takes {footwork.avg_recovery:.1f} s on average. Work on split-step timing."
+    category: weakness
+    drill: "Split-step practice: bounce on toes, explode to shuttle on opponent's hit."
+    context_fields: ["footwork.avg_recovery"]
+
+  - name: recovery_fast
+    check:
+      field: footwork.avg_recovery
+      operator: "<"
+      threshold: 0.5
+      min_shots: tactical.total_shots >= 10
+    recommendation: "Quick recovery ({footwork.avg_recovery:.1f} s) — you reset well between shots."
+    category: strength
+    context_fields: ["footwork.avg_recovery"]
+
+  # ─── Rally Rules ───────────────────────────────────────────
+  - name: short_rallies
+    check:
+      field: rally_stats.avg_length
+      operator: "<"
+      threshold: 5.0
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Average rally length is {rally_stats.avg_length:.1f} shots. Opponents end rallies quickly — work on sustaining pressure."
+    category: weakness
+    drill: "Patience drill: cannot smash until rally reaches 8 shots."
+    context_fields: ["rally_stats.avg_length"]
+
+  - name: long_rallies
+    check:
+      field: rally_stats.avg_length
+      operator: ">"
+      threshold: 12.0
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Long rallies (avg {rally_stats.avg_length:.1f} shots) — you control tempo well."
+    category: strength
+    context_fields: ["rally_stats.avg_length"]
+
+  - name: first_shot_winner
+    check:
+      field: rally_stats.first_shot_win_rate
+      operator: ">"
+      threshold: 0.3
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Strong opening shots — {rally_stats.first_shot_win_rate:.0%} of rallies won on first shot."
+    category: strength
+    context_fields: ["rally_stats.first_shot_win_rate"]
+
+  # ─── Court Position Rules ──────────────────────────────────
+  - name: front_court_weak
+    check:
+      field: court_analysis.front_pct
+      operator: "<"
+      threshold: 0.2
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Limited front court presence ({court_analysis.front_pct:.1%}). Move forward to intercept and pressure."
+    category: weakness
+    drill: "Net approaches: practice moving from base to net after clears."
+    context_fields: ["court_analysis.front_pct"]
+
+  - name: rear_court_dominant
+    check:
+      field: court_analysis.rear_pct
+      operator: ">"
+      threshold: 0.6
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Spending {court_analysis.rear_pct:.1%} of time in rear court — opponents are pushing you back."
+    category: weakness
+    drill: "Counter-attack drills: practice attacking from rear court."
+    context_fields: ["court_analysis.rear_pct"]
+
+  - name: left_bias
+    check:
+      field: court_analysis.left_pct
+      operator: ">"
+      threshold: 0.65
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Strong bias to left court ({court_analysis.left_pct:.1%}) — opponents will exploit the open right side."
+    category: weakness
+    drill: "Cover-the-gap: partner feeds to all corners, focus on returning to center after each shot."
+    context_fields: ["court_analysis.left_pct", "court_analysis.right_pct"]
+
+  - name: right_bias
+    check:
+      field: court_analysis.right_pct
+      operator: ">"
+      threshold: 0.65
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Strong bias to right court ({court_analysis.right_pct:.1%}) — opponents will exploit the open left side."
+    category: weakness
+    drill: "Cover-the-gap: partner feeds to all corners, focus on returning to center after each shot."
+    context_fields: ["court_analysis.left_pct", "court_analysis.right_pct"]
+
+  - name: balanced_court
+    check:
+      field: court_analysis.front_pct
+      operator: ">"
+      threshold: 0.25
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Good court balance — front court presence at {court_analysis.front_pct:.1%} keeps opponents guessing."
+    category: strength
+    context_fields: ["court_analysis.front_pct"]
+
+  # ─── Pattern & Sequence Rules ────────────────────────────
+  - name: predictable_pattern
+    check:
+      field: tactical.pattern_repetition
+      operator: ">"
+      threshold: 3
+      min_shots: tactical.total_shots >= 20
+    recommendation: "Your most common sequence '{tactical.top_pattern}' occurs {tactical.pattern_repetition} times. Opponents who notice will anticipate your shots."
+    category: weakness
+    drill: "Randomization drill: call shot type just before hitting — forces conscious variation."
+    context_fields: ["tactical.top_pattern", "tactical.pattern_repetition"]
+
+  - name: rally_opener_pattern
+    check:
+      field: tactical.top_opener
+      operator: "!="
+      value: ""
+      min_shots: tactical.total_shots >= 10
+    recommendation: "You typically open rallies with a {tactical.top_opener}. Vary your opening shot to prevent opponents from setting early."
+    category: weakness
+    drill: "Opening variation: practice 3 different rally starts (serve, clear, drop)."
+    context_fields: ["tactical.top_opener"]
+
+  - name: rally_ender_strength
+    check:
+      field: tactical.top_ender
+      operator: "!="
+      value: ""
+      min_shots: tactical.total_shots >= 10
+    recommendation: "Your rallies often end with a {tactical.top_ender}. If this is a strong shot, great — if not, work on finishing patterns."
+    category: insight
+    context_fields: ["tactical.top_ender"]
+
+  - name: pattern_diversity_low
+    check:
+      field: tactical.unique_strokes_count
+      operator: "<"
+      threshold: 4
+      min_shots: tactical.total_shots >= 20
+    recommendation: "You only use {tactical.unique_strokes_count} distinct shot types. Expanding your shot repertoire makes you unpredictable."
+    category: weakness
+    drill: "Shot library: practice adding 2 new shot types to your game."
+    context_fields: ["tactical.unique_strokes_count"]
+
+  # ─── Technique Rules ────────────────────────────────────
+  - name: technique_smash_strong
+    check:
+      field: technique.smash_score
+      operator: ">"
+      threshold: 0.85
+      min_shots: technique.shot_count >= 3
+    recommendation: "Excellent smash technique ({technique.smash_score:.2f}) — full arm extension and good follow-through on overhead smashes."
+    category: strength
+    context_fields: ["technique.smash_score"]
+
+  - name: technique_smash_needs_work
+    check:
+      field: technique.smash_score
+      operator: "<"
+      threshold: 0.65
+      min_shots: technique.shot_count >= 3
+    recommendation: "Smash technique needs improvement ({technique.smash_score:.2f}). Focus on full elbow extension and engaging your core rotation for power."
+    category: weakness
+    drill: "Shadow smash: 3 sets of 10 full-arm swings with hip rotation emphasis."
+    context_fields: ["technique.smash_score"]
+
+  - name: technique_clear_weak
+    check:
+      field: technique.clear_score
+      operator: "<"
+      threshold: 0.6
+      min_shots: technique.shot_count >= 3
+    recommendation: "Clear technique is limited ({technique.clear_score:.2f}). Work on higher contact point and complete arm extension."
+    category: weakness
+    drill: "High-contact clears: practice making contact above and in front of the head."
+    context_fields: ["technique.clear_score"]
+
+  - name: technique_net_strong
+    check:
+      field: technique.net_score
+      operator: ">"
+      threshold: 0.8
+      min_shots: technique.shot_count >= 3
+    recommendation: "Strong net technique ({technique.net_score:.2f}) — good knee bend and soft wrist control on net shots."
+    category: strength
+    context_fields: ["technique.net_score"]
+
+  - name: technique_overall_good
+    check:
+      field: technique.overall
+      operator: ">"
+      threshold: 0.75
+      min_shots: technique.shot_count >= 10
+    recommendation: "Overall technique score of {technique.overall:.2f} — solid fundamentals across all stroke types."
+    category: strength
+    context_fields: ["technique.overall", "technique.shot_count"]
+
+  - name: technique_overall_needs_work
+    check:
+      field: technique.overall
+      operator: "<"
+      threshold: 0.55
+      min_shots: technique.shot_count >= 10
+    recommendation: "Overall technique score is {technique.overall:.2f}. Review fundamentals including grip, stance, and swing mechanics."
+    category: weakness
+    drill: "Fundamentals check: slow-motion practice recording all stroke types with coach feedback."
+    context_fields: ["technique.overall", "technique.shot_count"]
+
+  - name: technique_drive_weak
+    check:
+      field: technique.drive_score
+      operator: "<"
+      threshold: 0.6
+      min_shots: technique.shot_count >= 3
+    recommendation: "Drive technique is below par ({technique.drive_score:.2f}). Use more forearm rotation and keep the racquet head up."
+    category: weakness
+    drill: "Wall drives: 3-minute continuous drive rally against a wall focusing on wrist snap."
+    context_fields: ["technique.drive_score"]
+
+  - name: technique_drop_strong
+    check:
+      field: technique.drop_score
+      operator: ">"
+      threshold: 0.8
+      min_shots: technique.shot_count >= 3
+    recommendation: "Excellent drop technique ({technique.drop_score:.2f}). Deceptive and well-disguised from your overhead preparation."
+    category: strength
+    context_fields: ["technique.drop_score"]
+
+  # ─── Comparison Rules (player vs opponent) ─────────────────
+  - name: opponent_smash_weak
+    check:
+      field: opponent.smash_pct
+      operator: "<"
+      threshold: 0.08
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Opponent rarely smashes ({opponent.smash_pct:.1%}). Expect clears and drops — position forward."
+    category: insight
+    context_fields: ["opponent.smash_pct"]
+
+  - name: opponent_net_weak
+    check:
+      field: opponent.net_pct
+      operator: "<"
+      threshold: 0.05
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Opponent avoids net play ({opponent.net_pct:.1%}). Push to net to force weak returns."
+    category: insight
+    context_fields: ["opponent.net_pct"]
+
+  - name: opponent_clear_heavy
+    check:
+      field: opponent.clear_pct
+      operator: ">"
+      threshold: 0.4
+      min_shots: tactical.total_shots >= 15
+    recommendation: "Opponent relies heavily on clears ({opponent.clear_pct:.1%}). Anticipate deep shots and counter with drops."
+    category: insight
+    context_fields: ["opponent.clear_pct"]

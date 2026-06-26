@@ -1,0 +1,1064 @@
+This is a strong candidate for a production-grade badminton analytics platform because you already have three key research assets:
+
+* TrackNetV3 (shuttle tracking)
+* ShuttleSet (largest badminton analytics dataset)
+* BST (state-of-the-art stroke classification transformer)
+* MMAction2 skeleton-action ecosystem (ST-GCN, 2s-AGCN, PoseC3D)
+
+The biggest mistake would be rebuilding these capabilities from scratch. The PRD below assumes **reuse-first architecture** with custom development focused on orchestration, analytics, coaching intelligence, player attribution, scalability, and reporting.
+
+---
+
+# Product Requirements Document (PRD)
+
+# Product Name
+
+**Badminton Post-Match Coaching Assistant (BMCA)**
+
+Version: 1.0
+
+Status: MVP + Production Roadmap
+
+Owner: Product Management
+
+Target Users:
+
+* Competitive badminton players
+* Academy coaches
+* Parents of junior players
+* Performance analysts
+* Sports scientists
+
+---
+
+# 1. Problem Statement
+
+Current badminton video analysis solutions provide:
+
+* Shuttle tracking
+* Stroke classification
+* Rally segmentation
+
+However they do not provide:
+
+* Player-specific coaching analysis
+* Technical feedback
+* Tactical insights
+* Fitness trends
+* Long-match analytics
+* Explainable coach recommendations
+
+Coaches spend several hours manually reviewing match videos to identify:
+
+* Shot selection issues
+* Footwork inefficiencies
+* Positioning errors
+* Tactical patterns
+* Fatigue indicators
+
+The product should automatically analyze a recorded badminton match and generate coach-grade insights for a selected player.
+
+---
+
+# 2. Product Goal
+
+Convert a raw badminton match video into:
+
+* Rally timeline
+* Stroke timeline
+* Technical assessment
+* Tactical assessment
+* Fitness assessment
+* Match summary
+* Drill recommendations
+
+without requiring manual tagging.
+
+---
+
+# 3. Success Metrics
+
+## Technical
+
+### Stroke Classification
+
+Target:
+
+* > 90% Top-10 classes
+* > 85% overall
+
+### Player Tracking
+
+Target:
+
+* > 98% correct player attribution
+
+### Rally Detection
+
+Target:
+
+* > 95%
+
+### Shuttle Tracking
+
+Target:
+
+* Match TrackNetV3 benchmark performance
+
+---
+
+## Product
+
+### Report Generation
+
+Target:
+
+* <15 min processing for 1 hour video on RTX 4060+
+
+### CPU Mode
+
+Target:
+
+* <60 min processing for 1 hour video
+
+---
+
+# 4. Supported Match Types
+
+MVP
+
+* Singles only
+
+Future
+
+* Doubles
+* Mixed doubles
+
+---
+
+# 5. Input Requirements
+
+## Supported Formats
+
+* MP4
+* MOV
+* AVI
+
+## Video Length
+
+Minimum
+
+* 1 minute
+
+Maximum
+
+* 1 hour
+
+Future
+
+* 3 hours
+
+## Resolution
+
+Preferred
+
+* 1080p
+
+Supported
+
+* 720p
+* 1080p
+* 4K
+
+## Frame Rate
+
+Preferred
+
+* 30 FPS
+* 60 FPS
+
+Supported
+
+* 24–120 FPS
+
+---
+
+# 6. User Flow
+
+## Step 1 Upload Video
+
+User uploads match video.
+
+---
+
+## Step 2 Court Calibration
+
+System:
+
+* Detect court
+* Detect net
+* Compute homography
+
+Output:
+
+Court coordinate system.
+
+---
+
+## Step 3 Select Player
+
+User options:
+
+### Option A
+
+Click player in first frame.
+
+### Option B
+
+Select:
+
+* Near-side player
+* Far-side player
+
+---
+
+## Step 4 Processing
+
+System processes:
+
+* Shuttle
+* Players
+* Pose
+* Strokes
+* Rally events
+
+---
+
+## Step 5 Coaching Report
+
+Generated automatically.
+
+---
+
+# 7. Functional Requirements
+
+# FR-1 Court Detection
+
+## Goal
+
+Generate court coordinate system.
+
+## Inputs
+
+Video frame.
+
+## Outputs
+
+* Court boundaries
+* Net line
+* Homography matrix
+
+## Requirements
+
+Detect:
+
+* Singles sidelines
+* Baselines
+* Service lines
+* Net
+
+Generate:
+
+* Pixel → Court transform
+
+Store:
+
+```json
+{
+  "court_homography": [...]
+}
+```
+
+---
+
+# FR-2 Player Detection and Tracking
+
+## Goal
+
+Maintain persistent player IDs.
+
+## Requirements
+
+Detect:
+
+* Player A
+* Player B
+
+Track:
+
+* Entire match
+
+Assign:
+
+* Near side
+* Far side
+
+---
+
+## Identity Persistence
+
+Use:
+
+### Level 1
+
+Court-side constraint
+
+### Level 2
+
+Appearance embeddings
+
+Color histogram
+
+### Level 3
+
+ReID model
+
+Lightweight CNN
+
+---
+
+Output:
+
+```json
+{
+ "player_id":1,
+ "selected_player":true
+}
+```
+
+---
+
+# FR-3 Pose Estimation
+
+## Goal
+
+Extract biomechanical features.
+
+## Preferred Models
+
+GPU:
+
+RTMPose
+
+Alternative:
+
+ViTPose
+
+Fallback:
+
+YOLOv8-Pose
+
+---
+
+## Keypoints
+
+17+ body joints
+
+Required:
+
+* Wrist
+* Elbow
+* Shoulder
+* Hip
+* Knee
+* Ankle
+
+---
+
+## Smoothing
+
+Mandatory
+
+Apply:
+
+* Kalman Filter
+* One-Euro Filter
+
+to reduce jitter.
+
+---
+
+# FR-4 Shuttle Tracking
+
+## Goal
+
+Track shuttle across entire match.
+
+## Primary Engine
+
+TrackNetV3
+
+---
+
+Output per frame
+
+```json
+{
+ "x":123,
+ "y":456,
+ "confidence":0.98
+}
+```
+
+---
+
+# FR-5 Hit Frame Localization
+
+Highest Priority Requirement.
+
+Many downstream errors originate here.
+
+---
+
+Must combine:
+
+### Signal 1
+
+TrackNet trajectory change
+
+### Signal 2
+
+Shuttle speed peak
+
+### Signal 3
+
+Shuttle-racket minimum distance
+
+### Signal 4
+
+Pose motion peak
+
+---
+
+Output
+
+```json
+{
+ "hit_frame":18234,
+ "confidence":0.96
+}
+```
+
+---
+
+# FR-6 Stroke Classification
+
+## Goal
+
+Identify shot type.
+
+---
+
+## Primary Model
+
+BST-CG-AP
+
+Preferred.
+
+Source:
+
+BST Repository
+
+---
+
+## Input Features
+
+### Shuttle
+
+TrackNet trajectory
+
+### Pose
+
+Joint motion
+
+### Court
+
+Player location
+
+### Rally Context
+
+Previous shot
+
+---
+
+## Required Shot Classes
+
+MVP
+
+* Serve
+* Short Serve
+* Flick Serve
+* Clear
+* Lift
+* Smash
+* Drop
+* Net Shot
+* Drive
+* Push
+* Block
+* Kill
+
+Extended
+
+Use all ShuttleSet classes.
+
+---
+
+## Classification Hierarchy
+
+Stage 1
+
+Overhead
+
+vs
+
+Underarm
+
+Stage 2
+
+Subtype
+
+This reduces confusion.
+
+---
+
+# FR-7 Player Attribution
+
+For every stroke identify:
+
+```json
+{
+ "shot":"smash",
+ "player_id":1
+}
+```
+
+---
+
+Must support:
+
+* Near player
+* Far player
+
+---
+
+# FR-8 Rally Segmentation
+
+Detect:
+
+* Rally start
+* Rally end
+
+Generate:
+
+```json
+{
+ "rally_id":23
+}
+```
+
+---
+
+# FR-9 Court Position Analytics
+
+Court zones:
+
+* Front
+* Mid
+* Rear
+
+and
+
+* Left
+* Center
+* Right
+
+Total:
+
+9 zones.
+
+---
+
+For every shot:
+
+```json
+{
+ "start_zone":"rear_left",
+ "end_zone":"front_right"
+}
+```
+
+---
+
+# FR-10 Footwork Analytics
+
+## Metrics
+
+### Distance Covered
+
+Meters per rally
+
+### Recovery Time
+
+Time to return base
+
+### Split Step Frequency
+
+### Adjustment Steps
+
+### Court Coverage
+
+Heatmap
+
+### Balance Score
+
+Derived from COM stability
+
+---
+
+# FR-11 Fitness Analytics
+
+## Metrics
+
+### Rally Intensity
+
+### Movement Velocity
+
+### Distance Covered
+
+### Fatigue Trend
+
+Measured across:
+
+* Match
+* Game
+* Rally
+
+---
+
+Indicators:
+
+* Reduced recovery speed
+* Reduced court coverage
+* Increased reaction latency
+
+---
+
+# FR-12 Tactical Analytics
+
+Generate:
+
+## Shot Distribution
+
+Example:
+
+* 35% clears
+* 20% drops
+* 15% smashes
+
+---
+
+## Direction Analysis
+
+* Straight
+* Cross court
+
+---
+
+## Rally Construction
+
+Detect patterns:
+
+Clear → Drop → Net
+
+etc.
+
+---
+
+## Opponent Pressure Response
+
+Detect:
+
+* Defensive tendency
+* Attacking tendency
+
+---
+
+# FR-13 Technical Analytics
+
+## Overheads
+
+Evaluate:
+
+* Contact height
+* Preparation timing
+
+---
+
+## Smashes
+
+Evaluate:
+
+* Contact point
+* Body alignment
+
+---
+
+## Net Play
+
+Evaluate:
+
+* Lunge quality
+* Recovery
+
+---
+
+## Footwork
+
+Evaluate:
+
+* Recovery efficiency
+* Base positioning
+
+---
+
+# FR-14 Coach Recommendation Engine
+
+Rule-based in MVP.
+
+LLM optional.
+
+---
+
+Example Rule
+
+```yaml
+IF
+smash_error_rate > 25%
+
+THEN
+
+recommend:
+"Reduce mid-court smash frequency."
+```
+
+---
+
+Output
+
+Strengths
+
+Weaknesses
+
+Top 3 Improvements
+
+Recommended Drills
+
+---
+
+# FR-15 Match Timeline
+
+Interactive timeline.
+
+Display:
+
+* Rallys
+* Smashes
+* Errors
+* Winners
+
+---
+
+Clicking event:
+
+* Jump video
+* Show overlay
+
+---
+
+# 8. AI/ML Architecture
+
+Pipeline
+
+```text
+Video
+
+  |
+  V
+
+Court Detection
+  |
+  V
+
+Player Tracking
+  |
+  V
+
+TrackNetV3
+  |
+  V
+
+Pose Estimation
+  |
+  V
+
+Hit Frame Localization
+  |
+  V
+
+BST Stroke Classifier
+  |
+  V
+
+Analytics Engine
+  |
+  V
+
+Coach Engine
+  |
+  V
+
+Report Generator
+```
+
+---
+
+# 9. Feature Engineering Requirements
+
+Mandatory Features
+
+## Shuttle Features
+
+* Speed
+* Acceleration
+* Curvature
+* Apex Height
+* Descent Angle
+* Landing Zone
+
+---
+
+## Pose Features
+
+Joint Angles
+
+* Shoulder
+* Elbow
+* Wrist
+* Knee
+
+Velocities
+
+Angular Velocities
+
+Body Rotation
+
+---
+
+## Court Features
+
+Court Position
+
+Player Position
+
+Opponent Position
+
+Distance to Net
+
+Distance to Base
+
+---
+
+# 10. Sequence Modeling Roadmap
+
+## MVP
+
+BST
+
+---
+
+## Phase 2
+
+ST-GCN
+
+MMAction2
+
+---
+
+## Phase 3
+
+2s-AGCN
+
+---
+
+## Phase 4
+
+Transformer Fusion
+
+Pose + Shuttle + Court
+
+Cross Attention
+
+---
+
+# 11. Performance Requirements
+
+## GPU Mode
+
+Target GPU
+
+* RTX 3060+
+* RTX 4060+
+* RTX 5070+
+
+Processing
+
+1 hr video
+
+<15 minutes
+
+---
+
+## CPU Mode
+
+16-core CPU
+
+1 hr video
+
+<60 minutes
+
+---
+
+Memory
+
+<16GB
+
+---
+
+# 12. Storage Schema
+
+Artifacts
+
+```text
+video.mp4
+
+court.json
+
+players.json
+
+shuttle.parquet
+
+pose.parquet
+
+shots.parquet
+
+rallies.parquet
+
+report.json
+```
+
+Use Parquet for scalability.
+
+---
+
+# 13. Explainability Requirements
+
+Every recommendation must reference evidence.
+
+Example:
+
+```json
+{
+ "finding":
+ "Late recovery after rear-court clears",
+
+ "evidence":
+ [
+   "43 occurrences",
+   "avg recovery 1.4 sec",
+   "peer benchmark 0.9 sec"
+ ]
+}
+```
+
+No recommendation without supporting metrics.
+
+---
+
+# 14. Non-Goals (MVP)
+
+Not included:
+
+* Live coaching
+* Real-time scoring
+* Doubles
+* Wearable integration
+* Audio analysis
+* Heart-rate integration
+* Automatic drill video generation
+
+---
+
+# 15. Recommended Technology Stack
+
+### Core CV
+
+* TrackNetV3
+* BST-CG-AP
+* MMAction2
+* RTMPose
+* OpenCV
+
+### ML
+
+* PyTorch
+* ONNX Runtime
+
+### Data
+
+* Parquet
+* DuckDB
+
+### Backend
+
+* Python
+* FastAPI
+
+### Frontend
+
+* React
+* TypeScript
+* Video.js
+
+### Deployment
+
+* Local workstation first
+* Docker
+* CUDA optional
+
+---
+
+## Recommended Implementation Order
+
+1. Court calibration + homography
+2. Player tracking + player selection
+3. TrackNetV3 integration
+4. Hit-frame localization engine
+5. BST integration
+6. Rally segmentation
+7. Tactical analytics
+8. Footwork analytics
+9. Coach recommendation engine
+10. Report UI
+
+This sequence minimizes risk because **hit-frame localization and player attribution are the two components that most directly affect stroke-classification accuracy and coaching quality**.
