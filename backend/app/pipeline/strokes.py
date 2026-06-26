@@ -3,6 +3,7 @@ import pandas as pd
 
 from app.config.settings import settings
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
 from app.pipeline.shared.bst_preproc import normalize_joints, normalize_joints_court, create_bones, BONE_PAIRS
 
@@ -270,6 +271,14 @@ class StrokeClassificationStage:
         # Phase 1: build all clips (fast, no model inference)
         all_clips = []
         clip_hit_pairs = []  # (frame, hit_dict, frames_list)
+
+        # Log suspiciously close consecutive hits (double-detect diagnostic)
+        for i in range(1, len(hit_frames_sorted)):
+            gap = hit_frames_sorted[i] - hit_frames_sorted[i - 1]
+            if gap < 5:
+                logger.warning("Tight hit gap: %d frames between hits at frames %d and %d",
+                               gap, hit_frames_sorted[i - 1], hit_frames_sorted[i])
+
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
 
