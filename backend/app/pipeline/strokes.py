@@ -273,29 +273,20 @@ class StrokeClassificationStage:
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
 
+            # Clip construction matching BST's between_2_hits convention:
+            #   - start at the current hit (position 0 = the stroke launch)
+            #   - end at the next hit (one inter-hit segment, not two)
+            #   - positional encoding expects the stroke at a fixed position
+            #   - frames beyond video_len are masked by the model
             hit_pos = hit_frames_sorted.index(frame)
-            if hit_pos > 0:
-                start_frame = hit_frames_sorted[hit_pos - 1]
-            else:
-                start_frame = max(0, frame - classifier.seq_len // 2)
-
+            start_frame = frame
             if hit_pos < len(hit_frames_sorted) - 1:
-                end_frame = hit_frames_sorted[hit_pos + 1] + 2
+                end_frame = min(frame + classifier.seq_len,
+                                hit_frames_sorted[hit_pos + 1])
             else:
-                end_frame = frame + classifier.seq_len // 2 + 1
+                end_frame = frame + classifier.seq_len
 
             clip_frames = list(range(start_frame, end_frame))
-
-            if len(clip_frames) > classifier.seq_len:
-                hit_offset = frame - start_frame
-                half = classifier.seq_len // 2
-                clip_start = max(0, hit_offset - half)
-                clip_end = clip_start + classifier.seq_len
-                if clip_end > len(clip_frames):
-                    clip_end = len(clip_frames)
-                    clip_start = max(0, clip_end - classifier.seq_len)
-                clip_frames = clip_frames[clip_start:clip_end]
-
             original_n_frames = len(clip_frames)
             while len(clip_frames) < classifier.seq_len:
                 clip_frames.append(clip_frames[-1] if clip_frames else frame)
