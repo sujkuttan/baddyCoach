@@ -248,7 +248,7 @@ def _winner_from_shuttle_landing(
         H = np.array(court["homography"], dtype=np.float64)
         court_xy = image_to_court(H, (lx, ly))
         if court_xy is not None:
-            shuttle_on_far_side = court_xy[1] < settings.court_length / 2.0
+            shuttle_on_far_side = court_xy[0] < settings.court_length / 2.0
     elif court and court.get("corners_pixel"):
         corners = court["corners_pixel"]
         bl_y = corners[0][1]

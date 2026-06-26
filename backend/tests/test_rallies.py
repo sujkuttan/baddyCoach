@@ -17,6 +17,25 @@ def court_data():
     }
 
 
+@pytest.fixture
+def court_data_with_homography():
+    """Same court but with a real homography (used by production code path)."""
+    import cv2
+    from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, COURT_MODEL
+
+    src = np.array([[100, 680], [1180, 680], [100, 100], [1180, 100]], dtype=np.float64)
+    dst = np.array([
+        COURT_MODEL["outer_bl"], COURT_MODEL["outer_br"],
+        COURT_MODEL["outer_tl"], COURT_MODEL["outer_tr"],
+    ], dtype=np.float64)
+    H, _ = cv2.findHomography(src, dst)
+    return {
+        "corners_pixel": [[100, 680], [1180, 680], [100, 100], [1180, 100]],
+        "homography": H.tolist() if H is not None else None,
+        "valid": True,
+    }
+
+
 def test_rally_segmentation_groups_shots(tmp_job_dir):
     """Test basic rally segmentation with time gaps."""
     store = ArtifactStore(tmp_job_dir)
@@ -182,6 +201,39 @@ def test_winner_from_shuttle_landing_no_shuttle():
     assert _winner_from_shuttle_landing(
         pd.DataFrame(columns=["frame", "x", "y", "confidence"]), 0, 100, None,
     ) is None
+
+
+def test_winner_from_shuttle_landing_homography_near_side(court_data_with_homography):
+    """Regression: homography path uses length axis (index 0), not width axis."""
+    n = 80
+    frames = list(range(n))
+    x = [500.0] * n
+    y = (list(range(100, 610, 10)) + [600] * 30)[:n]
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    winner = _winner_from_shuttle_landing(
+        shuttle_df, 0, 55, court_data_with_homography,
+    )
+    # Shuttle at bottom of frame → near court (X > 6.7) → near player lost → far wins
+    assert winner is not None, "Homography path should return a winner"
+
+
+def test_winner_from_shuttle_landing_homography_far_side(court_data_with_homography):
+    """Regression: shuttle at top of frame → far court → winner = near player."""
+    n = 80
+    frames = list(range(n))
+    x = [500.0] * n
+    y = (list(reversed(range(100, 610, 10))) + [150] * 30)[:n]
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    winner = _winner_from_shuttle_landing(
+        shuttle_df, 0, 55, court_data_with_homography,
+    )
+    assert winner == "player_1"
 
 
 def test_find_dead_shuttle_window_too_short():
