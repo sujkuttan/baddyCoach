@@ -14,6 +14,7 @@ from .shared.utils import (
     compute_court_homography,
     _rule_based_shuttle_predict,
     _infer_end_reason, _is_rally_ending_shot,
+    _find_dead_shuttle_window, _winner_from_shuttle_landing,
     stage_rally_stats,
 )
 from .shared.models import setup_models, _download_model_from_gdown, _extract_zip
@@ -80,6 +81,8 @@ __all__ = [
     # Rally segmentation helpers
     '_infer_end_reason',
     '_is_rally_ending_shot',
+    '_find_dead_shuttle_window',
+    '_winner_from_shuttle_landing',
     'stage_rally_stats',
     
     # Model loading

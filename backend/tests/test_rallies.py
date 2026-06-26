@@ -1,6 +1,20 @@
 import pandas as pd
+import numpy as np
+import pytest
 from app.pipeline.base import ArtifactStore, StageConfig
-from app.pipeline import RallySegmentationStage, _is_rally_ending_shot, _infer_end_reason
+from app.pipeline import (
+    RallySegmentationStage, _is_rally_ending_shot, _infer_end_reason,
+    _find_dead_shuttle_window, _winner_from_shuttle_landing,
+)
+
+
+@pytest.fixture
+def court_data():
+    """Standard court with net at y=390 (midpoint of 720p frame)."""
+    return {
+        "corners_pixel": [[100, 680], [1180, 680], [100, 100], [1180, 100]],
+        "valid": True,
+    }
 
 
 def test_rally_segmentation_groups_shots(tmp_job_dir):
@@ -94,3 +108,156 @@ def test_rally_segmentation_with_net_shot_ending(tmp_job_dir):
     assert len(rallies_df) == 2
     assert rallies_df.iloc[0]["end_frame"] == 18
     assert rallies_df.iloc[1]["start_frame"] == 65
+
+
+def test_find_dead_shuttle_window_detects_dead_zone():
+    n = 40
+    frames = list(range(n))
+    x = [100.0 + t * 3.0 for t in range(10)] + [130.0] * 25 + [130.0 + (t - 35) * 2.0 for t in range(35, n)]
+    y = [200.0] * n
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    assert _find_dead_shuttle_window(shuttle_df, 0, 39) is True
+
+
+def test_find_dead_shuttle_window_no_dead_zone():
+    n = 40
+    frames = list(range(n))
+    x = [100.0 + t * 5.0 for t in range(n)]
+    y = [200.0] * n
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    assert _find_dead_shuttle_window(shuttle_df, 0, 39) is False
+
+
+def test_find_dead_shuttle_window_none_shuttle_df():
+    assert _find_dead_shuttle_window(None, 0, 100) is False
+
+
+def test_find_dead_shuttle_window_lost_track():
+    n = 40
+    frames = list(range(n))
+    x = [100.0 + t * 5.0 for t in range(10)] + [np.nan] * 25 + [200.0 + (t - 35) * 3.0 for t in range(35, n)]
+    y = [200.0] * n
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * 10 + [0.05] * 25 + [0.95] * (n - 35),
+    })
+    assert _find_dead_shuttle_window(shuttle_df, 0, 39) is True
+
+
+def test_winner_from_shuttle_landing_near_side(court_data):
+    n = 80
+    frames = list(range(n))
+    x = [500.0] * n
+    y = (list(range(100, 610, 10)) + [600] * 30)[:n]
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    winner = _winner_from_shuttle_landing(shuttle_df, 0, 55, court_data)
+    # Shuttle ends static at y=600 (bottom half, y > net_y=390) → far side wins
+    assert winner == "player_2"
+
+
+def test_winner_from_shuttle_landing_far_side(court_data):
+    n = 80
+    frames = list(range(n))
+    x = [500.0] * n
+    y = (list(reversed(range(100, 610, 10))) + [150] * 30)[:n]
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": x, "y": y,
+        "confidence": [0.95] * n,
+    })
+    winner = _winner_from_shuttle_landing(shuttle_df, 0, 55, court_data)
+    # Shuttle ends static at y=150 (top half, y < net_y=390) → near side wins
+    assert winner == "player_1"
+
+
+def test_winner_from_shuttle_landing_no_shuttle():
+    assert _winner_from_shuttle_landing(
+        pd.DataFrame(columns=["frame", "x", "y", "confidence"]), 0, 100, None,
+    ) is None
+
+
+def test_find_dead_shuttle_window_too_short():
+    """Segment smaller than dead_frames threshold returns False."""
+    frames = [0, 1, 2]
+    shuttle_df = pd.DataFrame({
+        "frame": frames, "x": [0.0, 0.0, 0.0], "y": [0.0, 0.0, 0.0],
+        "confidence": [0.95] * 3,
+    })
+    assert _find_dead_shuttle_window(shuttle_df, 0, 2) is False
+
+
+def test_rally_split_by_dead_shuttle(tmp_job_dir):
+    """A dead-shuttle window mid-sequence splits rally without large frame gap."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    # Shots at 0,10,20,30 and 80,90,100,110 (gap between 30 and 80 = 50, < gap_threshold=90)
+    shots_df = pd.DataFrame({
+        "frame": [0, 10, 20, 30, 80, 90, 100, 110],
+        "stroke_type": ["serve", "clear", "drop", "smash",
+                        "serve", "clear", "drop", "clear"],
+        "player_id": ["player_1", "player_2", "player_1", "player_2",
+                      "player_1", "player_2", "player_1", "player_2"],
+        "stroke_confidence": [0.9, 0.7, 0.6, 0.8, 0.9, 0.7, 0.6, 0.7],
+    })
+    store.set_parquet("shots", shots_df)
+
+    # Shuttle: moving 0-35, dead (static) 36-65, moving 66-120
+    shuttle_frames = list(range(0, 120))
+    x = (
+        [100.0 + t * 3.0 for t in range(36)]  # 0-35: moving
+        + [100 + 35*3] * 30                     # 36-65: static (dead)
+        + [205.0 + (t - 66) * 2.0 for t in range(66, 120)]  # 66-119: moving
+    )
+    y = [200.0] * 120
+    shuttle_df = pd.DataFrame({
+        "frame": shuttle_frames, "x": x, "y": y,
+        "confidence": [0.95] * 120,
+    })
+    store.set_parquet("shuttle", shuttle_df)
+
+    stage = RallySegmentationStage()
+    result = stage.run(store, config, gap_threshold=90)
+
+    assert result.status == "success"
+    rallies_df = store.get_parquet("rallies")
+    # Should split into 2 rallies: first at 0-30, second at 80-110
+    # (dead shuttle between frame 36-65 triggers split, not the 50-frame gap)
+    assert len(rallies_df) == 2
+    assert rallies_df.iloc[0]["end_frame"] == 30
+    assert rallies_df.iloc[1]["start_frame"] == 80
+
+
+def test_winner_attribution_gate(tmp_job_dir):
+    """Shot with untrustworthy attribution tier returns None winner."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    shots_df = pd.DataFrame({
+        "frame": [0, 10, 20, 30, 100, 110, 120],
+        "stroke_type": ["serve", "clear", "drop", "smash", "serve", "clear", "drop"],
+        "player_id": ["player_1", "player_2", "player_1", "player_2",
+                      "player_1", "player_2", "player_1"],
+        "stroke_confidence": [0.9, 0.7, 0.6, 0.8, 0.9, 0.7, 0.6],
+        "attribution_tier": ["final", "final", "final", "rally_fallback",
+                            "final", "final", "final"],
+    })
+    store.set_parquet("shots", shots_df)
+
+    stage = RallySegmentationStage()
+    result = stage.run(store, config, gap_threshold=60)
+
+    assert result.status == "success"
+    rallies_df = store.get_parquet("rallies")
+    # First rally's winner should be None (last shot has rally_fallback tier)
+    assert len(rallies_df) >= 1
+    assert pd.isna(rallies_df.iloc[0]["winner_player_id"])
+

@@ -80,6 +80,8 @@ class Settings(BaseSettings):
     rally_ending_gap_high_conf: int = 25
     rally_ending_gap_net: int = 45
     rally_ending_high_conf_min: float = 0.6
+    rally_dead_frames: int = 25  # min consecutive frames with shuttle speed ≈ 0 to declare rally dead
+    rally_dead_speed_px: float = 4.0  # per-frame shuttle displacement below this = "dead"
 
     # Court corner fallback (proportional to frame dimensions)
     court_corner_margin_x: float = 0.08

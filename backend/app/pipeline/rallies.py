@@ -2,53 +2,68 @@ import pandas as pd
 import numpy as np
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
-from app.pipeline.shared.utils import _infer_end_reason, _is_rally_ending_shot
+from app.pipeline.shared.utils import (
+    _infer_end_reason, _is_rally_ending_shot,
+    _find_dead_shuttle_window, _winner_from_shuttle_landing,
+)
 from app.config.settings import settings
 
 
-def _compute_rally_winner_after_attribution(rally_df, shots_df, shuttle_df=None):
+def _compute_rally_winner_after_attribution(
+    rally_df, shots_df, shuttle_df=None, court=None, players=None,
+):
     """Compute rally winner after player attribution is complete.
-    
-    This function recomputes rally winners based on player attribution
-    instead of relying on the last shot's player_id from before attribution.
+
+    Primary method: shuttle landing position (determine which side the
+    shuttle died on → opponent wins).
+    Fallback: stroke-based inference with attribution confidence gating.
     """
-    # Get all shots in this rally
-    rally_shots = shots_df[shots_df['frame'].between(rally_df['start_frame'], rally_df['end_frame'])].sort_values("frame")
-    
+    rally_shots = shots_df[
+        shots_df["frame"].between(rally_df["start_frame"], rally_df["end_frame"])
+    ].sort_values("frame")
+
     if len(rally_shots) == 0:
         return None
-    
-    # Get the last shot
+
+    # Primary: winner from shuttle landing
+    if shuttle_df is not None:
+        winner = _winner_from_shuttle_landing(
+            shuttle_df, rally_df["start_frame"], rally_df["end_frame"], court, players,
+        )
+        if winner is not None:
+            return winner
+
+    # Fallback: stroke-based with attribution confidence gate
     last_shot = rally_shots.iloc[-1]
     last_pid = last_shot.get("player_id")
+    attribution_tier = last_shot.get("attribution_tier", "")
     stroke_type = last_shot.get("stroke_type", "clear")
     stroke_confidence = last_shot.get("stroke_confidence", 0.5)
-    
+
+    if attribution_tier in ("rally_fallback", "final_fallback", ""):
+        return None
+
     # Compute shuttle speed at last shot for speed-based winner detection
     last_shot_speed = None
     if shuttle_df is not None and stroke_type == "smash":
         frame = int(last_shot["frame"])
-        window = shuttle_df[(shuttle_df['frame'] >= frame - 2) & (shuttle_df['frame'] <= frame + 2)]
+        window = shuttle_df[
+            (shuttle_df["frame"] >= frame - 2) & (shuttle_df["frame"] <= frame + 2)
+        ]
         if len(window) >= 2:
-            dx = window['x'].diff().iloc[-1]
-            dy = window['y'].diff().iloc[-1]
+            dx = window["x"].diff().iloc[-1]
+            dy = window["y"].diff().iloc[-1]
             speed = np.sqrt(dx**2 + dy**2) if not (np.isnan(dx) or np.isnan(dy)) else None
             if speed is not None and speed > 0:
-                last_shot_speed = float(speed * 30.0)  # frames to m/s at 30fps
-    
-    # Infer end reason
+                last_shot_speed = float(speed * 30.0)
+
     end_reason = _infer_end_reason(stroke_type, stroke_confidence, last_shot_speed)
-    
-    # Compute winner based on end reason and player attribution
+
     if end_reason == "winner":
-        winner_player_id = last_pid
+        return last_pid
     elif end_reason in ("forced_error", "unforced_error", "net"):
-        # The opponent won
-        winner_player_id = "player_2" if last_pid == "player_1" else "player_1"
-    else:
-        winner_player_id = None
-    
-    return winner_player_id
+        return "player_2" if last_pid == "player_1" else "player_1"
+    return None
 
 
 class RallySegmentationStage:
@@ -62,6 +77,10 @@ class RallySegmentationStage:
         if shots_df is None or len(shots_df) == 0:
             return StageResult.success(metadata={"rally_count": 0})
 
+        shuttle_df = artifacts.get_parquet("shuttle")
+        court = artifacts.get("court")
+        players_data = artifacts.get("players")
+
         threshold = gap_threshold or settings.rally_gap_threshold
         min_s = min_shots or settings.rally_min_shots
         shots_df = shots_df.sort_values("frame").reset_index(drop=True)
@@ -74,15 +93,20 @@ class RallySegmentationStage:
         for i in range(1, len(shots_df)):
             frame_gap = shots_df.iloc[i]["frame"] - shots_df.iloc[i - 1]["frame"]
 
-            # Check if current shot ended the rally
             stroke_type = shots_df.iloc[i - 1].get("stroke_type", "clear")
             stroke_confidence = shots_df.iloc[i - 1].get("stroke_confidence", 0.5)
             next_gap = shots_df.iloc[i]["frame"] - shots_df.iloc[i - 1]["frame"]
 
             rally_ending = _is_rally_ending_shot(stroke_type, stroke_confidence, next_gap)
 
-            # Split rally if: time gap exceeded OR shot likely ended rally
-            if frame_gap > threshold or rally_ending:
+            # Dead-shuttle check: scan shuttle track between consecutive shots
+            dead_shuttle = _find_dead_shuttle_window(
+                shuttle_df,
+                int(shots_df.iloc[i - 1]["frame"]),
+                int(shots_df.iloc[i]["frame"]),
+            )
+
+            if frame_gap > threshold or dead_shuttle or rally_ending:
                 if len(rally_shots_idx) >= min_s:
                     rally_id += 1
                     end_frame = int(shots_df.iloc[rally_shots_idx[-1]]["frame"])
@@ -120,12 +144,12 @@ class RallySegmentationStage:
             r_frames = shots_df[shots_df["rally_id"] == r["rally_id"]].sort_values("frame")
             if len(r_frames) == 0:
                 continue
-            
-            # Compute rally winner after player attribution is complete
-            winner_player_id = _compute_rally_winner_after_attribution(r, shots_df)
+
+            winner_player_id = _compute_rally_winner_after_attribution(
+                r, shots_df, shuttle_df, court, players_data,
+            )
             r["winner_player_id"] = winner_player_id
-            
-            # Infer end reason from last shot
+
             last_shot = r_frames.iloc[-1]
             stroke_type = last_shot.get("stroke_type", "clear")
             stroke_confidence = last_shot.get("stroke_confidence", 0.5)

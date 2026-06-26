@@ -120,6 +120,161 @@ def _detect_handedness(kps: np.ndarray) -> str:
     return "right" if right_conf >= left_conf else "left"
 
 
+def _find_dead_shuttle_window(
+    shuttle_df: pd.DataFrame | None,
+    start_frame: int,
+    end_frame: int,
+    min_gap_frames: int | None = None,
+) -> bool:
+    """Check if the shuttle track between two frames has a dead-shuttle window.
+
+    A "dead shuttle" means ≥ rally_dead_frames consecutive frames where:
+      - speed < rally_dead_speed_px (shuttle stopped moving), OR
+      - confidence < shuttle_min_conf (track lost — below net / out of frame)
+
+    Returns True if such a window exists, meaning the rally likely ended
+    between start_frame and end_frame.
+    """
+    if shuttle_df is None or len(shuttle_df) < 3:
+        return False
+
+    segment = shuttle_df[
+        (shuttle_df["frame"] >= start_frame) &
+        (shuttle_df["frame"] <= end_frame)
+    ].copy().sort_values("frame")
+
+    if len(segment) < settings.rally_dead_frames:
+        return False
+
+    dead_frames = settings.rally_dead_frames
+    min_conf = settings.shuttle_min_conf
+
+    x = segment["x"].values.astype(np.float64)
+    y = segment["y"].values.astype(np.float64)
+    conf = segment["confidence"].values.astype(np.float64)
+
+    # Per-frame speed: displacement from previous frame (NaN if either is NaN)
+    dx = np.diff(x)
+    dy = np.diff(y)
+    speed = np.sqrt(dx * dx + dy * dy)
+    speed = np.concatenate([[np.nan], speed])  # frame 0 has no predecessor
+
+    # Dead if speed < threshold OR confidence collapsed
+    dead = (speed < settings.rally_dead_speed_px) | (conf < min_conf)
+
+    # Slide a window looking for dead_frames consecutive True
+    count = 0
+    for d in dead:
+        if d:
+            count += 1
+            if count >= dead_frames:
+                return True
+        else:
+            count = 0
+
+    return False
+
+
+def _winner_from_shuttle_landing(
+    shuttle_df: pd.DataFrame,
+    rally_start: int,
+    rally_end: int,
+    court: dict | None = None,
+    players: dict | None = None,
+) -> str | None:
+    """Determine rally winner from where the shuttle landed.
+
+    Scans the shuttle track after the last shot for a dead-shuttle window,
+    then determines which side of the court the shuttle died on.
+    The side the shuttle died on = the side that failed to return →
+    the opponent wins.
+
+    Returns winner_player_id ("player_1" or "player_2"), or None if
+    undetermined.
+    """
+    segment = shuttle_df[
+        (shuttle_df["frame"] >= rally_end) &
+        (shuttle_df["frame"] <= rally_end + settings.rally_dead_frames * 3)
+    ].copy().sort_values("frame")
+
+    if len(segment) < settings.rally_dead_frames:
+        return None
+
+    x = segment["x"].values.astype(np.float64)
+    y = segment["y"].values.astype(np.float64)
+    conf = segment["confidence"].values.astype(np.float64)
+
+    # Speed per frame
+    dx = np.diff(x)
+    dy = np.diff(y)
+    speed = np.sqrt(dx * dx + dy * dy)
+    speed = np.concatenate([[np.nan], speed])
+
+    dead = (speed < settings.rally_dead_speed_px) | (conf < settings.shuttle_min_conf)
+
+    # Find the first long dead window
+    dead_start = None
+    count = 0
+    for i, d in enumerate(dead):
+        if d:
+            if count == 0:
+                dead_start = i
+            count += 1
+            if count >= settings.rally_dead_frames:
+                break
+        else:
+            dead_start = None
+            count = 0
+
+    if dead_start is None:
+        return None
+
+    # Last valid position in the dead window
+    last_valid_idx = None
+    search_end = min(dead_start + settings.rally_dead_frames * 2, len(segment))
+    for i in range(dead_start, search_end):
+        if not np.isnan(x[i]) and not np.isnan(y[i]):
+            last_valid_idx = i
+
+    if last_valid_idx is None:
+        return None
+
+    lx, ly = float(x[last_valid_idx]), float(y[last_valid_idx])
+
+    # Determine which side the shuttle died on
+    shuttle_on_far_side = None
+    if court and court.get("homography") is not None and court.get("valid", False):
+        from .court import image_to_court
+        H = np.array(court["homography"], dtype=np.float64)
+        court_xy = image_to_court(H, (lx, ly))
+        if court_xy is not None:
+            shuttle_on_far_side = court_xy[1] < settings.court_length / 2.0
+    elif court and court.get("corners_pixel"):
+        corners = court["corners_pixel"]
+        bl_y = corners[0][1]
+        tl_y = corners[2][1]
+        net_y = (tl_y + bl_y) / 2.0
+        shuttle_on_far_side = ly < net_y
+
+    if shuttle_on_far_side is None:
+        return None
+
+    # Map side to player_id via players artifact
+    if players and "players" in players:
+        for p in players["players"]:
+            p_side = p.get("side", "")
+            p_id = p.get("id", "")
+            # If shuttle is on the far side → far-side player lost → opponent wins
+            # If shuttle is on the near side → near-side player lost → opponent wins
+            if shuttle_on_far_side and p_side == "near":
+                return p_id
+            elif not shuttle_on_far_side and p_side == "far":
+                return p_id
+
+    # Fallback: heuristic mapping (player_1 = far, player_2 = near)
+    return "player_1" if shuttle_on_far_side else "player_2"
+
+
 def _compute_angle(p1: np.ndarray, p2: np.ndarray, p3: np.ndarray) -> float:
     """Angle at p2 formed by vectors p1-p2 and p3-p2, in degrees."""
     v1 = p1 - p2
