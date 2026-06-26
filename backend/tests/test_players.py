@@ -84,7 +84,7 @@ def test_track_stitching_merges_fragments(tmp_job_dir):
 
 
 def test_track_stitching_handles_midline_crossing(tmp_job_dir):
-    """When a near player briefly crosses midline, they stay as near."""
+    """When a near player briefly crosses midline, both tracks keep all detections."""
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
@@ -112,11 +112,59 @@ def test_track_stitching_handles_midline_crossing(tmp_job_dir):
     players = store.get("players")
     assert len(players["players"]) == 2
 
-    near_p = [p for p in players["players"] if p["side"] == "near"][0]
-    # The near player should have all 100 detections despite the brief cross
-    assert near_p["detection_count"] == 100, (
-        f"Near player lost detections: got {near_p['detection_count']}, expected 100"
-    )
+    # Both tracks must have all 100 detections (joint assignment guarantees 1:1
+    # per frame even when both players land on the same side of midline)
+    for p in players["players"]:
+        assert p["detection_count"] == 100, (
+            f"Player {p['id']} lost detections: got {p['detection_count']}, expected 100"
+        )
+
+
+def test_track_stitching_both_on_same_side(tmp_job_dir):
+    """Joint assignment keeps identity when both players are on the same side."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    court_data = {
+        "valid": True,
+        "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)],
+    }
+    store.set("court", court_data)
+
+    detections = []
+    # Both players near the far side for frames 20-40 (e.g., both at net on far side)
+    for f in range(50):
+        # Player A: left side of court, moves from near to far at frame 20
+        cy_a = 400 if f < 20 else 180
+        bbox_a = (100, cy_a - 50, 200, cy_a + 50)
+        detections.append(_make_detection(f, bbox_a, track_id=10))
+
+        # Player B: right side, stays near throughout
+        cy_b = 400
+        bbox_b = (700, cy_b - 50, 800, cy_b + 50)
+        detections.append(_make_detection(f, bbox_b, track_id=20))
+
+    stage = PlayerTrackingStage()
+    result = stage.run(store, config, detections=detections)
+
+    assert result.status == "success"
+    players = store.get("players")
+    assert len(players["players"]) == 2
+
+    for p in players["players"]:
+        assert p["detection_count"] == 50, (
+            f"Player {p['id']} lost detections: got {p['detection_count']}, expected 50"
+        )
+
+    # Player A (left, moved to far) should still be the same persistent track
+    a_frames = [p for p in players["players"] if any(
+        100 <= d["bbox"][0] <= 200 for d in p["detections"]
+    )]
+    assert len(a_frames) == 1
+    # Player A has detections at both near (frame < 20) and far (frame >= 20)
+    a_track = a_frames[0]
+    near_frames = [d["frame"] for d in a_track["detections"] if d["bbox"][0] >= 100]
+    assert len(near_frames) == 50, "Player A lost identity during side change"
 
 
 def test_track_stitching_when_disabled(tmp_job_dir):

@@ -133,57 +133,90 @@ class PlayerTrackingStage:
     ) -> dict:
         """Stitch track-ID fragments into exactly 2 persistent players.
 
-        Per-frame side test (cy >= court_mid_y → near) is the primary signal;
-        centroid distance continuity prevents side-flips when a player briefly
-        crosses the midline.
+        Joint per-frame assignment: for each frame with ≤2 detections, assign
+        all detections to tracks simultaneously by nearest-centroid matching.
+        This guarantees 1 detection per track per frame whenever 2 are present
+        (unlike independent side tests which lose detections when both players
+        are on the same side of the midline).
         """
-        # Assign side per detection and sort by frame
+        # Group by frame
+        frames: dict[int, list[dict]] = {}
         for d in detections:
-            cy = (d["bbox"][1] + d["bbox"][3]) / 2
-            d["side"] = "near" if cy >= court_mid_y else "far"
-
-        detections = sorted(detections, key=lambda d: d["frame"])
+            frames.setdefault(d["frame"], []).append(d)
 
         # Two persistent tracks
-        tracks = {
-            "near": {"id": "player_1", "side": "near", "detections": [], "last_center": None},
-            "far": {"id": "player_2", "side": "far", "detections": [], "last_center": None},
-        }
+        tracks = [
+            {"id": "player_1", "side": "near", "detections": [], "last_center": None},
+            {"id": "player_2", "side": "far", "detections": [], "last_center": None},
+        ]
 
-        for det in detections:
-            side = det["side"]
-            track = tracks[side]
-            cx = (det["bbox"][0] + det["bbox"][2]) / 2
-            cy = (det["bbox"][1] + det["bbox"][3]) / 2
+        def _centroid(det):
+            return np.array([(det["bbox"][0] + det["bbox"][2]) / 2,
+                             (det["bbox"][1] + det["bbox"][3]) / 2])
 
-            # Distance check: skip assignment to opposite side if within threshold
-            # (prevents brief midline crossings from flipping identity)
-            if track["last_center"] is not None:
-                last_cx, last_cy = track["last_center"]
-                dist = np.sqrt((cx - last_cx) ** 2 + (cy - last_cy) ** 2)
-                if dist > settings.track_stitch_max_dist_px:
-                    # Try the other track — it might be the correct match
-                    other_side = "far" if side == "near" else "near"
-                    other = tracks[other_side]
-                    if other["last_center"] is not None:
-                        olx, oly = other["last_center"]
-                        odist = np.sqrt((cx - olx) ** 2 + (cy - oly) ** 2)
-                        if odist <= settings.track_stitch_max_dist_px:
-                            track = other
-                            side = other_side
+        for frame_idx in sorted(frames.keys()):
+            frame_dets = frames[frame_idx]
+            n = len(frame_dets)
 
-            track["detections"].append(det)
-            track["last_center"] = (cx, cy)
+            if n == 1:
+                det = frame_dets[0]
+                c = _centroid(det)
+                # Assign to nearest track (fallback to side test for first frame)
+                if tracks[0]["last_center"] is not None and tracks[1]["last_center"] is not None:
+                    d0 = np.linalg.norm(c - tracks[0]["last_center"])
+                    d1 = np.linalg.norm(c - tracks[1]["last_center"])
+                    idx = 0 if d0 <= d1 else 1
+                else:
+                    # First assignment: use midline side test
+                    cy = c[1]
+                    idx = 0 if cy >= court_mid_y else 1  # near=0, far=1
+                track = tracks[idx]
+                track["detections"].append(det)
+                track["last_center"] = c
 
-        total_frames = max(d["frame"] for d in detections) + 1
+            elif n >= 2:
+                # Take the two highest-confidence detections
+                frame_dets.sort(key=lambda x: x.get("confidence", 0), reverse=True)
+                det_a, det_b = frame_dets[:2]
+                ca, cb = _centroid(det_a), _centroid(det_b)
+
+                if tracks[0]["last_center"] is not None and tracks[1]["last_center"] is not None:
+                    # 2×2 cost matrix: distances from each detection to each track
+                    d_an = np.linalg.norm(ca - tracks[0]["last_center"])
+                    d_af = np.linalg.norm(ca - tracks[1]["last_center"])
+                    d_bn = np.linalg.norm(cb - tracks[0]["last_center"])
+                    d_bf = np.linalg.norm(cb - tracks[1]["last_center"])
+
+                    # Four possible assignments (2! = 2), pick min-cost
+                    # Assignment A: a→near(0), b→far(1); cost = d_an + d_bf
+                    # Assignment B: a→far(1), b→near(0); cost = d_af + d_bn
+                    if d_an + d_bf <= d_af + d_bn:
+                        pairs = [(det_a, 0), (det_b, 1)]
+                    else:
+                        pairs = [(det_a, 1), (det_b, 0)]
+                else:
+                    # First frame with 2 detections: assign 1:1 by x-position
+                    # (leftmost → track 0/player_1, rightmost → track 1/player_2)
+                    # This guarantees one detection per track even when both
+                    # players are on the same side of the midline.
+                    if ca[0] <= cb[0]:
+                        pairs = [(det_a, 0), (det_b, 1)]
+                    else:
+                        pairs = [(det_a, 1), (det_b, 0)]
+
+                for det, idx in pairs:
+                    track = tracks[idx]
+                    track["detections"].append(det)
+                    track["last_center"] = _centroid(det)
+
+        total_frames = max(frames.keys()) + 1 if frames else 0
 
         players_list = []
-        for side in ("near", "far"):
-            t = tracks[side]
-            dets = sorted(t["detections"], key=lambda d: d["frame"])
+        for track in tracks:
+            dets = sorted(track["detections"], key=lambda d: d["frame"])
             players_list.append({
-                "id": t["id"],
-                "side": side,
+                "id": track["id"],
+                "side": track["side"],
                 "detection_count": len(dets),
                 "is_synthetic": any(d.get("is_synthetic", False) for d in dets),
                 "detections": [

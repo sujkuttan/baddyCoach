@@ -1,0 +1,148 @@
+Logging to: /content/pipeline.log
+============================================================
+  BMCA Pipeline - test_match.mp4
+  Device: cuda
+============================================================
+Setting up models...
+  Downloading TrackNetV3 weights...
+Downloading...
+From (original): https://drive.google.com/uc?id=1rhKXbff1GITgrFTYptW6gAvWZ76E_qzp
+From (redirected): https://drive.google.com/uc?id=1rhKXbff1GITgrFTYptW6gAvWZ76E_qzp&confirm=t&uuid=00ace55f-7b3a-4c7c-852f-41193451a043
+To: /content/ckpts/tracknet.zip
+  0%|          | 0.00/132M [00:00<?, ?B/s]  2%|1         | 2.10M/132M [00:00<00:06, 20.5MB/s]  4%|3         | 4.72M/132M [00:00<00:05, 22.2MB/s] 12%|#1        | 15.2M/132M [00:00<00:03, 31.5MB/s] 18%|#8        | 24.1M/132M [00:00<00:02, 45.7MB/s] 23%|##3       | 30.9M/132M [00:00<00:02, 41.3MB/s] 30%|##9       | 39.3M/132M [00:00<00:01, 51.0MB/s] 35%|###4      | 45.6M/132M [00:01<00:02, 42.7MB/s] 40%|###9      | 52.4M/132M [00:01<00:01, 48.3MB/s] 44%|####4     | 58.2M/132M [00:01<00:03, 20.7MB/s] 53%|#####2    | 69.2M/132M [00:02<00:02, 25.3MB/s] 64%|######3   | 83.9M/132M [00:02<00:01, 33.0MB/s] 73%|#######3  | 96.5M/132M [00:02<00:00, 44.7MB/s] 79%|#######8  | 104M/132M [00:02<00:00, 40.9MB/s]  85%|########5 | 112M/132M [00:02<00:00, 46.3MB/s] 90%|######### | 118M/132M [00:03<00:00, 47.9MB/s] 99%|#########8| 130M/132M [00:03<00:00, 60.8MB/s]100%|##########| 132M/132M [00:03<00:00, 41.5MB/s]
+Creating new Ultralytics Settings v0.0.6 file ✅ 
+View Ultralytics Settings with 'yolo settings' or at '/root/.config/Ultralytics/settings.json'
+Update Settings with 'yolo settings key=value', i.e. 'yolo settings runs_dir=path/to/dir'. For help see https://docs.ultralytics.com/quickstart/#ultralytics-settings.
+[KDownloading https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8s.pt to 'yolov8s.pt': 100% ━━━━━━━━━━━━ 21.5MB 282.7MB/s 0.1s
+  Downloading RTMPose weights...
+Downloading...
+From (original): https://drive.google.com/uc?id=1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN
+From (redirected): https://drive.google.com/uc?id=1XjwDxz1a8i3WO6afuvaq-y3HPiFh48SN&confirm=t&uuid=e019c156-1eac-4182-b2b5-42015958a7c4
+To: /content/ckpts/rtmpose/rtmpose.zip
+  0%|          | 0.00/50.8M [00:00<?, ?B/s]  2%|2         | 1.05M/50.8M [00:00<00:05, 8.36MB/s] 22%|##1       | 11.0M/50.8M [00:00<00:00, 55.2MB/s] 34%|###4      | 17.3M/50.8M [00:00<00:00, 43.3MB/s] 51%|#####     | 25.7M/50.8M [00:00<00:00, 55.6MB/s] 63%|######2   | 32.0M/50.8M [00:00<00:00, 41.5MB/s] 91%|######### | 46.1M/50.8M [00:00<00:00, 63.6MB/s]100%|##########| 50.8M/50.8M [00:00<00:00, 57.1MB/s]
+  Moved end2end.onnx -> ckpts/rtmpose/rtmpose.onnx
+  Downloading BST weights...
+Downloading...
+From: https://drive.google.com/uc?id=1yHLpW4s8Rk8FYIUKF_NvC29Z8b8XuDq2
+To: /content/ckpts/bst/bst_CG_JnB_bone_merged.pt
+  0%|          | 0.00/7.42M [00:00<?, ?B/s] 21%|##1       | 1.57M/7.42M [00:00<00:00, 14.2MB/s]100%|##########| 7.42M/7.42M [00:00<00:00, 46.2MB/s]
+Models ready.
+
+  Video: 300s, 9000 frames @ 30fps (1280x720)
+  Sampling: every 1 frames -> ~9000 frames (30fps)
+  Batch size: 2000 frames
+
+[2/14] Court detection...
+  Court KP model loaded from court_kpRCNN.pth
+  Detected court (court_kpRCNN): [[243, 635], [846, 180], [480, 80], [812, 83]]
+  Court geometry valid: True
+  Done
+
+  Loading ML models...
+  TrackNet loaded from TrackNet_best.pt
+  Using HYBRID mode: MMPose (strokes) + RTMPose (hits)
+  HRNet loaded from hrnet_w32_coco_256x192.onnx
+  RTMPose loaded from rtmpose.onnx
+  Models loaded
+
+[1-5/14] Running ML stages on 9000 sampled frames (5 batches)...
+  Video frames:   0%|                               | 0/9000 [00:00<?, ?frame/s]  Video frames:   0%|                     | 39/9000 [00:00<00:23, 387.66frame/s]  Video frames:   1%|1                    | 78/9000 [00:00<00:25, 350.55frame/s]  Video frames:   1%|2                   | 114/9000 [00:00<00:25, 354.56frame/s]  Video frames:   2%|3                   | 150/9000 [00:00<00:25, 349.28frame/s]  Video frames:   2%|4                   | 187/9000 [00:00<00:24, 353.59frame/s]  Video frames:   2%|4                   | 223/9000 [00:00<00:24, 354.41frame/s]  Video frames:   3%|5                   | 259/9000 [00:00<00:24, 354.73frame/s]  Video frames:   3%|6                   | 296/9000 [00:00<00:24, 358.54frame/s]  Video frames:   4%|7                   | 332/9000 [00:00<00:24, 354.48frame/s]  Video frames:   4%|8                   | 368/9000 [00:01<00:27, 309.42frame/s]  Video frames:   4%|8                   | 400/9000 [00:01<00:30, 286.44frame/s]  Video frames:   5%|9                   | 430/9000 [00:01<00:31, 275.46frame/s]  Video frames:   5%|#                   | 459/9000 [00:01<00:32, 265.94frame/s]  Video frames:   5%|#                   | 486/9000 [00:01<00:33, 257.29frame/s]  Video frames:   6%|#1                  | 512/9000 [00:01<00:34, 249.22frame/s]  Video frames:   6%|#1                  | 538/9000 [00:01<00:34, 245.85frame/s]  Video frames:   6%|#2                  | 563/9000 [00:01<00:35, 240.69frame/s]  Video frames:   7%|#3                  | 588/9000 [00:02<00:35, 236.81frame/s]  Video frames:   7%|#3                  | 612/9000 [00:02<00:35, 237.44frame/s]  Video frames:   7%|#4                  | 636/9000 [00:02<00:35, 233.72frame/s]  Video frames:   7%|#4                  | 660/9000 [00:02<00:36, 228.50frame/s]  Video frames:   8%|#5                  | 683/9000 [00:02<00:36, 225.80frame/s]  Video frames:   8%|#5                  | 706/9000 [00:02<00:37, 218.77frame/s]  Video frames:   8%|#6                  | 728/9000 [00:02<00:38, 213.42frame/s]  Video frames:   8%|#6                  | 750/9000 [00:02<00:39, 210.34frame/s]  Video frames:   9%|#7                  | 772/9000 [00:02<00:39, 206.49frame/s]  Video frames:   9%|#7                  | 793/9000 [00:02<00:40, 203.87frame/s]  Video frames:   9%|#8                  | 814/9000 [00:03<00:41, 196.57frame/s]  Video frames:   9%|#8                  | 834/9000 [00:03<00:41, 196.71frame/s]  Video frames:  10%|#9                  | 856/9000 [00:03<00:40, 201.40frame/s]  Video frames:  10%|#9                  | 877/9000 [00:03<00:42, 191.54frame/s]  Video frames:  10%|#9                  | 899/9000 [00:03<00:41, 197.03frame/s]  Video frames:  10%|##                  | 919/9000 [00:03<00:41, 192.99frame/s]  Video frames:  10%|##                  | 944/9000 [00:03<00:38, 208.18frame/s]  Video frames:  11%|##1                 | 975/9000 [00:03<00:33, 236.27frame/s]  Video frames:  11%|##1                | 1008/9000 [00:03<00:30, 262.60frame/s]  Video frames:  12%|##1                | 1039/9000 [00:04<00:28, 274.72frame/s]  Video frames:  12%|##2                | 1071/9000 [00:04<00:27, 287.63frame/s]  Video frames:  12%|##3                | 1105/9000 [00:04<00:26, 301.38frame/s]  Video frames:  13%|##3                | 1136/9000 [00:04<00:25, 302.95frame/s]  Video frames:  13%|##4                | 1167/9000 [00:04<00:26, 292.17frame/s]  Video frames:  13%|##5                | 1201/9000 [00:04<00:25, 300.64frame/s]  Video frames:  14%|##6                | 1235/9000 [00:04<00:24, 311.22frame/s]  Video frames:  14%|##6                | 1267/9000 [00:04<00:24, 310.97frame/s]  Video frames:  14%|##7                | 1299/9000 [00:04<00:25, 307.49frame/s]  Video frames:  15%|##8                | 1333/9000 [00:04<00:24, 314.70frame/s]  Video frames:  15%|##8                | 1367/9000 [00:05<00:23, 318.43frame/s]  Video frames:  16%|##9                | 1400/9000 [00:05<00:23, 319.49frame/s]  Video frames:  16%|###                | 1432/9000 [00:05<00:23, 315.78frame/s]  Video frames:  16%|###                | 1465/9000 [00:05<00:23, 316.69frame/s]  Video frames:  17%|###1               | 1497/9000 [00:05<00:24, 306.41frame/s]  Video frames:  17%|###2               | 1531/9000 [00:05<00:23, 315.48frame/s]  Video frames:  17%|###3               | 1565/9000 [00:05<00:23, 321.08frame/s]  Video frames:  18%|###3               | 1599/9000 [00:05<00:22, 324.88frame/s]  Video frames:  18%|###4               | 1633/9000 [00:05<00:22, 327.94frame/s]  Video frames:  19%|###5               | 1669/9000 [00:06<00:22, 330.58frame/s]  Video frames:  19%|###5               | 1703/9000 [00:06<00:21, 332.55frame/s]  Video frames:  19%|###6               | 1737/9000 [00:06<00:21, 332.82frame/s]  Video frames:  20%|###7               | 1772/9000 [00:06<00:21, 335.76frame/s]  Video frames:  20%|###8               | 1807/9000 [00:06<00:21, 337.57frame/s]  Video frames:  20%|###8               | 1841/9000 [00:06<00:21, 326.26frame/s]  Video frames:  21%|###9               | 1875/9000 [00:06<00:21, 329.83frame/s]  Video frames:  21%|####               | 1909/9000 [00:06<00:21, 332.19frame/s]  Video frames:  22%|####1              | 1944/9000 [00:06<00:20, 336.54frame/s]  Video frames:  22%|####1              | 1980/9000 [00:06<00:20, 341.86frame/s]                                                                                  Batch 1/5 | YOLOv8 tracking 2000 frames...
+  Video frames:  22%|####2              | 1999/9000 [00:07<00:20, 341.86frame/s]  Video frames:  22%|####2              | 1999/9000 [00:25<00:20, 341.86frame/s]                                                                                  Batch 1/5 | TrackNet shuttle tracking...
+  Video frames:  22%|####2              | 1999/9000 [01:09<00:20, 341.86frame/s]                                                                                  Batch 1/5 | RTMPose batch estimation (3998 crops)...
+  Video frames:  22%|####2              | 1999/9000 [02:19<00:20, 341.86frame/s]                                                                                  Batch 1/5 | Secondary RTMPose estimation (3998 crops)...
+  Video frames:  22%|####2              | 1999/9000 [02:50<00:20, 341.86frame/s]                                                                                  Batch 1/5 done | Shuttle: 1998 | Players: 3994 | Pose: 3998
+  Video frames:  22%|####2              | 1999/9000 [03:06<00:20, 341.86frame/s]                                                                                  GPU memory: 330 MB allocated
+  Video frames:  22%|####2              | 1999/9000 [03:06<00:20, 341.86frame/s]  Video frames:  22%|####              | 2000/9000 [03:06<3:26:30,  1.77s/frame]  Video frames:  23%|####              | 2041/9000 [03:06<2:10:15,  1.12s/frame]  Video frames:  23%|####1             | 2087/9000 [03:06<1:21:38,  1.41frame/s]  Video frames:  24%|####7               | 2132/9000 [03:06<53:34,  2.14frame/s]  Video frames:  24%|####8               | 2173/9000 [03:06<36:59,  3.08frame/s]  Video frames:  25%|####9               | 2214/9000 [03:06<25:38,  4.41frame/s]  Video frames:  25%|#####               | 2259/9000 [03:06<17:18,  6.49frame/s]  Video frames:  26%|#####1              | 2310/9000 [03:07<11:20,  9.82frame/s]  Video frames:  26%|#####2              | 2356/9000 [03:07<07:53, 14.04frame/s]  Video frames:  27%|#####3              | 2404/9000 [03:07<05:26, 20.19frame/s]  Video frames:  27%|#####4              | 2450/9000 [03:07<03:51, 28.29frame/s]  Video frames:  28%|#####5              | 2495/9000 [03:07<02:46, 39.13frame/s]  Video frames:  28%|#####6              | 2546/9000 [03:07<01:55, 55.79frame/s]  Video frames:  29%|#####7              | 2593/9000 [03:07<01:25, 74.80frame/s]  Video frames:  29%|#####8              | 2637/9000 [03:07<01:06, 95.77frame/s]  Video frames:  30%|#####6             | 2678/9000 [03:07<00:53, 118.80frame/s]  Video frames:  30%|#####7             | 2716/9000 [03:08<00:44, 142.75frame/s]  Video frames:  31%|#####8             | 2753/9000 [03:08<00:37, 167.68frame/s]  Video frames:  31%|#####8             | 2788/9000 [03:08<00:32, 192.62frame/s]  Video frames:  31%|#####9             | 2823/9000 [03:08<00:28, 215.18frame/s]  Video frames:  32%|######             | 2857/9000 [03:08<00:26, 234.14frame/s]  Video frames:  32%|######1            | 2890/9000 [03:08<00:24, 251.41frame/s]  Video frames:  32%|######1            | 2922/9000 [03:08<00:22, 265.63frame/s]  Video frames:  33%|######2            | 2954/9000 [03:08<00:22, 263.93frame/s]  Video frames:  33%|######3            | 2988/9000 [03:08<00:21, 282.05frame/s]  Video frames:  34%|######3            | 3020/9000 [03:09<00:20, 291.51frame/s]  Video frames:  34%|######4            | 3052/9000 [03:09<00:20, 290.87frame/s]  Video frames:  34%|######5            | 3083/9000 [03:09<00:20, 295.45frame/s]  Video frames:  35%|######5            | 3114/9000 [03:09<00:20, 291.79frame/s]  Video frames:  35%|######6            | 3145/9000 [03:09<00:19, 294.76frame/s]  Video frames:  35%|######7            | 3181/9000 [03:09<00:18, 311.22frame/s]  Video frames:  36%|######7            | 3217/9000 [03:09<00:17, 322.92frame/s]  Video frames:  36%|######8            | 3251/9000 [03:09<00:17, 326.96frame/s]  Video frames:  36%|######9            | 3284/9000 [03:09<00:17, 319.61frame/s]  Video frames:  37%|#######            | 3317/9000 [03:09<00:17, 315.84frame/s]  Video frames:  37%|#######            | 3349/9000 [03:10<00:18, 307.95frame/s]  Video frames:  38%|#######1           | 3383/9000 [03:10<00:17, 316.39frame/s]  Video frames:  38%|#######2           | 3421/9000 [03:10<00:16, 332.15frame/s]  Video frames:  39%|#######3           | 3471/9000 [03:10<00:14, 379.50frame/s]  Video frames:  39%|#######4           | 3519/9000 [03:10<00:13, 405.82frame/s]  Video frames:  40%|#######5           | 3564/9000 [03:10<00:12, 418.27frame/s]  Video frames:  40%|#######6           | 3612/9000 [03:10<00:12, 434.54frame/s]  Video frames:  41%|#######7           | 3661/9000 [03:10<00:11, 448.47frame/s]  Video frames:  41%|#######8           | 3706/9000 [03:10<00:11, 448.05frame/s]  Video frames:  42%|#######9           | 3752/9000 [03:10<00:11, 450.90frame/s]  Video frames:  42%|########           | 3801/9000 [03:11<00:11, 460.15frame/s]  Video frames:  43%|########1          | 3848/9000 [03:11<00:12, 423.44frame/s]  Video frames:  43%|########2          | 3891/9000 [03:11<00:12, 396.02frame/s]  Video frames:  44%|########3          | 3932/9000 [03:11<00:13, 381.77frame/s]  Video frames:  44%|########3          | 3971/9000 [03:11<00:13, 372.75frame/s]                                                                                  Batch 2/5 | YOLOv8 tracking 2000 frames...
+  Video frames:  44%|########4          | 3999/9000 [03:11<00:13, 372.75frame/s]  Video frames:  44%|########4          | 3999/9000 [03:25<00:13, 372.75frame/s]                                                                                  Batch 2/5 | TrackNet shuttle tracking...
+  Video frames:  44%|########4          | 3999/9000 [04:16<00:13, 372.75frame/s]                                                                                  Batch 2/5 | RTMPose batch estimation (3994 crops)...
+  Video frames:  44%|########4          | 3999/9000 [05:20<00:13, 372.75frame/s]                                                                                  Batch 2/5 | Secondary RTMPose estimation (3994 crops)...
+  Video frames:  44%|########4          | 3999/9000 [05:49<00:13, 372.75frame/s]                                                                                  Batch 2/5 done | Shuttle: 3996 | Players: 7967 | Pose: 7992
+  Video frames:  44%|########4          | 3999/9000 [06:04<00:13, 372.75frame/s]                                                                                  GPU memory: 330 MB allocated
+  Video frames:  44%|########4          | 3999/9000 [06:04<00:13, 372.75frame/s]  Video frames:  44%|########          | 4000/9000 [06:05<1:52:35,  1.35s/frame]  Video frames:  45%|########          | 4046/9000 [06:05<1:13:52,  1.12frame/s]  Video frames:  45%|#########           | 4089/9000 [06:05<50:30,  1.62frame/s]  Video frames:  46%|#########1          | 4132/9000 [06:05<34:43,  2.34frame/s]  Video frames:  46%|#########2          | 4176/9000 [06:05<23:47,  3.38frame/s]  Video frames:  47%|#########3          | 4218/9000 [06:05<16:37,  4.79frame/s]  Video frames:  47%|#########4          | 4260/9000 [06:05<11:37,  6.79frame/s]  Video frames:  48%|#########5          | 4309/9000 [06:05<07:44, 10.09frame/s]  Video frames:  48%|#########6          | 4359/9000 [06:05<05:12, 14.83frame/s]  Video frames:  49%|#########7          | 4409/9000 [06:05<03:34, 21.44frame/s]  Video frames:  50%|#########9          | 4457/9000 [06:06<02:30, 30.19frame/s]  Video frames:  50%|##########          | 4504/9000 [06:06<01:47, 41.85frame/s]  Video frames:  51%|##########1         | 4552/9000 [06:06<01:16, 57.84frame/s]  Video frames:  51%|##########2         | 4599/9000 [06:06<00:56, 78.18frame/s]  Video frames:  52%|#########8         | 4646/9000 [06:06<00:42, 103.61frame/s]  Video frames:  52%|#########9         | 4693/9000 [06:06<00:31, 134.89frame/s]  Video frames:  53%|##########         | 4743/9000 [06:06<00:24, 174.45frame/s]  Video frames:  53%|##########1        | 4792/9000 [06:06<00:19, 216.77frame/s]  Video frames:  54%|##########2        | 4846/9000 [06:06<00:15, 268.86frame/s]  Video frames:  54%|##########3        | 4899/9000 [06:06<00:12, 317.57frame/s]  Video frames:  55%|##########4        | 4954/9000 [06:07<00:11, 365.67frame/s]  Video frames:  56%|##########5        | 5007/9000 [06:07<00:09, 402.83frame/s]  Video frames:  56%|##########6        | 5059/9000 [06:07<00:09, 430.25frame/s]  Video frames:  57%|##########7        | 5111/9000 [06:07<00:08, 450.93frame/s]  Video frames:  57%|##########9        | 5164/9000 [06:07<00:08, 470.45frame/s]  Video frames:  58%|###########        | 5216/9000 [06:07<00:07, 477.43frame/s]  Video frames:  59%|###########1       | 5269/9000 [06:07<00:07, 487.32frame/s]  Video frames:  59%|###########2       | 5321/9000 [06:07<00:07, 481.04frame/s]  Video frames:  60%|###########3       | 5376/9000 [06:07<00:07, 498.71frame/s]  Video frames:  60%|###########4       | 5428/9000 [06:07<00:07, 502.62frame/s]  Video frames:  61%|###########5       | 5480/9000 [06:08<00:06, 507.27frame/s]  Video frames:  61%|###########6       | 5533/9000 [06:08<00:06, 512.52frame/s]  Video frames:  62%|###########7       | 5585/9000 [06:08<00:06, 506.61frame/s]  Video frames:  63%|###########9       | 5638/9000 [06:08<00:06, 510.98frame/s]  Video frames:  63%|############       | 5690/9000 [06:08<00:06, 513.43frame/s]  Video frames:  64%|############1      | 5745/9000 [06:08<00:06, 523.49frame/s]  Video frames:  64%|############2      | 5799/9000 [06:08<00:06, 527.67frame/s]  Video frames:  65%|############3      | 5852/9000 [06:08<00:06, 516.57frame/s]  Video frames:  66%|############4      | 5905/9000 [06:08<00:05, 518.82frame/s]  Video frames:  66%|############5      | 5961/9000 [06:09<00:05, 529.09frame/s]                                                                                  Batch 3/5 | YOLOv8 tracking 2000 frames...
+  Video frames:  67%|############6      | 5999/9000 [06:09<00:05, 529.09frame/s]  Video frames:  67%|############6      | 5999/9000 [06:25<00:05, 529.09frame/s]                                                                                  Batch 3/5 | TrackNet shuttle tracking...
+  Video frames:  67%|############6      | 5999/9000 [07:13<00:05, 529.09frame/s]                                                                                  Batch 3/5 | RTMPose batch estimation (4000 crops)...
+  Video frames:  67%|############6      | 5999/9000 [08:24<00:05, 529.09frame/s]                                                                                  Batch 3/5 | Secondary RTMPose estimation (4000 crops)...
+  Video frames:  67%|############6      | 5999/9000 [08:54<00:05, 529.09frame/s]                                                                                  Batch 3/5 done | Shuttle: 5994 | Players: 11961 | Pose: 11992
+  Video frames:  67%|############6      | 5999/9000 [09:10<00:05, 529.09frame/s]                                                                                  GPU memory: 330 MB allocated
+  Video frames:  67%|############6      | 5999/9000 [09:10<00:05, 529.09frame/s]  Video frames:  67%|#############3      | 6000/9000 [09:11<55:13,  1.10s/frame]  Video frames:  67%|#############4      | 6052/9000 [09:11<37:27,  1.31frame/s]  Video frames:  68%|#############5      | 6107/9000 [09:11<25:03,  1.92frame/s]  Video frames:  68%|#############6      | 6161/9000 [09:11<17:00,  2.78frame/s]  Video frames:  69%|#############8      | 6215/9000 [09:11<11:36,  4.00frame/s]  Video frames:  70%|#############9      | 6266/9000 [09:11<08:05,  5.63frame/s]  Video frames:  70%|##############      | 6315/9000 [09:11<05:41,  7.86frame/s]  Video frames:  71%|##############1     | 6363/9000 [09:11<04:01, 10.93frame/s]  Video frames:  71%|##############2     | 6412/9000 [09:11<02:48, 15.35frame/s]  Video frames:  72%|##############3     | 6467/9000 [09:12<01:53, 22.30frame/s]  Video frames:  72%|##############4     | 6517/9000 [09:12<01:20, 30.89frame/s]  Video frames:  73%|##############5     | 6569/9000 [09:12<00:56, 43.26frame/s]  Video frames:  74%|##############7     | 6618/9000 [09:12<00:40, 58.78frame/s]  Video frames:  74%|##############8     | 6667/9000 [09:12<00:29, 79.20frame/s]  Video frames:  75%|##############1    | 6716/9000 [09:12<00:21, 105.14frame/s]  Video frames:  75%|##############2    | 6769/9000 [09:12<00:15, 139.84frame/s]  Video frames:  76%|##############3    | 6820/9000 [09:12<00:12, 178.67frame/s]  Video frames:  76%|##############5    | 6870/9000 [09:12<00:09, 220.52frame/s]  Video frames:  77%|##############6    | 6920/9000 [09:13<00:07, 264.00frame/s]  Video frames:  77%|##############7    | 6970/9000 [09:13<00:06, 305.85frame/s]  Video frames:  78%|##############8    | 7020/9000 [09:13<00:05, 331.51frame/s]  Video frames:  79%|##############9    | 7072/9000 [09:13<00:05, 372.74frame/s]  Video frames:  79%|###############    | 7121/9000 [09:13<00:04, 397.52frame/s]  Video frames:  80%|###############1   | 7170/9000 [09:13<00:04, 400.96frame/s]  Video frames:  80%|###############2   | 7216/9000 [09:13<00:04, 402.16frame/s]  Video frames:  81%|###############3   | 7261/9000 [09:13<00:04, 414.51frame/s]  Video frames:  81%|###############4   | 7313/9000 [09:13<00:03, 442.81frame/s]  Video frames:  82%|###############5   | 7369/9000 [09:13<00:03, 471.15frame/s]  Video frames:  82%|###############6   | 7425/9000 [09:14<00:03, 494.68frame/s]  Video frames:  83%|###############7   | 7477/9000 [09:14<00:03, 497.69frame/s]  Video frames:  84%|###############8   | 7528/9000 [09:14<00:03, 488.61frame/s]  Video frames:  84%|###############9   | 7578/9000 [09:14<00:02, 488.73frame/s]  Video frames:  85%|################1  | 7628/9000 [09:14<00:02, 490.82frame/s]  Video frames:  85%|################2  | 7678/9000 [09:14<00:02, 483.02frame/s]  Video frames:  86%|################3  | 7729/9000 [09:14<00:02, 485.01frame/s]  Video frames:  86%|################4  | 7782/9000 [09:14<00:02, 497.84frame/s]  Video frames:  87%|################5  | 7832/9000 [09:14<00:02, 473.99frame/s]  Video frames:  88%|################6  | 7880/9000 [09:15<00:02, 434.15frame/s]  Video frames:  88%|################7  | 7925/9000 [09:15<00:02, 406.16frame/s]  Video frames:  89%|################8  | 7967/9000 [09:15<00:02, 379.06frame/s]                                                                                  Batch 4/5 | YOLOv8 tracking 2000 frames...
+  Video frames:  89%|################8  | 7999/9000 [09:15<00:02, 379.06frame/s]  Video frames:  89%|################8  | 7999/9000 [09:25<00:02, 379.06frame/s]                                                                                  Batch 4/5 | TrackNet shuttle tracking...
+  Video frames:  89%|################8  | 7999/9000 [10:19<00:02, 379.06frame/s]                                                                                  Batch 4/5 | RTMPose batch estimation (3992 crops)...
+  Video frames:  89%|################8  | 7999/9000 [11:24<00:02, 379.06frame/s]                                                                                  Batch 4/5 | Secondary RTMPose estimation (3992 crops)...
+  Video frames:  89%|################8  | 7999/9000 [11:54<00:02, 379.06frame/s]                                                                                  Batch 4/5 done | Shuttle: 7992 | Players: 15941 | Pose: 15984
+  Video frames:  89%|################8  | 7999/9000 [12:08<00:02, 379.06frame/s]                                                                                  GPU memory: 330 MB allocated
+  Video frames:  89%|################8  | 7999/9000 [12:08<00:02, 379.06frame/s]  Video frames:  89%|#################7  | 8000/9000 [12:08<20:26,  1.23s/frame]  Video frames:  89%|#################8  | 8043/9000 [12:08<13:39,  1.17frame/s]  Video frames:  90%|#################9  | 8090/9000 [12:09<08:49,  1.72frame/s]  Video frames:  90%|##################  | 8137/9000 [12:09<05:45,  2.50frame/s]  Video frames:  91%|##################1 | 8189/9000 [12:09<03:37,  3.73frame/s]  Video frames:  92%|##################3 | 8235/9000 [12:09<02:24,  5.28frame/s]  Video frames:  92%|##################4 | 8282/9000 [12:09<01:35,  7.52frame/s]  Video frames:  93%|##################5 | 8333/9000 [12:09<01:00, 10.95frame/s]  Video frames:  93%|##################6 | 8381/9000 [12:09<00:39, 15.49frame/s]  Video frames:  94%|##################7 | 8430/9000 [12:09<00:25, 21.96frame/s]  Video frames:  94%|##################8 | 8478/9000 [12:09<00:17, 30.71frame/s]  Video frames:  95%|##################9 | 8527/9000 [12:09<00:11, 42.89frame/s]  Video frames:  95%|################### | 8575/9000 [12:10<00:07, 58.45frame/s]  Video frames:  96%|###################1| 8627/9000 [12:10<00:04, 81.19frame/s]  Video frames:  96%|##################3| 8677/9000 [12:10<00:02, 108.64frame/s]  Video frames:  97%|##################4| 8726/9000 [12:10<00:01, 139.98frame/s]  Video frames:  97%|##################5| 8773/9000 [12:10<00:01, 174.41frame/s]  Video frames:  98%|##################6| 8822/9000 [12:10<00:00, 215.95frame/s]  Video frames:  99%|##################7| 8875/9000 [12:10<00:00, 265.95frame/s]  Video frames:  99%|##################8| 8925/9000 [12:10<00:00, 309.32frame/s]  Video frames: 100%|##################9| 8974/9000 [12:10<00:00, 340.06frame/s]  Video frames: 100%|####################| 9000/9000 [12:10<00:00, 12.31frame/s]
+  Batch 5/5 | YOLOv8 tracking 1000 frames...
+  Batch 5/5 | TrackNet shuttle tracking...
+  Batch 5/5 | RTMPose batch estimation (2000 crops)...
+  Batch 5/5 | Secondary RTMPose estimation (2000 crops)...
+  Batch 5/5 done | Shuttle: 8990 | Players: 17932 | Pose: 17984
+  GPU memory: 330 MB allocated
+
+  ML stages complete. Data collected:
+    Shuttle positions: 8990 frames
+    Player detections: 17932 total
+    Pose keypoints:    17984 frames
+
+  Exporting stage outputs to /content/debug/
+    shuttle.parquet (8990 rows)
+    pose.parquet (17984 rows)
+    pose_secondary.parquet (17984 rows)
+    player_detections.parquet (17932 rows)
+
+[6/14] Hit frame localization...
+  Found 450 hits
+    hits.parquet (450 rows)
+
+[7/14] Stroke classification...
+  HRNet keypoints valid (100/100 non-zero)
+BST_CG loaded (FP16): in_dim=72, seq_len=30, n_classes=25
+  Classified 450 shots
+
+[8/14] Rally segmentation...
+  Segmented 37 rallies
+    rallies.parquet (37 rows)
+  Attributed 450 shots
+    shots.parquet (450 rows)
+
+[9/14] Court position analytics...
+  450 zone transitions
+
+[10/14] Footwork analytics...
+  Done
+
+[11/14] Fitness analytics...
+  Done
+
+[12/14] Tactical analytics...
+  Done
+
+[13/14] Technical analytics...
+  Done
+
+[14/14] Coach recommendations...
+  9 strengths, 0 weaknesses
+
+============================================================
+  COMPLETE in 877.5s
+  Report saved to: /content/report.json
+============================================================
+
+  Pipeline Summary:
+    [1/5] Court detection       OK
+    [2/5] Player tracking       2 players, 17932 detections
+    [3/5] Shuttle tracking      8990 frames tracked (avg conf: 0.453)
+    [4/5] Pose estimation       17984 frames estimated
+    [5/5] Hit detection         450 hits found
+
+  Analysis:
+    Shots:     450
+    Rallies:   37
+    Zones:     450 transitions
+    Top shots: lift (33%), block (13%), smash (12%)
+
+  Strengths:
+    + [player_2] Quick recovery (0.0 frames) — you reset well between shots.
+    + [player_1] Good court balance — front court presence at 41.6% keeps op
+    + [player_2] Good court balance — front court presence at 41.6% keeps op
+
+  Open the local UI and click 'Load Report' to view the full dashboard.

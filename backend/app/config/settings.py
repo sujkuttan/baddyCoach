@@ -48,7 +48,6 @@ class Settings(BaseSettings):
     # Player tracking
     max_players: int = 2
     track_stitch_enabled: bool = True
-    track_stitch_max_dist_px: float = 150.0  # max centroid jump to keep same identity across track-id fragments
 
     # Hit detection weights & thresholds
     hit_reversal_weight: float = 0.45
