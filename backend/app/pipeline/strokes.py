@@ -186,9 +186,15 @@ def _build_clip(
                 debug_clip_stats["n_missing_pose"] += 1
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
+    amp = settings.joint_velocity_amplification
+    if amp > 0:
+        vel = np.diff(joints, axis=0)  # (seq_len-1, 2, 17, 2)
+        vel_mag = np.linalg.norm(vel, axis=-1)  # (seq_len-1, 2, 17)
+        vel_mag = np.concatenate([np.zeros((1, 2, 17)), vel_mag], axis=0)
     for i in range(2):
         for t in range(seq_len):
-            bones[t, i] = create_bones(joints[t, i])
+            vm = vel_mag[t, i] if amp > 0 else None
+            bones[t, i] = create_bones(joints[t, i], velocity_mag=vm, amp_factor=amp)
     JnB = np.concatenate([joints, bones], axis=-2)
     return {
         'JnB': JnB.reshape(seq_len, 2, -1),

@@ -109,19 +109,35 @@ def normalize_joints_court(
     return (normalized - 0.5).astype(np.float32)
 
 
-def create_bones(joints: np.ndarray) -> np.ndarray:
-    """Create bone vectors from joint positions.
+def create_bones(joints: np.ndarray, velocity_mag: np.ndarray | None = None,
+                 amp_factor: float = 0.0) -> np.ndarray:
+    """Create bone vectors from joint positions, optionally velocity-weighted.
+
+    When velocity_mag is provided and amp_factor > 0, bone vectors are amplified
+    by the motion of their endpoint joints — fast-moving limbs produce larger
+    bone values, giving the model temporal motion signal even from single-frame
+    features.
 
     Args:
-        joints: (17, 2) single-frame joints
+        joints: (17, 2) single-frame joints (normalized).
+        velocity_mag: (17,) per-joint velocity magnitude, or None.
+        amp_factor: amplification factor for velocity weighting (0 = disabled).
 
     Returns:
         (19, 2) bone vectors
     """
+    use_velocity = velocity_mag is not None and amp_factor > 0
     bones = []
     for s, e in BONE_PAIRS:
         sj, ej = joints[s], joints[e]
-        bones.append(ej - sj if np.any(sj != 0) and np.any(ej != 0) else np.zeros(2, dtype=np.float32))
+        if np.any(sj != 0) and np.any(ej != 0):
+            bone = ej - sj
+            if use_velocity:
+                avg_motion = (velocity_mag[s] + velocity_mag[e]) * 0.5
+                bone = bone * (1.0 + avg_motion * amp_factor)
+            bones.append(bone)
+        else:
+            bones.append(np.zeros(2, dtype=np.float32))
     return np.array(bones, dtype=np.float32)
 
 
