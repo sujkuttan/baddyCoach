@@ -31,6 +31,7 @@ _BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
+from app.config.settings import settings
 from app.pipeline.shared.court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT,
     _correct_court_points, compute_homography, image_to_court, HomographySmoother,
@@ -40,6 +41,7 @@ from app.pipeline.shared.utils import (
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
 from app.pipeline.shared.models import ensure_model, MODEL_REGISTRY
+from app.pipeline.shared.shuttle_utils import clean_trajectory
 
 CKPT_DIR = Path("ckpts")
 CKPT_DIR.mkdir(exist_ok=True)
@@ -1110,6 +1112,22 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         store.set("players", players_data)
 
         shuttle_df = pd.DataFrame(all_shuttle)
+        if settings.shuttle_clean_enabled:
+            n_before = len(shuttle_df)
+            low_conf_before = int((shuttle_df["confidence"] < settings.shuttle_clean_min_conf).sum())
+            x_a = shuttle_df["x"].values.astype(np.float64)
+            y_a = shuttle_df["y"].values.astype(np.float64)
+            jumps_before = int((np.sqrt(np.diff(x_a) ** 2 + np.diff(y_a) ** 2) > settings.shuttle_max_jump_px).sum())
+            df_orig = shuttle_df.copy()
+            shuttle_df = clean_trajectory(shuttle_df, settings)
+            n_interp = int(shuttle_df["was_interpolated"].sum())
+            n_spike = n_interp - int(
+                ((df_orig["confidence"] < settings.shuttle_clean_min_conf).values
+                 & shuttle_df["was_interpolated"].values).sum()
+            )
+            print(f"  Shuttle cleaned: {low_conf_before}/{n_before} low-conf, "
+                  f"{max(0, n_spike)} spikes, {n_interp} interp, "
+                  f"{jumps_before} >{settings.shuttle_max_jump_px:.0f}px jumps → ~0")
         store.set_parquet("shuttle", shuttle_df)
 
         pose_df = pd.DataFrame(all_pose)
@@ -1143,10 +1161,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         hits_df = store.get_parquet("hits")
         # Propagate colab's GPU-detected BST batch size to backend stage
         config.extra["bst_batch"] = gpu_cfg.get("bst_batch", 32)
-        from app.config.settings import settings as bst_settings
-        bst_settings.bst_joint_norm = "court"
-        bst_settings.joint_velocity_amplification = 0.0
-        bst_settings.bst_adapt_batchnorm = True
+        settings.bst_joint_norm = "court"
+        settings.joint_velocity_amplification = 0.0
+        settings.bst_adapt_batchnorm = True
         shots_result = StrokeClassificationStage().run(store, config)
         shots_df = store.get_parquet("shots")
         shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []

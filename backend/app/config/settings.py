@@ -34,6 +34,13 @@ class Settings(BaseSettings):
     # Shuttle detection confidence gate
     shuttle_min_conf: float = 0.30  # sub-threshold detections treated as missing
 
+    # Shuttle trajectory cleaning (applied before any downstream consumer)
+    shuttle_clean_enabled: bool = True
+    shuttle_clean_min_conf: float = 0.30  # confidence gate for cleaning (matches shuttle_min_conf)
+    shuttle_max_jump_px: float = 200.0  # there-and-back spike threshold
+    shuttle_max_interp_gap: int = 7  # max frames to linearly interpolate across gaps
+    shuttle_smooth_window: int = 3  # moving median window (0=off, 3=de-jitter)
+
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280
     default_frame_height: int = 720

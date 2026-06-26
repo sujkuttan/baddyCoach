@@ -5,6 +5,18 @@ import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
+from app.pipeline.shared.shuttle_utils import clean_trajectory
+from app.config.settings import settings
+
+
+def _count_big_jumps(x, y, threshold: float) -> int:
+    """Count frame-to-frame displacements exceeding threshold."""
+    x = np.asarray(x, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    if len(x) < 2:
+        return 0
+    d = np.sqrt(np.diff(x) ** 2 + np.diff(y) ** 2)
+    return int((d > threshold).sum())
 
 
 class ShuttleTrackingStage:
@@ -69,6 +81,24 @@ class ShuttleTrackingStage:
         required_cols = {"frame", "x", "y", "confidence"}
         if not required_cols.issubset(df.columns):
             return StageResult.from_error(f"Shuttle data must contain columns: {required_cols}")
+
+        if settings.shuttle_clean_enabled:
+            n_before = len(df)
+            jumps_before = _count_big_jumps(df["x"].values, df["y"].values, settings.shuttle_max_jump_px)
+            low_conf_before = int((df["confidence"] < settings.shuttle_clean_min_conf).sum())
+            df_orig = df.copy()
+            df = clean_trajectory(df, settings)
+            n_interp = int(df["was_interpolated"].sum())
+            n_spike = n_interp - int(
+                ((df_orig["confidence"] < settings.shuttle_clean_min_conf).values
+                 & df["was_interpolated"].values).sum()
+            )
+            logger.info(
+                f"Shuttle cleaned: {low_conf_before}/{n_before} low-conf "
+                f"({100 * low_conf_before / max(n_before, 1):.1f}%), "
+                f"{max(0, n_spike)} spikes removed, {n_interp} gaps filled, "
+                f"{jumps_before} >{settings.shuttle_max_jump_px:.0f}px jumps → ~0"
+            )
 
         artifacts.set_parquet("shuttle", df)
 
