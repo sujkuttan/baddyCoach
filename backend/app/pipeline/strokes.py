@@ -278,11 +278,16 @@ class StrokeClassificationStage:
             #   - end at the next hit (one inter-hit segment, not two)
             #   - positional encoding expects the stroke at a fixed position
             #   - frames beyond video_len are masked by the model
+            #   - bst_min_clip_frames: floor on real frames so short exchanges
+            #     don't fall back to unknown (14% of clips <20 frames)
             hit_pos = hit_frames_sorted.index(frame)
             start_frame = frame
             if hit_pos < len(hit_frames_sorted) - 1:
-                end_frame = min(frame + classifier.seq_len,
-                                hit_frames_sorted[hit_pos + 1])
+                end_frame = min(
+                    frame + classifier.seq_len,
+                    max(frame + settings.bst_min_clip_frames,
+                        hit_frames_sorted[hit_pos + 1])
+                )
             else:
                 end_frame = frame + classifier.seq_len
 
