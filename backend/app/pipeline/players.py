@@ -1,10 +1,6 @@
 import numpy as np
 from pathlib import Path
 
-from collections import defaultdict
-
-import numpy as np
-
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, NET_HEIGHT
 from app.config.settings import settings
@@ -113,16 +109,101 @@ class PlayerTrackingStage:
     ) -> StageResult:
         """Process detections and assign players to sides.
 
-        Groups detections by track_id (from Ultralytics tracker) — each track
-        becomes one player. Side (near/far) is assigned via the median center_y
-        across the entire track, preventing per-frame identity flips.
-
-        Detections without track_id fall back to frame-by-frame court-midline.
+        Stitches track-ID fragments into exactly 2 persistent identities
+        (near/far) using per-frame side assignment + centroid distance continuity.
         """
         if not detections:
             return StageResult.from_error("No player detections provided")
 
-        # Group by track_id (preferred) or per-frame (fallback)
+        if settings.track_stitch_enabled:
+            players_data = self._stitch_tracks(detections, court_mid_y)
+        else:
+            players_data = self._group_by_track_id(detections, court_mid_y)
+
+        artifacts.set("players", players_data)
+
+        has_synthetic = any(p.get("is_synthetic", False) for p in players_data["players"])
+        return StageResult.success(
+            artifacts={"players": artifacts.path("players")},
+            metadata={"player_count": len(players_data["players"]), "has_synthetic": has_synthetic}
+        )
+
+    def _stitch_tracks(
+        self, detections: list[dict], court_mid_y: float
+    ) -> dict:
+        """Stitch track-ID fragments into exactly 2 persistent players.
+
+        Per-frame side test (cy >= court_mid_y → near) is the primary signal;
+        centroid distance continuity prevents side-flips when a player briefly
+        crosses the midline.
+        """
+        # Assign side per detection and sort by frame
+        for d in detections:
+            cy = (d["bbox"][1] + d["bbox"][3]) / 2
+            d["side"] = "near" if cy >= court_mid_y else "far"
+
+        detections = sorted(detections, key=lambda d: d["frame"])
+
+        # Two persistent tracks
+        tracks = {
+            "near": {"id": "player_1", "side": "near", "detections": [], "last_center": None},
+            "far": {"id": "player_2", "side": "far", "detections": [], "last_center": None},
+        }
+
+        for det in detections:
+            side = det["side"]
+            track = tracks[side]
+            cx = (det["bbox"][0] + det["bbox"][2]) / 2
+            cy = (det["bbox"][1] + det["bbox"][3]) / 2
+
+            # Distance check: skip assignment to opposite side if within threshold
+            # (prevents brief midline crossings from flipping identity)
+            if track["last_center"] is not None:
+                last_cx, last_cy = track["last_center"]
+                dist = np.sqrt((cx - last_cx) ** 2 + (cy - last_cy) ** 2)
+                if dist > settings.track_stitch_max_dist_px:
+                    # Try the other track — it might be the correct match
+                    other_side = "far" if side == "near" else "near"
+                    other = tracks[other_side]
+                    if other["last_center"] is not None:
+                        olx, oly = other["last_center"]
+                        odist = np.sqrt((cx - olx) ** 2 + (cy - oly) ** 2)
+                        if odist <= settings.track_stitch_max_dist_px:
+                            track = other
+                            side = other_side
+
+            track["detections"].append(det)
+            track["last_center"] = (cx, cy)
+
+        total_frames = max(d["frame"] for d in detections) + 1
+
+        players_list = []
+        for side in ("near", "far"):
+            t = tracks[side]
+            dets = sorted(t["detections"], key=lambda d: d["frame"])
+            players_list.append({
+                "id": t["id"],
+                "side": side,
+                "detection_count": len(dets),
+                "is_synthetic": any(d.get("is_synthetic", False) for d in dets),
+                "detections": [
+                    {"frame": d["frame"], "bbox": d["bbox"],
+                     "confidence": d["confidence"],
+                     "is_synthetic": d.get("is_synthetic", False)}
+                    for d in dets
+                ],
+            })
+
+        return {"players": players_list, "total_frames": total_frames}
+
+    def _group_by_track_id(
+        self, detections: list[dict], court_mid_y: float
+    ) -> dict:
+        """Original grouping logic: group by track_id, up to max_players.
+
+        Used when stitching is disabled (track_stitch_enabled=False).
+        """
+        from collections import defaultdict
         track_groups = defaultdict(list)
         for det in detections:
             tid = det.get("track_id")
@@ -153,7 +234,7 @@ class PlayerTrackingStage:
             }
 
         if not players:
-            return StageResult.from_error("No player detections grouped")
+            return {"players": [], "total_frames": 0}
 
         players_data = {
             "players": [
@@ -166,12 +247,4 @@ class PlayerTrackingStage:
             ],
             "total_frames": max(d["frame"] for d in detections) + 1,
         }
-
-        has_synthetic = any(p.get("is_synthetic", False) for p in players_data["players"])
-
-        artifacts.set("players", players_data)
-
-        return StageResult.success(
-            artifacts={"players": artifacts.path("players")},
-            metadata={"player_count": len(players), "has_synthetic": has_synthetic}
-        )
+        return players_data
