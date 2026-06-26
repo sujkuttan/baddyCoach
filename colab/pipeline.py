@@ -1334,6 +1334,13 @@ def _process_batch(frames, global_indices, batch_start_offset,
     else:
         h, w = frames[0].shape[:2]
         court_mid_y = h * 0.5
+    # Persistent track centroids for joint per-frame assignment across batches
+    if not hasattr(_process_batch, "tracks"):
+        _process_batch.tracks = [
+            {"id": "player_1", "side": "near", "last_center": None},
+            {"id": "player_2", "side": "far", "last_center": None},
+        ]
+
     for local_idx, global_idx in enumerate(global_indices):
         dets = batch_det.get(local_idx, [])
         if len(dets) >= 2:
@@ -1345,8 +1352,23 @@ def _process_batch(frames, global_indices, batch_start_offset,
             else:
                 dets[0]["side"] = "far"
                 dets[1]["side"] = "near"
+            for d in dets:
+                c = np.array([(d["bbox"][0] + d["bbox"][2]) / 2, (d["bbox"][1] + d["bbox"][3]) / 2])
+                idx = 0 if d["side"] == "near" else 1
+                _process_batch.tracks[idx]["last_center"] = c
         elif len(dets) == 1:
-            dets[0]["side"] = "near" if (dets[0]["bbox"][1] + dets[0]["bbox"][3]) / 2 > court_mid_y else "far"
+            det = dets[0]
+            c = np.array([(det["bbox"][0] + det["bbox"][2]) / 2, (det["bbox"][1] + det["bbox"][3]) / 2])
+            near_track = _process_batch.tracks[0]
+            far_track = _process_batch.tracks[1]
+            if near_track["last_center"] is not None and far_track["last_center"] is not None:
+                d_near = np.linalg.norm(c - near_track["last_center"])
+                d_far = np.linalg.norm(c - far_track["last_center"])
+                det["side"] = "near" if d_near <= d_far else "far"
+            else:
+                det["side"] = "near" if c[1] > court_mid_y else "far"
+            idx = 0 if det["side"] == "near" else 1
+            _process_batch.tracks[idx]["last_center"] = c
         for d in dets:
             d["frame"] = global_idx
             all_player_detections.append(d)
