@@ -64,7 +64,7 @@ class BSTClassifier:
 
     def __init__(self, model_path: Optional[str] = None, device: str = "cuda",
                  default_seq_len: int = 30, batch_size: Optional[int] = None,
-                 temperature: Optional[float] = None):
+                 temperature: Optional[float] = None, adapt_batchnorm: bool = False):
         self.device = device
         self.model = None
         self.seq_len = default_seq_len
@@ -72,6 +72,7 @@ class BSTClassifier:
         self.classes = COACH_STROKE_CLASSES
         self.batch_size = batch_size if batch_size is not None else self._default_batch_size()
         self.temperature = temperature if temperature is not None else 1.0
+        self.adapt_batchnorm = adapt_batchnorm
 
         if model_path and Path(model_path).exists():
             self._load_model(model_path)
@@ -296,6 +297,16 @@ class BSTClassifier:
 
         import torch
 
+        # Adapt BatchNorm to input distribution when using non-bbox normalization
+        # (e.g., court-space). Uses batch statistics instead of running stats
+        # so the TCN's BatchNorm layers normalize the shifted feature distribution.
+        _bn_restore = []
+        if self.adapt_batchnorm and self.model is not None:
+            for m in self.model.modules():
+                if isinstance(m, torch.nn.BatchNorm1d):
+                    _bn_restore.append((m, m.track_running_stats))
+                    m.track_running_stats = False
+
         results = [None] * len(clips)
 
         for batch_start in range(0, len(clips), batch_size):
@@ -393,6 +404,10 @@ class BSTClassifier:
                                 "error": str(e),
                             })
                         results[batch_start + j] = (fallback, 0.5, 0)
+
+        # Restore BatchNorm running stats
+        for m, prev in _bn_restore:
+            m.track_running_stats = prev
 
         # Log class activation warning (Fix 3: detect ordering mismatch)
         if self.model is not None and hasattr(self, 'n_classes'):

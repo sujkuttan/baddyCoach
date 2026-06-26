@@ -59,6 +59,7 @@ class Settings(BaseSettings):
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
     joint_velocity_amplification: float = 0.0  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
+    bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5

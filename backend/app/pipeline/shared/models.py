@@ -320,7 +320,8 @@ def get_bst():
                 temp = None
             _models["bst"] = BSTClassifier(str(path) if path else None,
                                            device=_get_device(),
-                                           temperature=temp)
+                                           temperature=temp,
+                                           adapt_batchnorm=s.bst_adapt_batchnorm)
         except ImportError:
             logger.warning("BST not available (standalone mode)")
             return None
