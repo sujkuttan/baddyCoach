@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.config.settings import settings
 from app.pipeline.shared.shuttle_utils import clean_trajectory
@@ -144,3 +145,17 @@ def test_all_valid_no_cleaning():
         assert not np.isnan(cleaned["x"].iloc[i])
         assert not np.isnan(cleaned["y"].iloc[i])
         assert cleaned["was_interpolated"].iloc[i] == False
+
+
+def test_confidence_bump_for_interpolated_frames():
+    """Interpolated frames get confidence ≥ shuttle_min_conf so BST admits them."""
+    x = [0.0, np.nan, np.nan, 30.0]
+    y = [0.0, np.nan, np.nan, 30.0]
+    df = _make_df(x, y, conf=[0.95, 0.05, 0.05, 0.95])
+    cleaned = clean_trajectory(df, settings)
+    assert cleaned["was_interpolated"].iloc[1] == True
+    assert cleaned["was_interpolated"].iloc[2] == True
+    assert cleaned["confidence"].iloc[1] >= settings.shuttle_min_conf
+    assert cleaned["confidence"].iloc[2] >= settings.shuttle_min_conf
+    assert cleaned["confidence"].iloc[0] == pytest.approx(0.95)
+    assert cleaned["confidence"].iloc[3] == pytest.approx(0.95)

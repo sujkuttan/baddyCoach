@@ -90,6 +90,16 @@ def clean_trajectory(df: pd.DataFrame, settings) -> pd.DataFrame:
 
     was_interpolated = np.isnan(x_before_interp) & ~np.isnan(x_filled)
 
+    # Bump confidence for interpolated frames so they pass the BST
+    # confidence gate (strokes.py:136) and reach the model's shuttle channel.
+    if was_interpolated.any():
+        sentinel_conf = max(min_conf, settings.shuttle_min_conf + 0.05)
+        conf_series = df["confidence"].values.astype(np.float64)
+        conf_series[was_interpolated] = np.maximum(
+            conf_series[was_interpolated], sentinel_conf
+        )
+        df["confidence"] = conf_series
+
     x[:] = x_filled
     y[:] = y_filled
 
@@ -118,33 +128,3 @@ def clean_trajectory(df: pd.DataFrame, settings) -> pd.DataFrame:
     df["y"] = y
     df["was_interpolated"] = was_interpolated
     return df
-
-
-def log_cleaning_stats(df_orig: pd.DataFrame, df_clean: pd.DataFrame, logger) -> dict:
-    """Log and return cleaning statistics for diagnostics."""
-    stats = {}
-    n = len(df_orig)
-
-    n_spike = int((df_clean["was_interpolated"] & ~(df_orig["confidence"] < 0.30)).sum())
-    n_interp = int(df_clean["was_interpolated"].sum())
-
-    jumps_before = 0
-    x_orig = df_orig["x"].values.astype(np.float64)
-    y_orig = df_orig["y"].values.astype(np.float64)
-    for i in range(1, n):
-        d = np.sqrt((x_orig[i] - x_orig[i - 1]) ** 2 + (y_orig[i] - y_orig[i - 1]) ** 2)
-        if d > 200:
-            jumps_before += 1
-
-    logger.info(
-        "Shuttle cleaned: %d/%d confidence-gated (%.1f%%), "
-        "%d spikes removed, %d gaps filled, "
-        "%d >200px jumps → ~0",
-        int((df_orig["confidence"] < 0.30).sum()),
-        n,
-        100 * (df_orig["confidence"] < 0.30).mean(),
-        n_spike,
-        n_interp,
-        jumps_before,
-    )
-    return stats

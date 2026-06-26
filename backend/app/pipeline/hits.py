@@ -17,6 +17,12 @@ class HitFrameLocalizationStage:
         if shuttle_df is None or len(shuttle_df) == 0:
             return StageResult.from_error("Shuttle tracking data required")
 
+        # Fill NaN in x,y from trajectory cleaning: carry-forward fills gaps
+        # with zero-motion (dx=0, dy=0), avoiding NaN propagation in np.diff
+        # while producing no fake teleports or false peaks.
+        shuttle_df["x"] = shuttle_df["x"].ffill().bfill()
+        shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
+
         pose_df = artifacts.get_parquet("pose")
 
         reversal_score = self._compute_reversal(shuttle_df)
