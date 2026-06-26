@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     bst_temperature: float = 1.0  # softmax temperature; >1 = softer, <1 = sharper. 0 = use cached.
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
-    joint_velocity_amplification: float = 0.0  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
+    joint_velocity_amplification: float = 0.5  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 35  # minimum real frames per clip; short exchanges (<20) trigger unknown fallback
 
