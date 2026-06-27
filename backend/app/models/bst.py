@@ -371,7 +371,11 @@ class BSTClassifier:
         """
         batch_size = batch_size or self.batch_size
         if self.model is None:
-            return [(self._rule_based_predict(clip), 0.5, 0) for clip in clips]
+            results = [(self._rule_based_predict(clip), 0.5, 0) for clip in clips]
+            if return_probs:
+                n_classes = getattr(self, 'n_classes', 25)
+                return results, np.zeros((len(clips), n_classes))
+            return results
 
         import torch
 
