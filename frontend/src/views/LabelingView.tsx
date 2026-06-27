@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { VideoPlayer, VideoPlayerHandle } from '../components/VideoPlayer';
+import { VideoPlayer, type VideoPlayerHandle } from '../components/VideoPlayer';
 
 const COACH_CLASSES = [
   "net_shot", "block", "smash", "lift", "clear", "drive",
