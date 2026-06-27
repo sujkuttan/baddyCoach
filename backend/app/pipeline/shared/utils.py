@@ -176,7 +176,7 @@ def _find_dead_shuttle_window(
 
 
 def _winner_from_shuttle_landing(
-    shuttle_df: pd.DataFrame,
+    shuttle_raw: pd.DataFrame,
     rally_start: int,
     rally_end: int,
     court: dict | None = None,
@@ -184,17 +184,26 @@ def _winner_from_shuttle_landing(
 ) -> str | None:
     """Determine rally winner from where the shuttle landed.
 
+    Reads shuttle_raw (confidence-gated only, no interpolation/smoothing)
+    so the landing point is the real last detection, not a carried-forward fill.
     Scans the shuttle track after the last shot for a dead-shuttle window,
     then determines which side of the court the shuttle died on.
     The side the shuttle died on = the side that failed to return →
     the opponent wins.
 
+    Side determination uses two independent cues with voting:
+    1. Pixel-midline: landing y vs net y from court corners (always available)
+    2. Homography court-half: court_xy[0] vs court_length/2 (when valid)
+    If both agree → confident. If they disagree or homography is out of
+    bounds → use pixel-midline.
+
     Returns winner_player_id ("player_1" or "player_2"), or None if
     undetermined.
     """
-    segment = shuttle_df[
-        (shuttle_df["frame"] >= rally_end) &
-        (shuttle_df["frame"] <= rally_end + settings.rally_dead_frames * 3)
+    search_end_frame = rally_end + settings.rally_winner_search_frames
+    segment = shuttle_raw[
+        (shuttle_raw["frame"] >= rally_end) &
+        (shuttle_raw["frame"] <= search_end_frame)
     ].copy().sort_values("frame")
 
     if len(segment) < settings.rally_dead_frames:
@@ -204,7 +213,6 @@ def _winner_from_shuttle_landing(
     y = segment["y"].values.astype(np.float64)
     conf = segment["confidence"].values.astype(np.float64)
 
-    # Speed per frame
     dx = np.diff(x)
     dy = np.diff(y)
     speed = np.sqrt(dx * dx + dy * dy)
@@ -229,34 +237,66 @@ def _winner_from_shuttle_landing(
     if dead_start is None:
         return None
 
-    # Last valid position in the dead window
-    last_valid_idx = None
+    # Find the last HIGH-CONF point before the track dies (not the last filled NaN)
+    # Scan the dead window for the last point with confidence >= min_landing_conf
+    landing_idx = None
     search_end = min(dead_start + settings.rally_dead_frames * 2, len(segment))
-    for i in range(dead_start, search_end):
-        if not np.isnan(x[i]) and not np.isnan(y[i]):
-            last_valid_idx = i
+    for i in range(search_end - 1, dead_start - 1, -1):  # scan backwards
+        if not np.isnan(x[i]) and not np.isnan(y[i]) and conf[i] >= settings.rally_winner_min_landing_conf:
+            landing_idx = i
+            break
 
-    if last_valid_idx is None:
+    if landing_idx is None:
+        # Fall back to last non-NaN point regardless of confidence
+        for i in range(search_end - 1, dead_start - 1, -1):
+            if not np.isnan(x[i]) and not np.isnan(y[i]):
+                landing_idx = i
+                break
+
+    if landing_idx is None:
         return None
 
-    lx, ly = float(x[last_valid_idx]), float(y[last_valid_idx])
+    lx, ly = float(x[landing_idx]), float(y[landing_idx])
 
-    # Determine which side the shuttle died on
-    shuttle_on_far_side = None
+    # ── Two-cue side determination ──────────────────────────────────────
+    # Cue 1: Pixel-midline (camera-robust, always available with corners)
+    midline_cue = None
+    if court and court.get("corners_pixel"):
+        corners = court["corners_pixel"]
+        bl_y = corners[0][1]
+        tl_y = corners[2][1]
+        net_y = (tl_y + bl_y) / 2.0
+        midline_cue = ly < net_y  # True = above net line = far side
+    elif court and court.get("valid", False) and court.get("homography") is not None:
+        from .court import image_to_court
+        H = np.array(court["homography"], dtype=np.float64)
+        court_xy = image_to_court(H, (lx, ly))
+        if court_xy is not None:
+            midline_cue = court_xy[0] < settings.court_length / 2.0
+
+    # Cue 2: Homography court-half (when court is valid and point is in bounds)
+    homography_cue = None
     if court and court.get("homography") is not None and court.get("valid", False):
         from .court import image_to_court
         H = np.array(court["homography"], dtype=np.float64)
         court_xy = image_to_court(H, (lx, ly))
         if court_xy is not None:
-            shuttle_on_far_side = court_xy[0] < settings.court_length / 2.0
-    elif court and court.get("corners_pixel"):
-        corners = court["corners_pixel"]
-        bl_y = corners[0][1]
-        tl_y = corners[2][1]
-        net_y = (tl_y + bl_y) / 2.0
-        shuttle_on_far_side = ly < net_y
+            cx, cy = court_xy
+            if 0 <= cx <= settings.court_length and 0 <= cy <= settings.court_width:
+                homography_cue = cx < settings.court_length / 2.0
 
-    if shuttle_on_far_side is None:
+    # Vote: prefer agreement, otherwise trust midline
+    if midline_cue is not None and homography_cue is not None:
+        if midline_cue == homography_cue:
+            shuttle_on_far_side = midline_cue
+        else:
+            # Disagreement → trust midline (camera-robust)
+            shuttle_on_far_side = midline_cue
+    elif midline_cue is not None:
+        shuttle_on_far_side = midline_cue
+    elif homography_cue is not None:
+        shuttle_on_far_side = homography_cue
+    else:
         return None
 
     # Map side to player_id via players artifact
@@ -264,8 +304,7 @@ def _winner_from_shuttle_landing(
         for p in players["players"]:
             p_side = p.get("side", "")
             p_id = p.get("id", "")
-            # If shuttle is on the far side → far-side player lost → opponent wins
-            # If shuttle is on the near side → near-side player lost → opponent wins
+            # Shuttle on far side → far-side player lost → opponent (near player) wins
             if shuttle_on_far_side and p_side == "near":
                 return p_id
             elif not shuttle_on_far_side and p_side == "far":

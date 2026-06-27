@@ -18,7 +18,7 @@ def test_hit_detection_finds_trajectory_changes(tmp_job_dir):
         "y": y,
         "confidence": [0.95] * n,
     })
-    store.set_parquet("shuttle", shuttle_df)
+    store.set_parquet("shuttle_raw", shuttle_df)
 
     pose_df = pd.DataFrame({
         "frame": list(range(20)),

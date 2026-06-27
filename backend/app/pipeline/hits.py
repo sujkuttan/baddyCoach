@@ -9,11 +9,11 @@ from app.config.settings import settings
 
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
-    input_keys = ["shuttle", "pose"]
+    input_keys = ["shuttle_raw", "pose"]
     output_keys = ["hits"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
-        shuttle_df = artifacts.get_parquet("shuttle")
+        shuttle_df = artifacts.get_parquet("shuttle_raw")
         if shuttle_df is None or len(shuttle_df) == 0:
             return StageResult.from_error("Shuttle tracking data required")
 

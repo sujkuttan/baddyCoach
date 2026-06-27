@@ -1114,6 +1114,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             x_a = shuttle_df["x"].values.astype(np.float64)
             y_a = shuttle_df["y"].values.astype(np.float64)
             jumps_before = int((np.sqrt(np.diff(x_a) ** 2 + np.diff(y_a) ** 2) > settings.shuttle_max_jump_px).sum())
+
+            # Store raw (conf-gate only) for hit detection before full cleaning
+            df_raw = shuttle_df.copy()
+            raw_conf = df_raw["confidence"].values.astype(np.float64) < settings.shuttle_clean_min_conf
+            df_raw.loc[raw_conf, "x"] = np.nan
+            df_raw.loc[raw_conf, "y"] = np.nan
+            store.set_parquet("shuttle_raw", df_raw)
+
             df_orig = shuttle_df.copy()
             shuttle_df = clean_trajectory(shuttle_df, settings)
             n_interp = int(shuttle_df["was_interpolated"].sum())
@@ -1124,6 +1132,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             print(f"  Shuttle cleaned: {low_conf_before}/{n_before} low-conf, "
                   f"{max(0, n_spike)} spikes, {n_interp} interp, "
                   f"{jumps_before} >{settings.shuttle_max_jump_px:.0f}px jumps → ~0")
+        else:
+            store.set_parquet("shuttle_raw", shuttle_df.copy())
         store.set_parquet("shuttle", shuttle_df)
 
         pose_df = pd.DataFrame(all_pose)

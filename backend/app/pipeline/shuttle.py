@@ -22,7 +22,7 @@ def _count_big_jumps(x, y, threshold: float) -> int:
 class ShuttleTrackingStage:
     name = "shuttle_tracking"
     input_keys = []
-    output_keys = ["shuttle"]
+    output_keys = ["shuttle", "shuttle_raw"]
 
     def run(
         self,
@@ -86,6 +86,14 @@ class ShuttleTrackingStage:
             n_before = len(df)
             jumps_before = _count_big_jumps(df["x"].values, df["y"].values, settings.shuttle_max_jump_px)
             low_conf_before = int((df["confidence"] < settings.shuttle_clean_min_conf).sum())
+
+            # Store raw (conf-gate only, no spike/interp/smooth) for hit detection
+            df_raw = df.copy()
+            raw_conf = df_raw["confidence"].values.astype(np.float64) < settings.shuttle_clean_min_conf
+            df_raw.loc[raw_conf, "x"] = np.nan
+            df_raw.loc[raw_conf, "y"] = np.nan
+            artifacts.set_parquet("shuttle_raw", df_raw)
+
             df_orig = df.copy()
             df = clean_trajectory(df, settings)
             n_interp = int(df["was_interpolated"].sum())
@@ -100,13 +108,16 @@ class ShuttleTrackingStage:
                 f"{jumps_before} >{settings.shuttle_max_jump_px:.0f}px jumps → ~0"
             )
 
+        if not settings.shuttle_clean_enabled:
+            artifacts.set_parquet("shuttle_raw", df.copy())
+
         artifacts.set_parquet("shuttle", df)
 
         avg_conf = df["confidence"].mean()
         logger.info(f"Stored {len(df)} shuttle tracking rows (avg_conf={avg_conf:.2f})")
 
         return StageResult.success(
-            artifacts={"shuttle": artifacts.path("shuttle")},
+            artifacts={"shuttle": artifacts.path("shuttle"), "shuttle_raw": artifacts.path("shuttle_raw")},
             metadata={
                 "total_frames": len(df),
                 "avg_confidence": float(avg_conf),
