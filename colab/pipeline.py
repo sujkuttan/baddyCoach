@@ -855,6 +855,10 @@ def _generate_report(court, players_data, shots, rallies, coach,
             entry["side"] = s["side"]
         if "logits" in s:
             entry["logits"] = s["logits"]
+        if "stroke_source" in s:
+            entry["stroke_source"] = s["stroke_source"]
+        if "shuttleset_class_id" in s:
+            entry["shuttleset_class_id"] = s["shuttleset_class_id"]
         shots_with_ts.append(entry)
 
     return {

@@ -35,10 +35,11 @@ interface LabelingViewProps {
   videoUrl?: string | null;
   jobId?: string | null;
   fps?: number;
+  labelPreRoll?: number;
   onBack: () => void;
 }
 
-export function LabelingView({ shots, videoUrl, jobId, fps = 30, onBack }: LabelingViewProps) {
+export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 0.7, onBack }: LabelingViewProps) {
   const videoRef = useRef<VideoPlayerHandle>(null);
   const tableRef = useRef<HTMLDivElement>(null);
 
@@ -86,10 +87,10 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, onBack }: Label
 
   const playSegment = useCallback(() => {
     if (!current) return;
-    const start = Math.max(0, current.start_ts - 0.7);
+    const start = Math.max(0, current.start_ts - labelPreRoll);
     const end = current.ts_end || current.start_ts + 1.0;
     videoRef.current?.playSegment(start, end, true);
-  }, [current]);
+  }, [current, labelPreRoll]);
 
   const handleKeyDown = useCallback((e: KeyboardEvent) => {
     if (!current) return;
@@ -140,10 +141,10 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, onBack }: Label
 
   useEffect(() => {
     if (current) {
-      const t = Math.max(0, current.start_ts - 0.7);
+      const t = Math.max(0, current.start_ts - labelPreRoll);
       videoRef.current?.seekTo(t);
     }
-  }, [current]);
+  }, [current, labelPreRoll]);
 
   const exportCsv = useCallback(() => {
     const rows = [["shot_id", "frame", "ts_start", "ts_end", "player_id", "side",
@@ -156,7 +157,7 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, onBack }: Label
         ? mapToClassId(true_stroke, s.side) : "";
       rows.push([
         s.shot_id, s.frame,
-        (Math.max(0, s.start_ts - 0.7)).toFixed(3),
+        (Math.max(0, s.start_ts - labelPreRoll)).toFixed(3),
         (s.ts_end || s.start_ts + 1.0).toFixed(3),
         s.player_id || "", s.side || "",
         s.stroke_type, s.shuttleset_class_id || 0,
