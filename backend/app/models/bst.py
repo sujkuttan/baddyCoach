@@ -348,7 +348,8 @@ class BSTClassifier:
             return 1.0
 
     def predict_from_clips(self, clips: list, batch_size: Optional[int] = None,
-                           debug_collector: Optional[list] = None) -> list:
+                           debug_collector: Optional[list] = None,
+                           return_probs: bool = False) -> list:
         """Predict stroke types from prepared BST clips.
 
         Two-pass design for prior correction:
@@ -361,9 +362,12 @@ class BSTClassifier:
                        Defaults to self.batch_size (auto-detected from GPU VRAM).
             debug_collector: If provided, append per-shot debug dicts with
                              full softmax distribution and feature stats.
+            return_probs: If True, also return corrected probability matrix
+                          of shape (n_clips, n_classes) for downstream ensemble.
 
         Returns:
-            List of (stroke_type, confidence, raw_class_id) tuples
+            List of (stroke_type, confidence, raw_class_id) tuples.
+            If return_probs=True, returns (results, probs_matrix).
         """
         batch_size = batch_size or self.batch_size
         if self.model is None:
@@ -424,7 +428,9 @@ class BSTClassifier:
             corrected = None
 
         # ── Pass 2: argmax / softmax / second-best / fallback ─────────
+        n_classes = getattr(self, 'n_classes', 25)
         results = [None] * n_clips
+        probs_list = [None] * n_clips  # for return_probs
         corr_idx = 0
         for i in range(n_clips):
             if not valid_mask[i]:
@@ -437,6 +443,7 @@ class BSTClassifier:
                         "fallback_stroke_type": fallback,
                     })
                 results[i] = (fallback, 0.5, 0)
+                probs_list[i] = np.zeros(n_classes)
                 continue
 
             logits_np = corrected[corr_idx] if corrected is not None else raw_logits_list[i]
@@ -444,6 +451,8 @@ class BSTClassifier:
 
             probs = np.exp(logits_np / self.temperature)
             probs = probs / probs.sum()
+
+            probs_list[i] = probs
 
             pred_idx = int(np.argmax(probs))
             confidence = float(probs[pred_idx])
@@ -517,6 +526,9 @@ class BSTClassifier:
                     sorted(never_activated),
                 )
 
+        if return_probs:
+            probs_matrix = np.stack([p if p is not None else np.zeros(n_classes) for p in probs_list])
+            return results, probs_matrix
         return results
 
     def predict_single(self, clip: dict) -> tuple:

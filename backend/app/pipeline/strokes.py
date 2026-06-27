@@ -6,6 +6,8 @@ from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
 from app.pipeline.shared.bst_preproc import normalize_joints, normalize_joints_court, create_bones, BONE_PAIRS
+from app.pipeline.shared.physics import apply_physics_ensemble
+from app.models.bst import COACH_STROKE_CLASSES
 
 
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
@@ -325,9 +327,10 @@ class StrokeClassificationStage:
 
         # Collect debug info if debug_level >= 1
         bst_debug_collector = [] if debug_level >= 1 else None
-        all_results = classifier.predict_from_clips(
+        all_results, probs_matrix = classifier.predict_from_clips(
             all_clips, batch_size=batch_size,
             debug_collector=bst_debug_collector,
+            return_probs=True,
         )
 
         if bst_debug_collector is not None and len(bst_debug_collector) > 0:
@@ -397,6 +400,19 @@ class StrokeClassificationStage:
                 "stroke_confidence": confidence,
             })
 
+        # Phase 3b: physics-consistency gate + BST × physics ensemble
+        shuttle_raw = artifacts.get_parquet("shuttle_raw")
+        pose_df_physics = pose_df
+        fps = float(config.processing_fps or settings.fps)
+
+        # Build 25-class name list matching predict_from_clips output ordering
+        physics_classes = ["unknown"] + COACH_STROKE_CLASSES + COACH_STROKE_CLASSES
+
+        shots = apply_physics_ensemble(
+            shots, probs_matrix, physics_classes,
+            shuttle_raw, pose_df_physics, court, fps, vid_w, vid_h,
+        )
+
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions
         # (even low-confidence) are preserved to avoid rule-based bias from
@@ -417,8 +433,6 @@ class StrokeClassificationStage:
                     if majority != stype and count >= settings.stroke_smoothing_majority_count:
                         shots[i]["stroke_type"] = majority
                         shots[i]["stroke_confidence"] = 0.3
-
-        fps = float(config.processing_fps or settings.fps)
 
         # Temporal dedup: merge consecutive shots within 0.2s that share the
         # same stroke type. When the same hit is detected at multiple nearby

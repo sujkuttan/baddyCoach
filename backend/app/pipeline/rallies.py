@@ -6,6 +6,7 @@ from app.pipeline.shared.utils import (
     _infer_end_reason, _is_rally_ending_shot,
     _find_dead_shuttle_window, _winner_from_shuttle_landing,
 )
+from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
 

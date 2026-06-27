@@ -108,6 +108,20 @@ class Settings(BaseSettings):
     quality_min_stroke_conf: float = 0.30  # below this → penalized + distrusted
     model_max_missing_frac: float = 0.05
 
+    # Physics consistency gate (Spec 6)
+    physics_gate_enabled: bool = True
+    physics_window_frames: int = 12       # post-contact analysis window (~0.4s @30fps)
+    physics_min_valid: int = 4            # min real shuttle points in window to use physics
+    physics_quality_min: float = 0.35     # below this, defer entirely to BST
+    physics_speed_fast_mps: float = 8.0   # court-space speed thresholds (homography valid)
+    physics_speed_slow_mps: float = 3.0
+    physics_speed_fast_norm: float = 0.020  # normalized-frame/s fallback (no homography)
+    physics_speed_slow_norm: float = 0.008
+    physics_zone_front: float = 0.33      # court_x fraction: front court
+    physics_zone_back: float = 0.66
+    physics_cross_court_dx: float = 0.30  # normalized lateral travel for cross_court cue
+    physics_agree_boost: float = 0.5      # confidence boost weight when BST & physics agree
+
     # Shot context / pressure
     pressure_time_s: float = 0.9
     pressure_dist_m: float = 2.5
