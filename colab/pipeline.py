@@ -1272,11 +1272,13 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                               tactical, fitness, footwork, technical, court_analytics,
                               fps=video_fps, data_quality=data_quality)
 
+    from app.report.generator import _clean_nan
+    report = _clean_nan(report)
     output = Path(output_path)
     output.write_text(json.dumps(report, indent=2, default=str))
 
     # Export stroke_map.json for UI
-    stroke_map = {
+    stroke_map = _clean_nan({
         "fps": video_fps,
         "duration_seconds": duration,
         "strokes": [
@@ -1285,7 +1287,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
              "player_id": s.get("player_id", "player_1"), "rally_id": s.get("rally_id")}
             for s in shots
         ],
-    }
+    })
     (output.parent / "stroke_map.json").write_text(json.dumps(stroke_map, indent=2))
 
     elapsed = time.time() - start_time

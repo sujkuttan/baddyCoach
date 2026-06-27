@@ -1,10 +1,28 @@
 import json
 from pathlib import Path
 from typing import Any
+import numpy as np
 
 import pandas as pd
 
 from app.storage.artifacts import ArtifactStore
+
+
+def _clean_nan(obj: Any) -> Any:
+    """Recursively replace NaN/Infinity with None for JSON safety."""
+    if isinstance(obj, dict):
+        return {k: _clean_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_clean_nan(v) for v in obj]
+    if isinstance(obj, float):
+        if np.isnan(obj) or np.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, np.floating):
+        if np.isnan(obj) or np.isinf(obj):
+            return None
+        return float(obj)
+    return obj
 
 
 def _assign_rally_ids(shots_df: pd.DataFrame, rallies_df: pd.DataFrame) -> pd.DataFrame:
@@ -75,7 +93,7 @@ class ReportGenerator:
             report["shot_count"] = len(shots_df)
 
         report_path = job_dir / "report.json"
-        report_path.write_text(json.dumps(report, indent=2, default=str))
+        report_path.write_text(json.dumps(_clean_nan(report), indent=2, default=str))
 
         return report
 
