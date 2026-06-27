@@ -315,8 +315,8 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
                       try {
                         const text = await f.text();
                         setStagedReport(JSON.parse(text));
-                      } catch {
-                        setError('Invalid report file');
+                      } catch (e: any) {
+                        setError(`Invalid report file: ${e.message || e}`);
                       }
                     }}
                   />
