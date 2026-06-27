@@ -287,6 +287,12 @@ def test_consistent_clear_neither():
     assert consistent("clear", feats) is False
 
 
+def test_consistent_clear_both_missing():
+    """Clear passes when both OR-cues are missing — never veto on no data."""
+    feats = Features(speed_mps=5.0, contact="overhead", depth=None, arc_rise_fall=None)
+    assert consistent("clear", feats) is True
+
+
 # ── best_consistent_class ───────────────────────────────────────
 
 

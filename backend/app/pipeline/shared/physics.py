@@ -347,8 +347,9 @@ def consistent(bst_stroke: str, feats: Features) -> bool:
         if ok is False:
             return False
     if or_groups:
-        any_or_ok = any(_check_condition(c.lstrip("|"), feats) for c in or_groups)
-        if not any_or_ok:
+        checks = [_check_condition(c.lstrip("|"), feats) for c in or_groups]
+        usable = [c for c in checks if c is not None]
+        if usable and not any(usable):
             return False
     return True
 
@@ -396,8 +397,9 @@ def classify_physics(feats: Features) -> tuple:
         if not all_pass:
             continue
         if or_groups:
-            or_pass = any(_check_condition(c.lstrip("|"), feats) for c in or_groups)
-            if not or_pass:
+            checks = [_check_condition(c.lstrip("|"), feats) for c in or_groups]
+            usable = [c for c in checks if c is not None]
+            if usable and not any(usable):
                 continue
             margins.append(1.0)  # one point for the OR-group
         if margins:
