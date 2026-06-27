@@ -325,8 +325,9 @@ class StrokeClassificationStage:
         batch_size = config.extra.get("bst_batch", 32)
         debug_level = config.debug_level
 
-        # Collect debug info if debug_level >= 1
-        bst_debug_collector = [] if debug_level >= 1 else None
+        # Collect debug info for logits (needed for calibration) when requested
+        collect_debug = debug_level >= 1 or settings.report_include_logits
+        bst_debug_collector = [] if collect_debug else None
         all_results, probs_matrix = classifier.predict_from_clips(
             all_clips, batch_size=batch_size,
             debug_collector=bst_debug_collector,
@@ -354,6 +355,11 @@ class StrokeClassificationStage:
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
+
+            if settings.report_include_logits and bst_debug_collector is not None and i < len(bst_debug_collector):
+                logits_str = bst_debug_collector[i].get("logits_all")
+                if logits_str:
+                    shot["logits"] = logits_str
 
             # Add clip debug info (level 1+)
             if debug_level >= 1 and i < len(all_clips):
@@ -461,6 +467,14 @@ class StrokeClassificationStage:
         for i, s in enumerate(shots):
             s["shot_id"] = i + 1
             s["start_ts"] = round(s["frame"] / fps, 3)
+
+        # Compute ts_end for each shot: next shot's start_ts, or last shot gets +1s window
+        for i, s in enumerate(shots):
+            if i < len(shots) - 1:
+                s["ts_end"] = shots[i + 1]["start_ts"]
+            else:
+                clip_end = s.get("clip_frame_end", s["frame"] + fps)
+                s["ts_end"] = round(clip_end / fps, 3)
 
         shots_df = pd.DataFrame(shots)
         artifacts.set_parquet("shots", shots_df)

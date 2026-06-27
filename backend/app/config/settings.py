@@ -108,6 +108,10 @@ class Settings(BaseSettings):
     quality_min_stroke_conf: float = 0.30  # below this → penalized + distrusted
     model_max_missing_frac: float = 0.05
 
+    # Report / labeling
+    report_include_logits: bool = True   # embed per-shot 25-logits for label-driven calibration
+    label_pre_roll_s: float = 0.7        # seconds before the hit for ts_start
+
     # Physics consistency gate (Spec 6)
     physics_gate_enabled: bool = True
     physics_window_frames: int = 12       # post-contact analysis window (~0.4s @30fps)

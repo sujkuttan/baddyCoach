@@ -95,6 +95,7 @@ class PlayerAttributionStage:
                 for p in players_data.get("players", []):
                     if p.get("side") == player_side:
                         shots_df.at[idx, "player_id"] = p["id"]
+                        shots_df.at[idx, "side"] = player_side
                         if config.debug_level >= 1:
                             shots_df.at[idx, "attribution_tier"] = "bst_side"
                         break
@@ -155,6 +156,13 @@ class PlayerAttributionStage:
             shots_df.loc[unassigned, "player_id"] = assigned
             if config.debug_level >= 1:
                 shots_df.loc[unassigned, "attribution_tier"] = "final_fallback"
+
+        # Derive side from player_id for all shots
+        _side_lookup = {}
+        for _p in players_data.get("players", []):
+            _side_lookup[_p["id"]] = _p.get("side", "near")
+        if "side" not in shots_df.columns:
+            shots_df["side"] = shots_df["player_id"].map(_side_lookup).fillna("near")
 
         if config.debug_level >= 1:
             tier_counts = shots_df["attribution_tier"].value_counts().to_dict()

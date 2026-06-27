@@ -32,6 +32,7 @@ const RALLY_COLORS = [
 
 export type VideoPlayerHandle = {
   seekTo: (time: number) => void;
+  playSegment: (start: number, end: number, loop?: boolean) => void;
 };
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, videoUrl, rallies = [], strokes = [], fps = 30 }, ref) {
@@ -79,6 +80,23 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
     seekTo: (time: number) => {
       const el = videoElRef.current;
       if (el) el.currentTime = time;
+    },
+    playSegment: (start: number, end: number, loop: boolean = true) => {
+      const el = videoElRef.current;
+      if (!el) return;
+      el.currentTime = start;
+      el.play();
+      const onTime = () => {
+        if (el.currentTime >= end) {
+          if (loop) {
+            el.currentTime = start;
+          } else {
+            el.pause();
+            el.removeEventListener('timeupdate', onTime);
+          }
+        }
+      };
+      el.addEventListener('timeupdate', onTime);
     },
   }), []);
 

@@ -192,20 +192,13 @@ class BSTClassifier:
     def _load_temperature(self):
         """Load cached temperature, unless overridden by constructor param.
 
-        NOTE: The cached temperature (T=1.4224 as of 2025-06-26) was computed
-        from 12-class calibration data with broken InpaintNet features. After
-        the InpaintNet/homography fix, features are in proper court-space and
-        the logit distribution has changed significantly. Re-run calibration:
+        Calibration is now exclusively via scripts/calibrate_bst.py
+        with ground-truth labels from the labeling UI. The degenerate
+        self-label path (fitting T against pred_class_id) has been
+        retired — it drives T→0 and measures nothing.
 
-            python -c "
-            import json, pandas as pd, numpy as np
-            from app.models.bst import BSTClassifier
-            df = pd.read_parquet('results/mmpose_results/debug/debug_bst_outputs.parquet')
-            logits = np.array([json.loads(s) for s in df['logits_all']])
-            labels = df['pred_class_id'].values
-            T = BSTClassifier.compute_optimal_temperature(logits, labels)
-            BSTClassifier._save_temperature(T)
-            "
+        See _load_temperature docstring for the old auto-fit recipe
+        (removed 2025-06-27).
         """
         if self.temperature != 1.0:
             return

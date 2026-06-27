@@ -837,7 +837,7 @@ def _generate_report(court, players_data, shots, rallies, coach,
 
     shots_with_ts = []
     for shot_idx, s in enumerate(shots, 1):
-        shots_with_ts.append({
+        entry = {
             "shot_id": shot_idx,
             "frame": s["frame"],
             "start_ts": round(s["frame"] / fps, 3),
@@ -845,7 +845,17 @@ def _generate_report(court, players_data, shots, rallies, coach,
             "confidence": round(s.get("stroke_confidence", 0.5), 3),
             "player_id": s.get("player_id", "player_1"),
             "rally_id": s.get("rally_id"),
-        })
+        }
+        # ts_end: next shot's start_ts, or +1s for last shot
+        if shot_idx < len(shots):
+            entry["ts_end"] = round(shots[shot_idx]["frame"] / fps, 3)
+        else:
+            entry["ts_end"] = round(s["frame"] / fps + 1.0, 3)
+        if "side" in s:
+            entry["side"] = s["side"]
+        if "logits" in s:
+            entry["logits"] = s["logits"]
+        shots_with_ts.append(entry)
 
     return {
         "court_analytics": court_analytics, "footwork": footwork, "fitness": fitness,
