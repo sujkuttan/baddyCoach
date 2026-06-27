@@ -16,17 +16,18 @@ from app.pipeline.shared.physics import (
 from app.config.settings import settings
 
 
-# Approximate court homography for a 1920×1080 overhead view:
-#   pixel corners [bl, br, tl, tr] ≈ [(300,950), (1620,950), (300,130), (1620,130)]
+# Realistic broadcast-view trapezoid: bottom wider than top.
+#   pixel corners [bl, br, tl, tr] ≈ [(200,950), (1720,950), (450,130), (1470,130)]
+#   ratio top/bottom = 1020/1520 ≈ 0.67 → passes geometry reliability gate (≤0.92)
 #   → court metres [bl=(0,6.1), br=(13.4,6.1), tl=(0,0), tr=(13.4,0)]
 import cv2
-_H_src = np.array([[300, 950], [1620, 950], [300, 130], [1620, 130]], dtype=np.float64)
+_H_src = np.array([[200, 950], [1720, 950], [450, 130], [1470, 130]], dtype=np.float64)
 _H_dst = np.array([[0, 6.1], [13.4, 6.1], [0, 0], [13.4, 0]], dtype=np.float64)
 _COURT_H, _ = cv2.findHomography(_H_src, _H_dst)
 
 COURT = {
     "homography": _COURT_H.tolist() if _COURT_H is not None else None,
-    "corners_pixel": [[300, 950], [1620, 950], [300, 130], [1620, 130]],
+    "corners_pixel": [[200, 950], [1720, 950], [450, 130], [1470, 130]],
     "valid": True,
 }
 
@@ -405,8 +406,9 @@ def test_ensemble_veto_impossible():
     result = apply_physics_ensemble(
         shots, probs, CLASSES_25, shuttle, pose, COURT, 30, 1920, 1080,
     )
-    assert result[0]["stroke_source"] == "physics_override"
-    assert result[0]["stroke_type"] == "lift"  # physics-consistent alternative
+    # Single-shot test: 1/1 = 100% override rate → override guard reverts
+    assert result[0]["stroke_source"] == "bst_gate_distrusted"
+    assert result[0]["stroke_type"] == "smash"  # reverted to original BST
 
 
 def test_ensemble_no_physics_data():

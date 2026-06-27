@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config.settings import settings
-from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court
+from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, court_geometry_reliable
 from app.pipeline.shared.logging import logger
 
 
@@ -64,6 +64,10 @@ class Features:
 def court_speed_mps(seg_x, seg_y, court, fps) -> Optional[float]:
     """Compute shuttle speed in m/s via homography projection."""
     if not court or not court.get("homography") or not court.get("valid", False):
+        return None
+    # Gate on court geometry reliability: rectangular corner detections
+    # produce degenerate homographies and garbage court-space measurements
+    if not court_geometry_reliable(court.get("corners_pixel")):
         return None
     H = np.array(court["homography"], dtype=np.float64)
     if len(seg_x) < 2:
@@ -240,11 +244,12 @@ def extract_physics_features(
     # Hitter zone from court position (via homography)
     zone = None
     if court and court.get("homography") and court.get("valid", False):
-        H = np.array(court["homography"], dtype=np.float64)
-        pos = image_to_court(H, (float(seg_x[0]), float(seg_y[0])))
-        if pos is not None:
-            cx = pos[0] / settings.court_length
-            zone = court_zone(cx)
+        if court_geometry_reliable(court.get("corners_pixel")):
+            H = np.array(court["homography"], dtype=np.float64)
+            pos = image_to_court(H, (float(seg_x[0]), float(seg_y[0])))
+            if pos is not None:
+                cx = pos[0] / settings.court_length
+                zone = court_zone(cx)
 
     # Landing depth
     depth = landing_depth(dx_total, zone)
@@ -450,6 +455,7 @@ def apply_physics_ensemble(
     agree_count = 0
     bst_count = 0
     no_physics_count = 0
+    override_indices = []  # track which shots were overridden for sanity guard
 
     for i, shot in enumerate(shot_records):
         f = int(shot["frame"])
@@ -505,7 +511,9 @@ def apply_physics_ensemble(
                 shot["stroke_type"] = phys_stroke if phys_stroke != "unknown" else bst_stroke
             shot["stroke_confidence"] = min(c_bst, c_p) if c_p > 0 else c_bst
             shot["stroke_source"] = "physics_override"
+            shot["bst_stroke_before_override"] = stroke_before
             override_count += 1
+            override_indices.append(i)
             logger.info(
                 "physics veto", frame=f, before=stroke_before, after=shot["stroke_type"], family=fam or "?",
             )
@@ -516,5 +524,23 @@ def apply_physics_ensemble(
         total=total, agree=agree_count, bst=bst_count,
         veto=override_count, fallback=fallback_count, no_physics=no_physics_count,
     )
+
+    # Override-rate sanity guard: if physics overrides more than
+    # max_override_frac of shots, the gate is more likely broken than
+    # insightful. Revert all overrides and tag.
+    if total > 0 and override_count / total > settings.physics_max_override_frac:
+        frac_pct = override_count / total * 100
+        max_pct = settings.physics_max_override_frac * 100
+        logger.warning(
+            f"Physics override rate {frac_pct:.1f}% exceeds {max_pct:.0f}% — "
+            f"gate distrusted, reverting {len(override_indices)} overrides to BST",
+        )
+        for i in override_indices:
+            s = shot_records[i]
+            original = s.get("bst_stroke_before_override")
+            if original is not None:
+                s["stroke_type"] = original
+            s["stroke_source"] = "bst_gate_distrusted"
+            s.pop("bst_stroke_before_override", None)
 
     return shot_records

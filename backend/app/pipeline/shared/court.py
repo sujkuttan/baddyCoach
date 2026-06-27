@@ -155,6 +155,33 @@ def _validate_court_geometry(corners_px):
     return True
 
 
+def court_geometry_reliable(corners_px, max_trapezoid_ratio=None):
+    """Check if the detected court corners form a true trapezoid (telecast/broadcast
+    perspective) vs a rectangle (degenerate — camera looking straight down or
+    corner detection fallback).
+
+    A valid perspective view has a narrower top edge than bottom edge.
+    Ratio = top_width / bottom_width.  When ratio > max_trapezoid_ratio,
+    the quadrilateral is too close to rectangular to trust homography-based
+    court-space measurements.
+
+    Returns True if reliable (ratio <= threshold), False if degenerate.
+    """
+    from app.config.settings import settings
+    if max_trapezoid_ratio is None:
+        max_trapezoid_ratio = settings.geometry_max_trapezoid_ratio
+    if corners_px is None or len(corners_px) < 4:
+        return False
+    pts = np.array(corners_px, dtype=np.float64)
+    bl, br, tl, tr = pts[0], pts[1], pts[2], pts[3]
+    top_width = np.linalg.norm(tr - tl)
+    bottom_width = np.linalg.norm(br - bl)
+    if bottom_width < 1.0:
+        return False
+    ratio = top_width / bottom_width
+    return ratio <= max_trapezoid_ratio
+
+
 def image_to_court(H, uv):
     """Project a single image point (u, v) to court metres (x, y)."""
     pt = np.array([[uv]], dtype=np.float64)

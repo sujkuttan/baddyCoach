@@ -6,6 +6,7 @@ from app.pipeline import (
     RallySegmentationStage, _is_rally_ending_shot, _infer_end_reason,
     _find_dead_shuttle_window, _winner_from_shuttle_landing,
 )
+from app.pipeline.rallies import finalize_rally_outcomes
 
 
 @pytest.fixture
@@ -309,6 +310,10 @@ def test_winner_attribution_gate(tmp_job_dir):
 
     assert result.status == "success"
     rallies_df = store.get_parquet("rallies")
+    shots_df = store.get_parquet("shots")
+    # Finalize outcomes now that player_id is set on shots
+    rallies_df = finalize_rally_outcomes(rallies_df, shots_df)
+    store.set_parquet("rallies", rallies_df)
     # First rally: last shot is smash (conf 0.8) → end_reason = winner → player_2 wins
     assert len(rallies_df) >= 1
     assert rallies_df.iloc[0]["winner_player_id"] == "player_2"
@@ -336,6 +341,8 @@ def test_serve_attribution(tmp_job_dir):
 
     assert result.status == "success"
     rallies_df = store.get_parquet("rallies")
+    shots_df = store.get_parquet("shots")
+    rallies_df = finalize_rally_outcomes(rallies_df, shots_df)
     assert len(rallies_df) >= 2
     # Rally 1: first shot player_1 serves
     assert rallies_df.iloc[0]["serving_player_id"] == "player_1"
@@ -370,6 +377,8 @@ def test_winner_consistent_with_end_reason(tmp_job_dir):
 
     assert result.status == "success"
     rallies_df = store.get_parquet("rallies")
+    shots_df = store.get_parquet("shots")
+    rallies_df = finalize_rally_outcomes(rallies_df, shots_df)
     assert len(rallies_df) >= 3
 
     # Rally 1: smash winner → last hitter (player_1) wins
@@ -383,4 +392,50 @@ def test_winner_consistent_with_end_reason(tmp_job_dir):
     # Rally 3: low-conf clear → unforced_error → opponent (player_2) wins
     assert rallies_df.iloc[2]["end_reason"] == "unforced_error"
     assert rallies_df.iloc[2]["winner_player_id"] == "player_2"
+
+
+def test_ordering_segment_then_finalize(tmp_job_dir):
+    """Confirm that RallySegmentationStage produces rallies without serve/winner,
+    and finalize_rally_outcomes fills them in only after attribution.
+
+    Regression test for the double-compute bug in attribution.py:194-200
+    where compute_rally_winner_after_attribution was called with too few
+    args, overwriting valid winners with None.
+    """
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    shots_no_attribution = pd.DataFrame({
+        "frame": [0, 10, 20, 100, 110, 120],
+        "stroke_type": ["serve", "clear", "smash", "serve", "clear", "clear"],
+        "stroke_confidence": [0.9, 0.7, 0.8, 0.9, 0.7, 0.2],  # last shot low-conf → unforced_error
+    })
+    store.set_parquet("shots", shots_no_attribution)
+
+    # Phase 1: segmentation without attribution
+    result = RallySegmentationStage().run(store, config, gap_threshold=60)
+    assert result.status == "success"
+    rallies_df = store.get_parquet("rallies")
+    shots_df = store.get_parquet("shots")
+
+    # Pre-attribution: serve/winner should NOT be set
+    assert "serving_player_id" not in rallies_df.columns or rallies_df["serving_player_id"].isna().all()
+    assert "winner_player_id" not in rallies_df.columns or rallies_df["winner_player_id"].isna().all()
+
+    # Phase 2: add player attribution (simulated — attribution hasn't run here)
+    shots_df["player_id"] = ["player_1", "player_2", "player_1",
+                             "player_2", "player_1", "player_2"]
+
+    # Phase 3: finalize outcomes
+    rallies_final = finalize_rally_outcomes(rallies_df, shots_df)
+
+    # Post-attribution: serve/winner should be set
+    assert rallies_final.iloc[0]["serving_player_id"] == "player_1"
+    # Rally 1: last shot is smash (conf 0.8) → winner → player_1 (hitter) wins
+    assert rallies_final.iloc[0]["end_reason"] == "winner"
+    assert rallies_final.iloc[0]["winner_player_id"] == "player_1"
+
+    # Rally 2: last shot is clear (conf 0.2) → unforced_error → opponent (player_1) wins
+    assert rallies_final.iloc[1]["end_reason"] == "unforced_error"
+    assert rallies_final.iloc[1]["winner_player_id"] == "player_1"
 

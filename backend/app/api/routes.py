@@ -31,6 +31,7 @@ def run_pipeline(job_id: str):
     from fastapi.responses import Response
     from app.api.websocket import ws_manager
     from app.pipeline.shared.utils import get_video_info
+    from app.pipeline.rallies import finalize_rally_outcomes
 
     job = job_manager.get_job(job_id)
     if not job:
@@ -81,6 +82,21 @@ def run_pipeline(job_id: str):
     manual_corners = job.get("manual_corners")
     court_kwargs = {"frame": court_frame} if manual_corners is None else {"corners": manual_corners}
 
+    def _run_rally_finalization(store, config):
+        rallies_df = store.get("rallies")
+        shots_df = store.get("shots")
+        shuttle_df = store.get("shuttle")
+        court = store.get("court")
+        players = store.get("players")
+        if rallies_df is None or len(rallies_df) == 0:
+            return StageResult.success(artifacts={})
+        rallies_df = finalize_rally_outcomes(
+            rallies_df, shots_df, shuttle_raw=shuttle_df,
+            court=court, players=players, fps=config.processing_fps or 30.0,
+        )
+        store.set_parquet("rallies", rallies_df)
+        return StageResult.success(artifacts={"rallies": store.path("rallies")})
+
     stages = [
         ("court_detection", lambda: CourtDetectionStage().run(store, config, **court_kwargs)),
         ("player_tracking", lambda: PlayerTrackingStage().run(store, config, frames=frames if frames else None)),
@@ -90,6 +106,7 @@ def run_pipeline(job_id: str):
         ("stroke_classification", lambda: StrokeClassificationStage().run(store, config)),
         ("rally_segmentation", lambda: RallySegmentationStage().run(store, config)),
         ("player_attribution", lambda: PlayerAttributionStage().run(store, config)),
+        ("rally_finalization", lambda: _run_rally_finalization(store, config)),
         ("shot_context", lambda: ShotContextStage().run(store, config)),
         ("court_position_analytics", lambda: CourtPositionAnalyticsStage().run(store, config)),
         ("footwork_analytics", lambda: FootworkAnalyticsStage().run(store, config)),

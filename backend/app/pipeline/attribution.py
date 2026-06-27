@@ -191,14 +191,6 @@ class PlayerAttributionStage:
 
         artifacts.set_parquet("shots", shots_df)
 
-        # Re-compute rally winners now that player attribution is complete
-        if rallies_df is not None and len(rallies_df) > 0:
-            from app.pipeline.rallies import _compute_rally_winner_after_attribution
-            for idx, rally in rallies_df.iterrows():
-                winner = _compute_rally_winner_after_attribution(rally, shots_df, shuttle_df)
-                rallies_df.at[idx, "winner_player_id"] = winner
-            artifacts.set_parquet("rallies", rallies_df)
-
         counts = shots_df["player_id"].value_counts().to_dict()
         return StageResult.success(
             artifacts={"shots": artifacts.path("shots"), "rallies": artifacts.path("rallies")},

@@ -242,7 +242,7 @@ python -m pytest -m "not gpu and not model"
 
 ### ✅ Rally Winner Threshold (Fixed — 2025-06-25)
 - **Was:** `_infer_end_reason` required conf ≥ 0.5 for "winner"; max BST conf 0.633 → 13/14 rallies ended in "unforced_error"
-- **Fix:** Lowered winner threshold to 0.3; added speed-based winner detection (smash > 8 m/s = winner); `_compute_rally_winner_after_attribution` passes shuttle speed to `_infer_end_reason`
+- **Fix:** Lowered winner threshold to 0.3; added speed-based winner detection (smash > 8 m/s = winner); passed shuttle speed to `_infer_end_reason`
 
 ### ✅ Re-run Validation (2025-06-25, new 5-min video with fixes)
 - **Bbox interpolation (Fix 2) is the single biggest win:** missing bbox 199→0 per clip; player balance 27%/73%→50%/50%; player_1 BST coverage 22%→69%
