@@ -10,6 +10,8 @@ import numpy as np
 from pathlib import Path
 from typing import Optional
 
+from app.config.settings import settings
+
 logger = logging.getLogger("bst")
 
 
@@ -222,6 +224,74 @@ class BSTClassifier:
                 logger.warning("Could not load cached temperature: %s", e)
 
     @staticmethod
+    def _load_logit_bias(n_classes: int) -> Optional[np.ndarray]:
+        """Load precomputed per-class logit bias from JSON, mean-centered.
+
+        Uses settings.bst_logit_bias_path. Returns a (n_classes,) bias
+        vector (mean-centered), or None if the file doesn't exist or
+        has wrong shape.
+        """
+        path = settings.bst_logit_bias_path
+        if path is None or not path.exists():
+            return None
+        try:
+            with open(path) as f:
+                data = json.load(f)
+            bias = np.array(data["bias"], dtype=np.float64)
+            if bias.shape != (n_classes,):
+                logger.warning(
+                    "BST logit bias shape mismatch: got %s, expected (%d,). Ignoring.",
+                    bias.shape, n_classes,
+                )
+                return None
+            n_clips = data.get("n_clips", "?")
+            source = data.get("source", "?")
+            logger.info("Loaded BST logit bias (%d clips, source=%s)", n_clips, source)
+            return bias - bias.mean()  # mean-center so overall logit scale is preserved
+        except Exception as e:
+            logger.warning("Could not load BST logit bias: %s", e)
+            return None
+
+    def _apply_prior_correction(self, logits: np.ndarray) -> np.ndarray:
+        """Remove constant per-class logit bias from all clips.
+
+        Two strategies (in priority order):
+        1. Precomputed bias file → use it.
+        2. Self-calibrate from current run if enough clips.
+
+        Returns corrected logits (same shape). When neither applies,
+        returns logits unchanged.
+        """
+        if not settings.bst_prior_correction_enabled:
+            return logits
+
+        n_classes = logits.shape[1]
+        bias = self._load_logit_bias(n_classes)
+
+        if bias is None:
+            n_clips = len(logits)
+            if n_clips >= settings.bst_prior_min_clips:
+                bias = logits.mean(axis=0)
+                bias = bias - bias.mean()
+                logger.info(
+                    "BST self-calibrated bias from %d clips (%.4f range)",
+                    n_clips, float(bias.max() - bias.min()),
+                )
+            else:
+                logger.warning(
+                    "BST prior-correction skipped: %d clips < %d and no bias file",
+                    n_clips, settings.bst_prior_min_clips,
+                )
+                return logits
+
+        a = settings.bst_prior_correction_strength
+        if a == 0.0:
+            return logits
+
+        corrected = logits - a * bias[np.newaxis, :]
+        return corrected
+
+    @staticmethod
     def _save_temperature(temperature: float):
         """Persist calibrated temperature to cache file."""
         cache_path = BSTClassifier._temperature_cache_path()
@@ -281,6 +351,10 @@ class BSTClassifier:
                            debug_collector: Optional[list] = None) -> list:
         """Predict stroke types from prepared BST clips.
 
+        Two-pass design for prior correction:
+        1. Collect raw logits across all batches
+        2. Apply per-class bias correction + softmax(/T) + argmax + overrides
+
         Args:
             clips: List of dicts with keys: JnB, shuttle, pos, video_len
             batch_size: Number of clips to process in parallel.
@@ -298,8 +372,6 @@ class BSTClassifier:
         import torch
 
         # Adapt BatchNorm to input distribution when using non-bbox normalization
-        # (e.g., court-space). Uses batch statistics instead of running stats
-        # so the TCN's BatchNorm layers normalize the shifted feature distribution.
         _bn_restore = []
         if self.adapt_batchnorm and self.model is not None:
             for m in self.model.modules():
@@ -307,10 +379,13 @@ class BSTClassifier:
                     _bn_restore.append((m, m.track_running_stats))
                     m.track_running_stats = False
 
-        results = [None] * len(clips)
+        n_clips = len(clips)
+        raw_logits_list = [None] * n_clips
+        clip_data = [None] * n_clips  # per-clip metadata for the second pass
 
-        for batch_start in range(0, len(clips), batch_size):
-            batch_end = min(batch_start + batch_size, len(clips))
+        # ── Pass 1: collect raw logits ────────────────────────────────
+        for batch_start in range(0, n_clips, batch_size):
+            batch_end = min(batch_start + batch_size, n_clips)
             batch_clips = clips[batch_start:batch_end]
 
             try:
@@ -328,88 +403,109 @@ class BSTClassifier:
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
                     logits_np = logits.float().cpu().numpy()
-                    probs = torch.softmax(logits.float() / self.temperature, dim=1).cpu().numpy()
 
                 for j in range(len(batch_clips)):
-                    prob_dist = probs[j]
-                    pred_idx = int(np.argmax(prob_dist))
-                    confidence = float(prob_dist[pred_idx])
-
-                    # Per-clip feature stats (NOT batch-level — each clip has
-                    # different joint positions and shuttle trajectories)
-                    clip_jnb = batch_clips[j]['JnB']
-                    jnb_min = float(clip_jnb.min())
-                    jnb_max = float(clip_jnb.max())
-                    jnb_zero_frac = float((clip_jnb == 0.0).mean())
-
-                    debug_info = None
-                    if debug_collector is not None:
-                        logit_class_0 = float(logits_np[j, 0])
-                        logit_max = float(logits_np[j].max())
-                        sorted_idxs = np.argsort(prob_dist)[::-1]
-                        top5 = [(int(sorted_idxs[k]), float(prob_dist[sorted_idxs[k]]))
-                                for k in range(5)]
-
-                        debug_info = {
-                            "pred_class_id": pred_idx,
-                            "pred_confidence": confidence,
-                            "logit_class_0": logit_class_0,
-                            "logit_max": logit_max,
-                            "top5": top5,
-                            "logits_all": json.dumps([float(v) for v in logits_np[j]]),
-                            "jnb_zero_frac": jnb_zero_frac,
-                            "jnb_min": jnb_min,
-                            "jnb_max": jnb_max,
-                        }
-
-                    if pred_idx == 0:
-                        second_idx = int(np.argsort(prob_dist)[-2])
-                        second_conf = float(prob_dist[second_idx])
-                        if second_conf > 0.3:
-                            pred_idx = second_idx
-                            confidence = second_conf
-                            if debug_info:
-                                debug_info["is_second_best_override"] = True
-                                debug_info["second_best_class_id"] = second_idx
-                                debug_info["second_best_confidence"] = second_conf
-                        else:
-                            fallback = self._rule_based_predict(batch_clips[j])
-                            rule_conf = min(confidence, 0.3)
-                            if debug_info:
-                                debug_info["is_rule_based"] = True
-                                debug_info["fallback_stroke_type"] = fallback
-                            if debug_collector is not None:
-                                debug_collector.append(debug_info)
-                            results[batch_start + j] = (fallback, rule_conf, 0)
-                            continue
-
-                    stroke_type = map_to_coach_class(pred_idx)
-                    if debug_info:
-                        debug_info["stroke_type"] = stroke_type
-                    if debug_collector is not None:
-                        debug_collector.append(debug_info)
-                    results[batch_start + j] = (stroke_type, confidence, pred_idx)
+                    idx = batch_start + j
+                    raw_logits_list[idx] = logits_np[j]
+                    clip_data[idx] = batch_clips[j]
 
             except Exception as e:
-                logger.error("BST batch inference error: %s", e)
+                logger.error("BST batch inference error at clip %d: %s", batch_start, e)
                 for j in range(len(batch_clips)):
-                    if results[batch_start + j] is None:
-                        fallback = self._rule_based_predict(batch_clips[j])
-                        if debug_collector is not None:
-                            debug_collector.append({
-                                "pred_class_id": 0,
-                                "pred_confidence": 0.0,
-                                "is_rule_based": True,
-                                "fallback_stroke_type": fallback,
-                                "error": str(e),
-                            })
-                        results[batch_start + j] = (fallback, 0.5, 0)
+                    idx = batch_start + j
+                    raw_logits_list[idx] = "error"
+
+        # ── Apply prior correction to all collected logits ─────────────
+        valid_mask = [r is not None and isinstance(r, np.ndarray) for r in raw_logits_list]
+        if any(valid_mask):
+            all_logits = np.stack([raw_logits_list[i] for i in range(n_clips) if valid_mask[i]])
+            corrected = self._apply_prior_correction(all_logits)
+        else:
+            corrected = None
+
+        # ── Pass 2: argmax / softmax / second-best / fallback ─────────
+        results = [None] * n_clips
+        corr_idx = 0
+        for i in range(n_clips):
+            if not valid_mask[i]:
+                fallback = self._rule_based_predict(clips[i])
+                if debug_collector is not None:
+                    debug_collector.append({
+                        "pred_class_id": 0,
+                        "pred_confidence": 0.0,
+                        "is_rule_based": True,
+                        "fallback_stroke_type": fallback,
+                    })
+                results[i] = (fallback, 0.5, 0)
+                continue
+
+            logits_np = corrected[corr_idx] if corrected is not None else raw_logits_list[i]
+            corr_idx += 1
+
+            probs = np.exp(logits_np / self.temperature)
+            probs = probs / probs.sum()
+
+            pred_idx = int(np.argmax(probs))
+            confidence = float(probs[pred_idx])
+
+            clip_jnb = clip_data[i]['JnB']
+            jnb_min = float(clip_jnb.min())
+            jnb_max = float(clip_jnb.max())
+            jnb_zero_frac = float((clip_jnb == 0.0).mean())
+
+            debug_info = None
+            if debug_collector is not None:
+                logit_class_0 = float(logits_np[0])
+                logit_max = float(logits_np.max())
+                sorted_idxs = np.argsort(probs)[::-1]
+                top5 = [(int(sorted_idxs[k]), float(probs[sorted_idxs[k]]))
+                        for k in range(5)]
+
+                debug_info = {
+                    "pred_class_id": pred_idx,
+                    "pred_confidence": confidence,
+                    "logit_class_0": logit_class_0,
+                    "logit_max": logit_max,
+                    "top5": top5,
+                    "logits_all": json.dumps([float(v) for v in logits_np]),
+                    "jnb_zero_frac": jnb_zero_frac,
+                    "jnb_min": jnb_min,
+                    "jnb_max": jnb_max,
+                }
+
+            if pred_idx == 0:
+                second_idx = int(np.argsort(probs)[-2])
+                second_conf = float(probs[second_idx])
+                if second_conf > 0.3:
+                    pred_idx = second_idx
+                    confidence = second_conf
+                    if debug_info:
+                        debug_info["is_second_best_override"] = True
+                        debug_info["second_best_class_id"] = second_idx
+                        debug_info["second_best_confidence"] = second_conf
+                else:
+                    fallback = self._rule_based_predict(clip_data[i])
+                    rule_conf = min(confidence, 0.3)
+                    if debug_info:
+                        debug_info["is_rule_based"] = True
+                        debug_info["fallback_stroke_type"] = fallback
+                    if debug_collector is not None:
+                        debug_collector.append(debug_info)
+                    results[i] = (fallback, rule_conf, 0)
+                    continue
+
+            stroke_type = map_to_coach_class(pred_idx)
+            if debug_info:
+                debug_info["stroke_type"] = stroke_type
+            if debug_collector is not None:
+                debug_collector.append(debug_info)
+            results[i] = (stroke_type, confidence, pred_idx)
 
         # Restore BatchNorm running stats
         for m, prev in _bn_restore:
             m.track_running_stats = prev
 
-        # Log class activation warning (Fix 3: detect ordering mismatch)
+        # Log class activation warning
         if self.model is not None and hasattr(self, 'n_classes'):
             activated = set(r[2] for r in results if r[2] != 0)
             all_classes = set(range(self.n_classes))

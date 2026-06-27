@@ -152,3 +152,112 @@ def test_temperature_calibration_script_runs():
 
     import shutil
     shutil.rmtree(tmp)
+
+
+def test_prior_correction_alpha_zero_is_noop():
+    """α=0 reproduces the original logits exactly."""
+    from app.models.bst import BSTClassifier
+    from app.config.settings import settings
+
+    rng = np.random.RandomState(42)
+    n_clips = 50
+    logits = rng.randn(n_clips, 25).astype(np.float64)
+
+    orig_a = settings.bst_prior_correction_strength
+    orig_enabled = settings.bst_prior_correction_enabled
+    try:
+        settings.bst_prior_correction_strength = 0.0
+        settings.bst_prior_correction_enabled = True
+
+        classifier = BSTClassifier()
+        corrected = classifier._apply_prior_correction(logits)
+        np.testing.assert_array_equal(corrected, logits)
+    finally:
+        settings.bst_prior_correction_strength = orig_a
+        settings.bst_prior_correction_enabled = orig_enabled
+
+
+def test_prior_correction_removes_constant_bias():
+    """Synthetic logits with known bias → bias is removed, per-clip evidence drives argmax."""
+    from app.models.bst import BSTClassifier
+    from app.config.settings import settings
+
+    rng = np.random.RandomState(42)
+    n_clips = 50
+    n_classes = 25
+
+    # Create logits where each clip has a distinct true class (signal)
+    signal = np.zeros((n_clips, n_classes), dtype=np.float64)
+    for i in range(n_clips):
+        signal[i, i % n_classes] = 3.0  # per-clip evidence
+
+    # Add a constant class bias (independent of clip)
+    bias = rng.randn(n_classes).astype(np.float64) * 2.0
+    bias_mc = bias - bias.mean()
+    logits = signal + bias_mc[np.newaxis, :]
+
+    orig_a = settings.bst_prior_correction_strength
+    orig_enabled = settings.bst_prior_correction_enabled
+    orig_min = settings.bst_prior_min_clips
+    orig_path = settings.bst_logit_bias_path
+    try:
+        settings.bst_prior_correction_strength = 1.0
+        settings.bst_prior_correction_enabled = True
+        settings.bst_prior_min_clips = 10  # low threshold for test
+        settings.bst_logit_bias_path = Path("/nonexistent/bst_logit_bias.json")
+
+        classifier = BSTClassifier()
+
+        # Without a bias file, this should self-calibrate (50 clips >= 10)
+        corrected = classifier._apply_prior_correction(logits)
+
+        # After correction, each clip's argmax should match the signal's argmax
+        pred_signal = np.argmax(signal, axis=1)
+        pred_corrected = np.argmax(corrected, axis=1)
+        accuracy = (pred_signal == pred_corrected).mean()
+        assert accuracy > 0.9, f"Accuracy after correction: {accuracy:.2f}"
+    finally:
+        settings.bst_prior_correction_strength = orig_a
+        settings.bst_prior_correction_enabled = orig_enabled
+        settings.bst_prior_min_clips = orig_min
+        settings.bst_logit_bias_path = orig_path
+
+
+def test_prior_correction_skipped_too_few_clips_no_bias_file():
+    """No bias file and too few clips → correction is skipped."""
+    from app.models.bst import BSTClassifier
+    from app.config.settings import settings
+
+    # Temporarily point bias path to a non-existent file
+    orig_path = settings.bst_logit_bias_path
+    orig_enabled = settings.bst_prior_correction_enabled
+    orig_min = settings.bst_prior_min_clips
+    try:
+        settings.bst_logit_bias_path = Path("/nonexistent/bst_logit_bias.json")
+        settings.bst_prior_correction_enabled = True
+        settings.bst_prior_min_clips = 100  # more than 5 clips
+
+        classifier = BSTClassifier()
+        logits = np.random.randn(5, 25).astype(np.float64)
+        corrected = classifier._apply_prior_correction(logits)
+        np.testing.assert_array_equal(corrected, logits)
+    finally:
+        settings.bst_logit_bias_path = orig_path
+        settings.bst_prior_correction_enabled = orig_enabled
+        settings.bst_prior_min_clips = orig_min
+
+
+def test_prior_correction_disabled_is_noop():
+    """bst_prior_correction_enabled=False → logits pass through unchanged."""
+    from app.models.bst import BSTClassifier
+    from app.config.settings import settings
+
+    orig_enabled = settings.bst_prior_correction_enabled
+    try:
+        settings.bst_prior_correction_enabled = False
+        classifier = BSTClassifier()
+        logits = np.random.randn(10, 25).astype(np.float64)
+        corrected = classifier._apply_prior_correction(logits)
+        np.testing.assert_array_equal(corrected, logits)
+    finally:
+        settings.bst_prior_correction_enabled = orig_enabled

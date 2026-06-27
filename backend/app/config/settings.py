@@ -69,6 +69,10 @@ class Settings(BaseSettings):
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 0  # minimum real frames per clip; 0 = no floor (rely on velocity amplification instead)
+    bst_prior_correction_enabled: bool = True
+    bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
+    bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
+    bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5
