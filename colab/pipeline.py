@@ -888,7 +888,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     from app.pipeline.hits import HitFrameLocalizationStage
     from app.pipeline.strokes import StrokeClassificationStage
     from app.pipeline.attribution import PlayerAttributionStage
-    from app.pipeline.rallies import RallySegmentationStage
+    from app.pipeline.rallies import RallySegmentationStage, finalize_rally_outcomes
     from app.pipeline.analytics.court_position import CourtPositionAnalyticsStage
     from app.pipeline.analytics.footwork import FootworkAnalyticsStage
     from app.pipeline.analytics.fitness import FitnessAnalyticsStage
@@ -1212,9 +1212,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             if df is not None and len(df) > 0:
                 df.to_parquet(debug_dir / f"{debug_key}.parquet", index=False)
 
-        # RallySegmentationStage already computes winner_player_id/end_reason
-        # with shuttle-landing logic (Spec 2B). Write as-is — no override needed.
+        # Finalize rally outcomes now that player attribution is complete
         if rallies_df is not None and len(rallies_df) > 0:
+            shuttle_raw = store.get_parquet("shuttle_raw")
+            court = store.get("court")
+            players_data = store.get("players")
+            rallies_df = finalize_rally_outcomes(rallies_df, shots_df, shuttle_raw, court, players_data, video_fps)
             rallies = rallies_df.to_dict("records")
         pd.DataFrame(rallies).to_parquet(debug_dir / "rallies.parquet", index=False)
 

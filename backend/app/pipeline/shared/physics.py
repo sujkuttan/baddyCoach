@@ -512,6 +512,7 @@ def apply_physics_ensemble(
             shot["stroke_confidence"] = min(c_bst, c_p) if c_p > 0 else c_bst
             shot["stroke_source"] = "physics_override"
             shot["bst_stroke_before_override"] = stroke_before
+            shot["bst_conf_before_override"] = c_bst
             override_count += 1
             override_indices.append(i)
             logger.info(
@@ -519,11 +520,6 @@ def apply_physics_ensemble(
             )
 
     total = len(shot_records)
-    logger.info(
-        "Physics gate",
-        total=total, agree=agree_count, bst=bst_count,
-        veto=override_count, fallback=fallback_count, no_physics=no_physics_count,
-    )
 
     # Override-rate sanity guard: if physics overrides more than
     # max_override_frac of shots, the gate is more likely broken than
@@ -537,10 +533,20 @@ def apply_physics_ensemble(
         )
         for i in override_indices:
             s = shot_records[i]
-            original = s.get("bst_stroke_before_override")
-            if original is not None:
-                s["stroke_type"] = original
+            original_stroke = s.get("bst_stroke_before_override")
+            original_conf = s.get("bst_conf_before_override")
+            if original_stroke is not None:
+                s["stroke_type"] = original_stroke
+            if original_conf is not None:
+                s["stroke_confidence"] = original_conf
             s["stroke_source"] = "bst_gate_distrusted"
             s.pop("bst_stroke_before_override", None)
+            s.pop("bst_conf_before_override", None)
+
+    logger.info(
+        "Physics gate",
+        total=total, agree=agree_count, bst=bst_count,
+        veto=override_count, fallback=fallback_count, no_physics=no_physics_count,
+    )
 
     return shot_records

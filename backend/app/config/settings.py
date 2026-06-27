@@ -119,8 +119,8 @@ class Settings(BaseSettings):
     physics_quality_min: float = 0.35     # below this, defer entirely to BST
     physics_speed_fast_mps: float = 8.0   # court-space speed thresholds (homography valid)
     physics_speed_slow_mps: float = 3.0
-    physics_speed_fast_norm: float = 0.045  # calibrated from phone footage — ~0.2-1.1 range
-    physics_speed_slow_norm: float = 0.018  # ~50% below median observed speed
+    physics_speed_fast_norm: float = 0.45   # calibrated from phone footage — px_speed_per_s ~0.2-1.1
+    physics_speed_slow_norm: float = 0.18   # ~half of median observed ~0.35
     physics_zone_front: float = 0.33      # court_x fraction: front court
     physics_zone_back: float = 0.66
     physics_cross_court_dx: float = 0.30  # normalized lateral travel for cross_court cue
