@@ -26,6 +26,7 @@ FAMILIES = {
 # Veto table: for each coach class, the set of REQUIRED conditions.
 # Each condition is a key in the Features dataclass; enforced only if
 # the underlying cue is usable (not None).
+# Conditions prefixed with "|" form OR-groups — at least one must pass.
 # Conditions: "descend", "ascend", "flat", "fast", "med", "slow",
 #   "overhead", "side", "underarm", "low",
 #   "short", "mid", "deep",
@@ -34,7 +35,7 @@ CLASS_VETO = {
     "smash":     {"descend", "fast", "overhead"},
     "rush":      {"descend", "med", "front", "overhead"},
     "drop":      {"descend", "slow", "overhead", "short"},
-    "clear":     {"overhead", "rise_fall", "med", "deep"},
+    "clear":     {"overhead", "med", "|rise_fall", "|deep"},
     "drive":     {"flat", "fast", "side"},
     "net_shot":  {"slow", "short", "front", "underarm"},
     "block":     {"slow", "short", "descend"},
@@ -332,16 +333,22 @@ def _check_condition(cond: str, feats: Features) -> Optional[bool]:
 def consistent(bst_stroke: str, feats: Features) -> bool:
     """Check if a BST-predicted stroke is physically consistent.
 
-    A stroke is consistent if ALL its REQUIRED conditions pass.
-    Conditions with None cues (missing data) are skipped — never veto
-    on a missing cue.
+    A stroke is consistent if ALL mandatory conditions pass AND at
+    least one condition passes in each OR-group (prefixed with |).
+    Conditions with None cues are skipped — never veto on missing data.
     """
     required = CLASS_VETO.get(bst_stroke, set())
     if not required:
         return True
-    for cond in required:
+    mandatory = [c for c in required if not c.startswith("|")]
+    or_groups = [c for c in required if c.startswith("|")]
+    for cond in mandatory:
         ok = _check_condition(cond, feats)
-        if ok is False:  # explicitly violated (not None = missing)
+        if ok is False:
+            return False
+    if or_groups:
+        any_or_ok = any(_check_condition(c.lstrip("|"), feats) for c in or_groups)
+        if not any_or_ok:
             return False
     return True
 
@@ -375,17 +382,25 @@ def classify_physics(feats: Features) -> tuple:
         required = CLASS_VETO.get(rep_stroke, set())
         if not required:
             continue
+        mandatory = [c for c in required if not c.startswith("|")]
+        or_groups = [c for c in required if c.startswith("|")]
         margins = []
         all_pass = True
-        for cond in required:
+        for cond in mandatory:
             ok = _check_condition(cond, feats)
             if ok is False:
                 all_pass = False
                 break
             if ok is True:
                 margins.append(1.0)
-            # ok is None → missing cue, skip margin
-        if all_pass and margins:
+        if not all_pass:
+            continue
+        if or_groups:
+            or_pass = any(_check_condition(c.lstrip("|"), feats) for c in or_groups)
+            if not or_pass:
+                continue
+            margins.append(1.0)  # one point for the OR-group
+        if margins:
             conf = feats.quality * (sum(margins) / len(margins))
             conf = min(conf, 0.99)
             return (fam_name, rep_stroke, conf)
@@ -493,11 +508,11 @@ def apply_physics_ensemble(
                 "physics veto", frame=f, before=stroke_before, after=shot["stroke_type"], family=fam or "?",
             )
 
-        total = len(shot_records)
-        logger.info(
-            "Physics gate",
-            total=total, agree=agree_count, bst=bst_count,
-            veto=override_count, fallback=fallback_count, no_physics=no_physics_count,
-        )
+    total = len(shot_records)
+    logger.info(
+        "Physics gate",
+        total=total, agree=agree_count, bst=bst_count,
+        veto=override_count, fallback=fallback_count, no_physics=no_physics_count,
+    )
 
     return shot_records

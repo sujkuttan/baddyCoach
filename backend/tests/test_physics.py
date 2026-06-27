@@ -196,6 +196,17 @@ def test_classify_clear():
     assert conf > 0
 
 
+def test_classify_clear_deep_no_arc():
+    """Clear with deep but no rise_fall arc — OR-group allows this."""
+    feats = Features(
+        usable=True, quality=0.8, v_down=None, speed_mps=5.0,
+        contact="overhead", zone="back", depth="deep", arc_rise_fall=False,
+    )
+    fam, stroke, conf = classify_physics(feats)
+    assert stroke == "clear"
+    assert conf > 0
+
+
 def test_classify_drop():
     feats = Features(
         usable=True, quality=0.8, v_down=10.0, speed_mps=2.5,
@@ -256,6 +267,24 @@ def test_consistent_lift():
 def test_consistent_net_shot():
     feats = Features(speed_mps=1.5, contact="underarm", zone="front", depth="short")
     assert consistent("net_shot", feats) is True
+
+
+def test_consistent_clear_deep():
+    """Clear passes with deep (OR-group: rise_fall OR deep)."""
+    feats = Features(speed_mps=5.0, contact="overhead", depth="deep", arc_rise_fall=False)
+    assert consistent("clear", feats) is True
+
+
+def test_consistent_clear_rise_fall():
+    """Clear passes with rise_fall (OR-group: rise_fall OR deep)."""
+    feats = Features(speed_mps=5.0, contact="overhead", depth="short", arc_rise_fall=True)
+    assert consistent("clear", feats) is True
+
+
+def test_consistent_clear_neither():
+    """Clear fails when neither rise_fall nor deep passes and both cues available."""
+    feats = Features(speed_mps=5.0, contact="overhead", depth="short", arc_rise_fall=False)
+    assert consistent("clear", feats) is False
 
 
 # ── best_consistent_class ───────────────────────────────────────
@@ -429,4 +458,5 @@ def test_all_veto_conditions_exist():
     }
     for stroke, conds in CLASS_VETO.items():
         for cond in conds:
-            assert cond in handled, f"CLASS_VETO for {stroke} has unhandled condition: {cond}"
+            stem = cond.lstrip("|")
+            assert stem in handled, f"CLASS_VETO for {stroke} has unhandled condition: {cond}"
