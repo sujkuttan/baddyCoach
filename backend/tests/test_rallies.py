@@ -216,8 +216,8 @@ def test_winner_from_shuttle_landing_homography_near_side(court_data_with_homogr
     winner = _winner_from_shuttle_landing(
         shuttle_df, 0, 55, court_data_with_homography,
     )
-    # Shuttle at bottom of frame → near court (X > 6.7) → near player lost → far wins
-    assert winner is not None, "Homography path should return a winner"
+    # Shuttle at bottom of frame → near court (X > 6.7) → near player lost → far (player_2) wins
+    assert winner == "player_2", f"Expected player_2 (far side wins), got {winner}"
 
 
 def test_winner_from_shuttle_landing_homography_far_side(court_data_with_homography):
@@ -289,7 +289,7 @@ def test_rally_split_by_dead_shuttle(tmp_job_dir):
 
 
 def test_winner_attribution_gate(tmp_job_dir):
-    """Shot with untrustworthy attribution tier returns None winner."""
+    """winner resolves via end_reason even with untrustworthy attribution tier."""
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
@@ -309,7 +309,78 @@ def test_winner_attribution_gate(tmp_job_dir):
 
     assert result.status == "success"
     rallies_df = store.get_parquet("rallies")
-    # First rally's winner should be None (last shot has rally_fallback tier)
+    # First rally: last shot is smash (conf 0.8) → end_reason = winner → player_2 wins
     assert len(rallies_df) >= 1
-    assert pd.isna(rallies_df.iloc[0]["winner_player_id"])
+    assert rallies_df.iloc[0]["winner_player_id"] == "player_2"
+
+    # Serve attribution: first shot of rally 1 is "serve" by player_1
+    assert rallies_df.iloc[0]["serving_player_id"] == "player_1"
+
+
+def test_serve_attribution(tmp_job_dir):
+    """First shot of each rally determines serve."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    shots_df = pd.DataFrame({
+        "frame": [0, 5, 10, 15, 100, 105, 110, 115],
+        "stroke_type": ["serve", "clear", "drop", "smash", "serve", "clear", "drop", "smash"],
+        "player_id": ["player_1", "player_2", "player_1", "player_2",
+                      "player_2", "player_1", "player_2", "player_1"],
+        "stroke_confidence": [0.9, 0.7, 0.6, 0.8, 0.9, 0.7, 0.6, 0.8],
+    })
+    store.set_parquet("shots", shots_df)
+
+    stage = RallySegmentationStage()
+    result = stage.run(store, config, gap_threshold=60)
+
+    assert result.status == "success"
+    rallies_df = store.get_parquet("rallies")
+    assert len(rallies_df) >= 2
+    # Rally 1: first shot player_1 serves
+    assert rallies_df.iloc[0]["serving_player_id"] == "player_1"
+    # Rally 2: first shot player_2 serves
+    assert rallies_df.iloc[1]["serving_player_id"] == "player_2"
+
+
+def test_winner_consistent_with_end_reason(tmp_job_dir):
+    """Winner matches end_reason: winner→hitter, error/net→opponent."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    # Rally 1: last shot is smash (winner) by player_1 → winner = player_1
+    # Rally 2: last shot is net_shot (net) by player_2 → winner = player_1 (opponent)
+    # Rally 3: last shot is low-conf clear (unforced_error) by player_1 → winner = player_2
+    shots_df = pd.DataFrame({
+        "frame": [0, 5, 10, 15, 100, 105, 110, 200, 205, 210],
+        "stroke_type": ["serve", "clear", "drop", "smash",
+                        "serve", "clear", "net_shot",
+                        "serve", "clear", "clear"],
+        "player_id": ["player_1", "player_2", "player_1", "player_1",
+                      "player_2", "player_1", "player_2",
+                      "player_1", "player_2", "player_1"],
+        "stroke_confidence": [0.9, 0.7, 0.6, 0.8,
+                             0.9, 0.7, 0.5,
+                             0.9, 0.7, 0.2],
+    })
+    store.set_parquet("shots", shots_df)
+
+    stage = RallySegmentationStage()
+    result = stage.run(store, config, gap_threshold=60)
+
+    assert result.status == "success"
+    rallies_df = store.get_parquet("rallies")
+    assert len(rallies_df) >= 3
+
+    # Rally 1: smash winner → last hitter (player_1) wins
+    assert rallies_df.iloc[0]["end_reason"] == "winner"
+    assert rallies_df.iloc[0]["winner_player_id"] == "player_1"
+
+    # Rally 2: net_shot → opponent (player_1) wins
+    assert rallies_df.iloc[1]["end_reason"] == "net"
+    assert rallies_df.iloc[1]["winner_player_id"] == "player_1"
+
+    # Rally 3: low-conf clear → unforced_error → opponent (player_2) wins
+    assert rallies_df.iloc[2]["end_reason"] == "unforced_error"
+    assert rallies_df.iloc[2]["winner_player_id"] == "player_2"
 

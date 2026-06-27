@@ -10,54 +10,32 @@ from app.config.settings import settings
 
 
 def _compute_rally_winner_after_attribution(
-    rally_df, shots_df, shuttle_df=None, court=None, players=None,
+    rally_df, shots_df, shuttle_raw=None, court=None, players=None,
+    end_reason=None, last_pid=None,
 ):
     """Compute rally winner after player attribution is complete.
 
-    Primary method: shuttle landing position (determine which side the
-    shuttle died on → opponent wins).
-    Fallback: stroke-based inference with attribution confidence gating.
+    Primary method: shuttle landing position from shuttle_raw
+    (high-confidence, non-interpolated) → which side the shuttle died on
+    → opponent wins.
+
+    Fallback: map end_reason → winner deterministically:
+      - "winner" → last hitter wins
+      - "forced_error" / "unforced_error" / "net" → opponent of last hitter wins
+
+    Returns None only when last_pid itself is missing.
     """
-    rally_shots = shots_df[
-        shots_df["frame"].between(rally_df["start_frame"], rally_df["end_frame"])
-    ].sort_values("frame")
-
-    if len(rally_shots) == 0:
-        return None
-
-    # Primary: winner from shuttle landing
-    if shuttle_df is not None:
+    # Primary: winner from shuttle landing using raw (non-interpolated) data
+    if shuttle_raw is not None:
         winner = _winner_from_shuttle_landing(
-            shuttle_df, rally_df["start_frame"], rally_df["end_frame"], court, players,
+            shuttle_raw, rally_df["start_frame"], rally_df["end_frame"], court, players,
         )
         if winner is not None:
             return winner
 
-    # Fallback: stroke-based with attribution confidence gate
-    last_shot = rally_shots.iloc[-1]
-    last_pid = last_shot.get("player_id")
-    attribution_tier = last_shot.get("attribution_tier", "")
-    stroke_type = last_shot.get("stroke_type", "clear")
-    stroke_confidence = last_shot.get("stroke_confidence", 0.5)
-
-    if attribution_tier in ("rally_fallback", "final_fallback", ""):
+    # Fallback: map end_reason → winner deterministically
+    if last_pid is None or end_reason is None:
         return None
-
-    # Compute shuttle speed at last shot for speed-based winner detection
-    last_shot_speed = None
-    if shuttle_df is not None and stroke_type == "smash":
-        frame = int(last_shot["frame"])
-        window = shuttle_df[
-            (shuttle_df["frame"] >= frame - 2) & (shuttle_df["frame"] <= frame + 2)
-        ]
-        if len(window) >= 2:
-            dx = window["x"].diff().iloc[-1]
-            dy = window["y"].diff().iloc[-1]
-            speed = np.sqrt(dx**2 + dy**2) if not (np.isnan(dx) or np.isnan(dy)) else None
-            if speed is not None and speed > 0:
-                last_shot_speed = float(speed * 30.0)
-
-    end_reason = _infer_end_reason(stroke_type, stroke_confidence, last_shot_speed)
 
     if end_reason == "winner":
         return last_pid
@@ -77,7 +55,12 @@ class RallySegmentationStage:
         if shots_df is None or len(shots_df) == 0:
             return StageResult.success(metadata={"rally_count": 0})
 
+        # Cleaned shuttle for dead-window detection during segmentation;
+        # shuttle_raw (non-interpolated) for landing-point detection.
         shuttle_df = artifacts.get_parquet("shuttle")
+        shuttle_raw = artifacts.get_parquet("shuttle_raw")
+        if shuttle_raw is None:
+            shuttle_raw = shuttle_df
         court = artifacts.get("court")
         players_data = artifacts.get("players")
 
@@ -145,22 +128,51 @@ class RallySegmentationStage:
             if len(r_frames) == 0:
                 continue
 
-            winner_player_id = _compute_rally_winner_after_attribution(
-                r, shots_df, shuttle_df, court, players_data,
-            )
-            r["winner_player_id"] = winner_player_id
+            # Part A: Serve attribution — first shot's player_id
+            r["serving_player_id"] = r_frames.iloc[0].get("player_id")
 
+            # Part D: end_reason computed once from last shot
             last_shot = r_frames.iloc[-1]
             stroke_type = last_shot.get("stroke_type", "clear")
             stroke_confidence = last_shot.get("stroke_confidence", 0.5)
+            last_pid = last_shot.get("player_id")
             end_reason = _infer_end_reason(stroke_type, stroke_confidence)
             r["end_reason"] = end_reason
 
-            r["serving_player_id"] = None
+            # Winner: landing-based, falls back to end_reason mapping
+            winner_player_id = _compute_rally_winner_after_attribution(
+                r, shots_df, shuttle_raw, court, players_data,
+                end_reason=end_reason, last_pid=last_pid,
+            )
+            r["winner_player_id"] = winner_player_id
+
             fps = float(config.processing_fps or 30.0)
             r["start_ts"] = round(r["start_frame"] / fps, 3)
             r["end_ts"] = round(r["end_frame"] / fps, 3)
             r["match_id"] = None
+
+        # Part C: Degeneracy guard — if every rally resolves to the same player,
+        # fall back to stroke-inference-based winner
+        if settings.rally_winner_degenerate_warn and len(rallies) >= 3:
+            resolved = [r for r in rallies if r.get("winner_player_id")]
+            if len(resolved) == len(rallies) and len({r["winner_player_id"] for r in resolved}) == 1:
+                unique_winner = resolved[0]["winner_player_id"]
+                logger.warning(
+                    f"All {len(rallies)} rallies resolve to {unique_winner} — "
+                    "degenerate winner detection. Falling back to stroke inference."
+                )
+                for r in rallies:
+                    r_frames = shots_df[shots_df["rally_id"] == r["rally_id"]].sort_values("frame")
+                    if len(r_frames) == 0:
+                        continue
+                    r_pid = r_frames.iloc[-1].get("player_id")
+                    r_end = r.get("end_reason", "forced_error")
+                    if r_pid is None:
+                        continue
+                    if r_end == "winner":
+                        r["winner_player_id"] = r_pid
+                    elif r_end in ("forced_error", "unforced_error", "net"):
+                        r["winner_player_id"] = "player_2" if r_pid == "player_1" else "player_1"
 
         rallies_df = pd.DataFrame(rallies) if rallies else pd.DataFrame(
             columns=["rally_id", "start_frame", "end_frame", "shot_count"]

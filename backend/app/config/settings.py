@@ -83,6 +83,9 @@ class Settings(BaseSettings):
     rally_ending_high_conf_min: float = 0.6
     rally_dead_frames: int = 25  # min consecutive frames with shuttle speed ≈ 0 to declare rally dead
     rally_dead_speed_px: float = 4.0  # per-frame shuttle displacement below this = "dead"
+    rally_winner_search_frames: int = 150  # frames past rally_end to scan for landing/dead window
+    rally_winner_min_landing_conf: float = 0.30  # min shuttle conf for a point to count as true landing
+    rally_winner_degenerate_warn: bool = True  # warn + fall back if all rallies resolve to one player
 
     # Court corner fallback (proportional to frame dimensions)
     court_corner_margin_x: float = 0.08
