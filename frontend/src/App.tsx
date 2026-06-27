@@ -6,6 +6,7 @@ import { ProgressView } from './views/ProgressView';
 import { CourtCornerSetup } from './views/CourtCornerSetup';
 import { LabelingView } from './views/LabelingView';
 import { getJob } from './utils/api';
+import { getVideoObjectURL } from './utils/videoStore';
 
 type AppState = 'upload' | 'setup_court' | 'processing' | 'report' | 'progress' | 'labeling';
 
@@ -101,7 +102,7 @@ function App() {
         <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} onLabeling={(report: any) => { setLabelingReport(report); setState('labeling'); }} />
       )}
       {state === 'labeling' && labelingReport && (
-        <LabelingView shots={labelingReport.shots || []} videoUrl={null} jobId={jobId} onBack={() => setState('report')} />
+        <LabelingView shots={labelingReport.shots || []} videoUrl={!jobId ? getVideoObjectURL() : null} jobId={jobId} onBack={() => setState('report')} />
       )}
       {state === 'progress' && (
         <ProgressView playerKey={progressPlayerKey} onBack={() => setState('report')} />
