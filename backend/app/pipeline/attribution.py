@@ -52,7 +52,7 @@ class PlayerAttributionStage:
 
         def _shuttle_direction_at(frame):
             y_at = shuttle_y_map.get(frame)
-            if y_at is None or abs(y_at) <= 1:
+            if y_at is None:
                 return None
             for lb in range(1, LOOKBACK + 1):
                 y_prev = shuttle_y_map.get(frame - lb)

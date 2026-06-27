@@ -37,6 +37,7 @@ def _build_clip(
     player_detections: dict | None = None,
     homography: np.ndarray | None = None,
     original_len: int | None = None,
+    player_ids: list | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -154,10 +155,23 @@ def _build_clip(
     # frames "valid" for every clip), destroying the discriminative signal.
 
     for t, frame in enumerate(frames[:seq_len]):
-        # Resolve active players for THIS frame
+        # Resolve active players for THIS frame.
+        # When one side is missing (e.g. far player not detected in this frame),
+        # infer the missing player as whoever is NOT assigned to near — avoids
+        # silently putting player_1 in both slots.
         frame_players = frame_player_map.get(frame, {})
-        far_pid = frame_players.get('far', 'player_1')
-        near_pid = frame_players.get('near', 'player_2')
+        near_pid = frame_players.get('near')
+        far_pid = frame_players.get('far')
+        if far_pid is None:
+            if near_pid in player_ids and len(player_ids) > 1:
+                far_pid = [p for p in player_ids if p != near_pid][0]
+            else:
+                far_pid = 'player_2'
+        if near_pid is None:
+            if far_pid in player_ids and len(player_ids) > 1:
+                near_pid = [p for p in player_ids if p != far_pid][0]
+            else:
+                near_pid = 'player_1'
         player_order = [far_pid, near_pid]
 
         for p_idx, pid in enumerate(player_order):
@@ -256,6 +270,7 @@ class StrokeClassificationStage:
 
         # Get player detection data for bbox normalization
         player_list = players_data.get("players", [])
+        player_ids = [p["id"] for p in player_list if p.get("id")]
 
         # Deduplicate hits by frame: keep the highest-confidence hit per frame.
         # Duplicate hits can arise from TrackNet producing multiple shuttle
@@ -315,6 +330,7 @@ class StrokeClassificationStage:
                 player_sides=player_sides, player_detections=player_list,
                 homography=homography,
                 original_len=original_n_frames,
+                player_ids=player_ids,
             )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}

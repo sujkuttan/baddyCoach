@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     hit_proximity_weight: float = 0.05
     hit_proximity_gate: float = 0.3  # minimum proximity to allow any hit signal
     hit_confidence_threshold: float = 0.7
-    hit_dedup_gap_seconds: float = 0.5
+    hit_dedup_gap_seconds: float = 0.2    # fast exchanges can be <0.5s apart
 
     # Stroke classification thresholds
     stroke_smoothing_window: int = 2  # ±neighbors
@@ -68,7 +68,7 @@ class Settings(BaseSettings):
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
-    bst_min_clip_frames: int = 0  # minimum real frames per clip; 0 = no floor (rely on velocity amplification instead)
+    bst_min_clip_frames: int = 15  # minimum real frames per clip; prevents zero-padded dominance
     bst_prior_correction_enabled: bool = True
     bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"

@@ -47,6 +47,7 @@ class HitFrameLocalizationStage:
         peaks, _ = find_peaks(
             combined,
             height=settings.hit_confidence_threshold,
+            distance=3,
         )
         hit_frames = peaks
 
