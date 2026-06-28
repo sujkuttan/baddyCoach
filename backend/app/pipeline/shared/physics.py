@@ -362,16 +362,33 @@ def consistent(bst_stroke: str, feats: Features) -> bool:
 def best_consistent_class(
     probs: np.ndarray, classes: list, feats: Features
 ) -> Optional[str]:
-    """Walk BST probability vector high→low, return first physically-consistent class."""
+    """Walk BST probability vector high→low, return first physically-consistent class.
+
+    Guards (Option A + C):
+      - Skip block unless its softmax prob >= 50% of top-1 prob
+        (prevents pivoting to block from a low-probability tail entry
+        just because its physical conditions are easy to satisfy).
+      - Require candidate prob > 2× unknown prob (class 0) for any return
+        (ensures the override candidate has meaningful support in BST's
+        distribution, not just noise above a near-uniform background).
+    """
     if probs is None or len(probs) == 0:
         return None
     sorted_idx = np.argsort(probs)[::-1]
+    top1_prob = float(probs[sorted_idx[0]])
+    unknown_prob = float(probs[0])
+
     for idx in sorted_idx:
         st = classes[idx] if idx < len(classes) else "unknown"
         if st == "unknown":
             continue
+        # Option A: skip block pivot unless close to top-1 probability
+        if st == "block" and float(probs[idx]) < top1_prob * 0.5:
+            continue
         if consistent(st, feats):
-            return st
+            # Option C: candidate must have meaningful support vs unknown
+            if float(probs[idx]) > unknown_prob * 2.0:
+                return st
     return None
 
 
