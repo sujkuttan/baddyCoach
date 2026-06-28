@@ -7,7 +7,18 @@ interface Stroke {
   confidence: number;
   player_id: string;
   rally_id: number | null;
+  attribution_tier?: string;
 }
+
+const TIER_COLORS: Record<string, string> = {
+  bst_side: '#00e676',
+  shuttle_direction: '#ffab00',
+  rally_alternation: '#ff5252',
+  rally_fallback: '#e040fb',
+  final_fallback: '#e040fb',
+};
+
+
 
 interface Rally {
   rally_id: number;
@@ -108,6 +119,18 @@ export function StrokeListPanel({ strokes, rallies: _rallies, fps: _fps, onSeek 
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = 'rgba(255,255,255,0.03)'; }}
             >
               <div style={{ width: 4, height: 20, borderRadius: 2, backgroundColor: STROKE_COLORS[stroke.stroke_type] || '#666', flexShrink: 0 }} />
+              {stroke.attribution_tier && TIER_COLORS[stroke.attribution_tier] && (
+                <div
+                  title={stroke.attribution_tier}
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: '50%',
+                    backgroundColor: TIER_COLORS[stroke.attribution_tier],
+                    flexShrink: 0,
+                  }}
+                />
+              )}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12, fontWeight: 500 }}>{STROKE_LABELS[stroke.stroke_type] || stroke.stroke_type}</div>
                 <div style={{ fontSize: 10, color: '#888' }}>

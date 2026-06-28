@@ -152,6 +152,7 @@ class RallySegmentationStage:
         rally_id = 0
         rally_start = shots_df.iloc[0]["frame"]
         rally_shots_idx = [0]
+        last_scene_cut = False  # tracks if the previous boundary was a scene cut
 
         for i in range(1, len(shots_df)):
             frame_gap = shots_df.iloc[i]["frame"] - shots_df.iloc[i - 1]["frame"]
@@ -169,19 +170,34 @@ class RallySegmentationStage:
                 int(shots_df.iloc[i]["frame"]),
             )
 
-            # Scene-cut check (pause-record: recording cut → shuttle position jumps)
+            # Scene-cut check (pause-record: recording cut)
             scene_cut = False
             if shuttle_df is not None and len(shuttle_df) > 3:
                 seg = shuttle_df[
                     (shuttle_df["frame"] >= int(shots_df.iloc[i - 1]["frame"])) &
                     (shuttle_df["frame"] <= int(shots_df.iloc[i]["frame"]))
                 ].copy().sort_values("frame")
+                # Spatial: shuttle position jumps (in-flight scene cuts)
                 if len(seg) >= 5:
                     dx = np.diff(seg["x"].values)
                     dy = np.diff(seg["y"].values)
                     disp = np.sqrt(dx * dx + dy * dy)
                     if np.median(disp) >= 1.0:
                         scene_cut = disp.max() > 50 * np.median(disp)
+                # Temporal: NaN gap in shuttle tracking > interp limit
+                # (pause-record: shuttle lost entirely during pause, cleaning
+                # can only bridge max_interp_gap=7 frames; anything longer is a cut)
+                if not scene_cut and len(seg) >= settings.shuttle_max_interp_gap * 2:
+                    x_vals = seg["x"].values
+                    nan_streak = 0
+                    for v in x_vals:
+                        if np.isnan(v) or v == 0.0:
+                            nan_streak += 1
+                            if nan_streak > settings.shuttle_max_interp_gap:
+                                scene_cut = True
+                                break
+                        else:
+                            nan_streak = 0
 
             if frame_gap > threshold or dead_shuttle or scene_cut or rally_ending:
                 if len(rally_shots_idx) >= min_s:
@@ -192,7 +208,9 @@ class RallySegmentationStage:
                         "start_frame": int(rally_start),
                         "end_frame": end_frame,
                         "shot_count": len(rally_shots_idx),
+                        "scene_cut_before": last_scene_cut,
                     })
+                last_scene_cut = scene_cut
                 rally_start = shots_df.iloc[i]["frame"]
                 rally_shots_idx = [i]
             else:
@@ -205,16 +223,20 @@ class RallySegmentationStage:
                 "start_frame": int(rally_start),
                 "end_frame": int(shots_df.iloc[rally_shots_idx[-1]]["frame"]),
                 "shot_count": len(rally_shots_idx),
+                "scene_cut_before": last_scene_cut,
             })
 
         rally_lookup = {}
+        scene_cut_lookup = {}
         for r in rallies:
             for _, shot in shots_df.iterrows():
                 f = int(shot["frame"])
                 if r["start_frame"] <= f <= r["end_frame"]:
                     rally_lookup[f] = r["rally_id"]
+                    scene_cut_lookup[f] = r.get("scene_cut_before", False)
 
         shots_df["rally_id"] = shots_df["frame"].map(rally_lookup)
+        shots_df["scene_cut_before"] = shots_df["frame"].map(scene_cut_lookup).fillna(False)
         artifacts.set_parquet("shots", shots_df)
 
         fps = float(config.processing_fps or 30.0)
@@ -236,7 +258,7 @@ class RallySegmentationStage:
             r["match_id"] = None
 
         rallies_df = pd.DataFrame(rallies) if rallies else pd.DataFrame(
-            columns=["rally_id", "start_frame", "end_frame", "shot_count"]
+            columns=["rally_id", "start_frame", "end_frame", "shot_count", "scene_cut_before"]
         )
         artifacts.set_parquet("rallies", rallies_df)
 

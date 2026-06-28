@@ -440,6 +440,7 @@ export function ReportView({ jobId, reportData, onBack, onViewProgress, onLabeli
                     <th className="text-left px-5 py-3 font-mono text-[10px] text-text-muted tracking-widest">START</th>
                     <th className="text-left px-5 py-3 font-mono text-[10px] text-text-muted tracking-widest">END</th>
                     <th className="text-left px-5 py-3 font-mono text-[10px] text-text-muted tracking-widest">SHOTS</th>
+                    <th className="text-center px-5 py-3 font-mono text-[10px] text-text-muted tracking-widest" title="Scene cut before rally">SC</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -452,6 +453,13 @@ export function ReportView({ jobId, reportData, onBack, onViewProgress, onLabeli
                         <span className="font-mono text-xs bg-court-surface/50 px-2 py-0.5 rounded-full text-text-primary">
                           {r.shot_count}
                         </span>
+                      </td>
+                      <td className="px-5 py-3 text-center font-mono text-xs">
+                        {r.scene_cut_before ? (
+                          <span title="Recording paused between rallies" className="text-warning-yellow">⚠️</span>
+                        ) : (
+                          <span className="text-text-muted/30">—</span>
+                        )}
                       </td>
                     </tr>
                   ))}
