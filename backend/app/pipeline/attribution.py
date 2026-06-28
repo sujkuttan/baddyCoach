@@ -44,11 +44,42 @@ class PlayerAttributionStage:
             H = np.array(court["homography"])
 
         shuttle_y_map = {}
+        shuttle_pos_map = {}
         if shuttle_df is not None and len(shuttle_df) > 0:
             shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
             shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
+            for _, row in shuttle_sorted.iterrows():
+                f = int(row["frame"])
+                shuttle_pos_map[f] = (float(row["x"]), float(row["y"]))
 
         LOOKBACK = settings.attribution_lookback_frames
+
+        def _racket_proximity_at(frame):
+            """Return player_id whose wrist is closest to shuttle at hit frame.
+
+            Camera-angle-independent: uses RTMPose wrist keypoints and shuttle
+            position. Falls back to shuttle_direction when pose is missing.
+            """
+            shuttle_xy = shuttle_pos_map.get(frame)
+            if shuttle_xy is None or pose_df is None:
+                return None
+            min_dist = float('inf')
+            best_player = None
+            for p in players_data.get("players", []):
+                pid = p["id"]
+                row = pose_df[(pose_df["frame"] == frame) & (pose_df["player_id"] == pid)]
+                if len(row) == 0:
+                    continue
+                raw = row.iloc[0]["keypoints"]
+                kps = np.array(raw.tolist()) if hasattr(raw, 'tolist') else np.array(raw)
+                if kps.shape != (17, 3):
+                    continue
+                wrist = (kps[9, :2] + kps[10, :2]) / 2
+                dist = np.sqrt((wrist[0] - shuttle_xy[0])**2 + (wrist[1] - shuttle_xy[1])**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    best_player = pid
+            return best_player
 
         def _shuttle_direction_at(frame):
             y_at = shuttle_y_map.get(frame)
@@ -100,34 +131,38 @@ class PlayerAttributionStage:
                             shots_df.at[idx, "attribution_tier"] = "bst_side"
                         break
 
-        # Per-shot shuttle direction for unassigned shots (Tier 2)
+        # Per-shot racket-arm proximity for unassigned shots (Tier 2)
+        # Camera-angle-independent: uses wrist-to-shuttle distance at hit frame.
+        # Falls back to shuttle vertical direction when pose is unavailable.
+        TIER2_TAG = "racket_proximity"
         for idx, shot in shots_df.iterrows():
             if pd.isna(shot.get("player_id")):
-                result = _shuttle_direction_at(int(shot["frame"]))
+                result = _racket_proximity_at(int(shot["frame"]))
+                if result is None:
+                    result = _shuttle_direction_at(int(shot["frame"]))
+                    TIER2_TAG = "shuttle_direction" if result else TIER2_TAG
                 if result:
                     shots_df.at[idx, "player_id"] = result
                     if config.debug_level >= 1:
-                        shots_df.at[idx, "attribution_tier"] = "shuttle_direction"
+                        shots_df.at[idx, "attribution_tier"] = TIER2_TAG
 
-        # Tier 2 balance check: if shuttle_direction systematically favors one player
-        # (>60% within a rally), flip all shuttle_direction assignments in that rally.
-        # The direction test dy>0→player_1 makes a strong camera-angle assumption
-        # that can be wrong with far-player-dominant net play.
-        if config.debug_level >= 1:
-            sd_col = "attribution_tier"
-        else:
-            sd_col = None
+        # Tier 2 balance check: if heuristic assignments (racket or direction)
+        # systematically favor one player (>60% within a rally), flip them.
+        # Racket proximity is camera-independent, but still heuristic — the
+        # balance guard catches edge cases (both players reaching at once, etc.).
+        HEURISTIC_TIERS = {"racket_proximity", "shuttle_direction"}
         if rallies_df is not None and len(rallies_df) > 0:
             for _, rally in rallies_df.iterrows():
                 r_mask = (shots_df["frame"] >= int(rally["start_frame"])) & \
                          (shots_df["frame"] <= int(rally["end_frame"]))
-                sd_idx = shots_df[r_mask & (shots_df[sd_col] == "shuttle_direction") if sd_col else
-                                  r_mask].index
-                if len(sd_idx) > 3:
-                    p1 = (shots_df.loc[sd_idx, "player_id"] == "player_1").sum()
-                    pct = p1 / len(sd_idx)
+                heuristic_idx = shots_df[
+                    r_mask & (shots_df["attribution_tier"].isin(HEURISTIC_TIERS))
+                ].index if config.debug_level >= 1 else r_mask
+                if len(heuristic_idx) > 3:
+                    p1 = (shots_df.loc[heuristic_idx, "player_id"] == "player_1").sum()
+                    pct = p1 / len(heuristic_idx)
                     if pct > 0.6 or pct < 0.4:
-                        for i in sd_idx:
+                        for i in heuristic_idx:
                             cur = shots_df.at[i, "player_id"]
                             shots_df.at[i, "player_id"] = "player_2" if cur == "player_1" else "player_1"
                             if "side" in shots_df.columns:

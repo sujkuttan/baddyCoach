@@ -25,11 +25,19 @@ class HitFrameLocalizationStage:
 
         pose_df = artifacts.get_parquet("pose")
 
-        reversal_score = self._compute_reversal(shuttle_df)
+        # Resolution-independent diagonal for pixel-space thresholds
+        vid_w = max(float(shuttle_df["x"].max()), 640) if len(shuttle_df) > 0 else 1920
+        vid_h = max(float(shuttle_df["y"].max()), 480) if len(shuttle_df) > 0 else 1080
+        diag = np.sqrt(vid_w**2 + vid_h**2)
+        # Thresholds as fraction of diagonal (0.1% for reversal, 5% for proximity)
+        rev_threshold = 0.001 * diag
+        prox_scale = 0.05 * diag
+
+        reversal_score = self._compute_reversal(shuttle_df, rev_threshold)
         trajectory_score = self._compute_trajectory_change(shuttle_df)
         speed_score = self._compute_speed_peaks(shuttle_df)
         swing_score = self._compute_swing_acceleration(pose_df, n_frames=len(shuttle_df)) if pose_df is not None else np.zeros(len(shuttle_df))
-        proximity_score = self._compute_proximity(shuttle_df, pose_df) if pose_df is not None else np.zeros(len(shuttle_df))
+        proximity_score = self._compute_proximity(shuttle_df, pose_df, prox_scale) if pose_df is not None else np.zeros(len(shuttle_df))
 
         # Proximity gate: zero out all other signals where shuttle is far from players
         gate = (proximity_score >= settings.hit_proximity_gate).astype(np.float64)
@@ -43,6 +51,23 @@ class HitFrameLocalizationStage:
             ) +
             settings.hit_proximity_weight * proximity_score
         )
+
+        # Zero out hit signals at scene-cut boundaries (pause-record teleport)
+        # Shuttle teleport produces false reversal/speed peaks; detect via
+        # large displacement between consecutive frames and mute ±2 frames.
+        x_vals = shuttle_df["x"].values
+        y_vals = shuttle_df["y"].values
+        dx = np.abs(np.diff(x_vals, prepend=x_vals[0]))
+        dy = np.abs(np.diff(y_vals, prepend=y_vals[0]))
+        disp = np.sqrt(dx**2 + dy**2)
+        med_disp = np.median(disp)
+        if med_disp > 1.0:
+            cut_mask = disp > 50 * med_disp
+            cut_frames = np.where(cut_mask)[0]
+            for cf in cut_frames:
+                start = max(0, cf - 2)
+                end = min(len(combined), cf + 3)
+                combined[start:end] = 0.0
 
         peaks, _ = find_peaks(
             combined,
@@ -97,7 +122,7 @@ class HitFrameLocalizationStage:
             metadata={"hits": hits, "hit_count": len(hits), "frames_analyzed": len(shuttle_df)}
         )
 
-    def _compute_reversal(self, shuttle_df: pd.DataFrame) -> np.ndarray:
+    def _compute_reversal(self, shuttle_df: pd.DataFrame, rev_threshold: float = 1.0) -> np.ndarray:
         """Shuttle vertical-direction-reversal signal.
 
         A hit reverses the shuttle's vertical trajectory (up→down or down→up).
@@ -113,7 +138,7 @@ class HitFrameLocalizationStage:
 
         # Reversal at frame t when sign flips AND both sides have non-trivial motion
         reversal = np.zeros(len(y), dtype=np.float64)
-        rev_mask = (sign[:-1] * sign[1:] < 0) & (np.abs(dy[:-1]) > 1.0) & (np.abs(dy[1:]) > 1.0)
+        rev_mask = (sign[:-1] * sign[1:] < 0) & (np.abs(dy[:-1]) > rev_threshold) & (np.abs(dy[1:]) > rev_threshold)
         reversal_indices = np.where(rev_mask)[0] + 1  # t+1 is the reversal frame
         reversal[reversal_indices] = 1.0
 
@@ -196,7 +221,7 @@ class HitFrameLocalizationStage:
         m = np.percentile(score, 95)
         return score / (m + 1e-6) if m > 0 else score
 
-    def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame) -> np.ndarray:
+    def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame, prox_scale: float = 100.0) -> np.ndarray:
         """Wrist-to-shuttle proximity. Used as a gate, not an additive floor."""
         score = np.zeros(len(shuttle_df))
         shuttle_positions = shuttle_df[["x", "y"]].values
@@ -216,7 +241,7 @@ class HitFrameLocalizationStage:
                     shuttle_pos_idx = min(np.searchsorted(shuttle_frames, frame_idx), len(shuttle_positions) - 1)
                     shuttle_pos = shuttle_positions[shuttle_pos_idx]
                     dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
-                    score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / 100.0))
+                    score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / prox_scale))
 
         m = np.percentile(score, 95)
         return score / (m + 1e-6) if m > 0 else score

@@ -317,6 +317,32 @@ class StrokeClassificationStage:
             else:
                 end_frame = frame + classifier.seq_len
 
+            # Truncate clip at shuttle landing: if the shuttle stops moving
+            # (speed near zero for several frames) before end_frame, end the
+            # clip there to avoid dead air padding in BST's between-2-hits input.
+            if shuttle_df is not None:
+                seg = shuttle_df[
+                    (shuttle_df["frame"] >= start_frame) &
+                    (shuttle_df["frame"] <= end_frame)
+                ].copy().sort_values("frame")
+                if len(seg) > 10:
+                    sx = seg["x"].values.astype(np.float64)
+                    sy = seg["y"].values.astype(np.float64)
+                    spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2)
+                    land_frames = settings.rally_dead_frames  # reuse: 25 consecutive low-speed frames
+                    streak = 0
+                    for i, s in enumerate(spd):
+                        if s < settings.rally_dead_speed_px:  # 4.0 px/frame
+                            streak += 1
+                            if streak >= land_frames:
+                                land_frame = int(seg.iloc[i - land_frames + 1]["frame"])
+                                # Only truncate if landing is significantly before end_frame
+                                if end_frame - land_frame > land_frames * 2:
+                                    end_frame = land_frame + 5  # small buffer
+                                break
+                        else:
+                            streak = 0
+
             clip_frames = list(range(start_frame, end_frame))
             original_n_frames = len(clip_frames)
             while len(clip_frames) < classifier.seq_len:
