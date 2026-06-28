@@ -525,19 +525,29 @@ def apply_physics_ensemble(
             if shot_probs is not None:
                 alt = best_consistent_class(shot_probs, classes, feats)
             stroke_before = bst_stroke
+            new_type = None
             if alt is not None:
-                shot["stroke_type"] = alt
+                new_type = alt
+            elif phys_stroke != "unknown":
+                new_type = phys_stroke
+
+            # Aggressive block guard: if BST predicted "block" and physics
+            # would keep it as "block", it's a no-op override that just
+            # changes the source tag. Skip it entirely.
+            if bst_stroke == "block" and new_type == "block":
+                shot["stroke_source"] = "bst"
+                bst_count += 1
             else:
-                shot["stroke_type"] = phys_stroke if phys_stroke != "unknown" else bst_stroke
-            shot["stroke_confidence"] = min(c_bst, c_p) if c_p > 0 else c_bst
-            shot["stroke_source"] = "physics_override"
-            shot["bst_stroke_before_override"] = stroke_before
-            shot["bst_conf_before_override"] = c_bst
-            override_count += 1
-            override_indices.append(i)
-            logger.info(
-                "physics veto", frame=f, before=stroke_before, after=shot["stroke_type"], family=fam or "?",
-            )
+                shot["stroke_type"] = new_type if new_type is not None else bst_stroke
+                shot["stroke_confidence"] = min(c_bst, c_p) if c_p > 0 else c_bst
+                shot["stroke_source"] = "physics_override"
+                shot["bst_stroke_before_override"] = stroke_before
+                shot["bst_conf_before_override"] = c_bst
+                override_count += 1
+                override_indices.append(i)
+                logger.info(
+                    "physics veto", frame=f, before=stroke_before, after=shot["stroke_type"], family=fam or "?",
+                )
 
     total = len(shot_records)
 

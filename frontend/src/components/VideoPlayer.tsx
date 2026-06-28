@@ -30,10 +30,10 @@ const RALLY_COLORS = [
   '#ff5252', '#69f0ae', '#ffd740', '#ea80fc', '#82b1ff',
 ];
 
-export type VideoPlayerHandle = {
+export interface VideoPlayerHandle {
   seekTo: (time: number) => void;
   playSegment: (start: number, end: number, loop?: boolean) => void;
-};
+}
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, videoUrl, rallies = [], strokes = [], fps = 30 }, ref) {
   const videoElRef = useRef<HTMLVideoElement>(null);
