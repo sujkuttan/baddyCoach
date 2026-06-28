@@ -328,7 +328,8 @@ class StrokeClassificationStage:
                 if len(seg) > 10:
                     sx = seg["x"].values.astype(np.float64)
                     sy = seg["y"].values.astype(np.float64)
-                    spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2)
+                    frame_gaps = np.diff(seg["frame"].values, prepend=seg["frame"].values[0])
+                    spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2) / np.maximum(frame_gaps, 1)
                     land_frames = settings.rally_dead_frames  # reuse: 25 consecutive low-speed frames
                     streak = 0
                     for i, s in enumerate(spd):

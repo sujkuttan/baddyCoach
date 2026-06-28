@@ -62,7 +62,7 @@ class HitFrameLocalizationStage:
         disp = np.sqrt(dx**2 + dy**2)
         med_disp = np.median(disp)
         if med_disp > 1.0:
-            cut_mask = disp > 50 * med_disp
+            cut_mask = disp > 10 * med_disp
             cut_frames = np.where(cut_mask)[0]
             for cf in cut_frames:
                 start = max(0, cf - 2)
