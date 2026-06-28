@@ -403,6 +403,12 @@ python -m pytest -m "not gpu and not model"
 15. Add auth + upload validation
 16. Respect `court.valid` flag
 
+### Phone-Video Pipeline (pause-record) — 2025-06-28
+- ~~Temporal gap detection for scene cuts~~ (Done — `rallies.py`: NaN-streak check alongside spatial displacement)
+- ~~Scene-cut propagation to shots + rally metadata~~ (Done — `scene_cut_before` column on rallies and shots)
+- ~~UI attribution tier badges~~ (Done — green/orange/red/magenta dots in StrokeListPanel)
+- ~~UI scene-cut warning~~ (Done — "SC" column with ⚠️ in rally breakdown)
+
 ### Nice-to-have
 17. Unify backend/colab pipelines
 18. ~~Replace single-frame technique score~~ (Done)
