@@ -109,6 +109,31 @@ class PlayerAttributionStage:
                     if config.debug_level >= 1:
                         shots_df.at[idx, "attribution_tier"] = "shuttle_direction"
 
+        # Tier 2 balance check: if shuttle_direction systematically favors one player
+        # (>60% within a rally), flip all shuttle_direction assignments in that rally.
+        # The direction test dy>0→player_1 makes a strong camera-angle assumption
+        # that can be wrong with far-player-dominant net play.
+        if config.debug_level >= 1:
+            sd_col = "attribution_tier"
+        else:
+            sd_col = None
+        if rallies_df is not None and len(rallies_df) > 0:
+            for _, rally in rallies_df.iterrows():
+                r_mask = (shots_df["frame"] >= int(rally["start_frame"])) & \
+                         (shots_df["frame"] <= int(rally["end_frame"]))
+                sd_idx = shots_df[r_mask & (shots_df[sd_col] == "shuttle_direction") if sd_col else
+                                  r_mask].index
+                if len(sd_idx) > 3:
+                    p1 = (shots_df.loc[sd_idx, "player_id"] == "player_1").sum()
+                    pct = p1 / len(sd_idx)
+                    if pct > 0.6 or pct < 0.4:
+                        for i in sd_idx:
+                            cur = shots_df.at[i, "player_id"]
+                            shots_df.at[i, "player_id"] = "player_2" if cur == "player_1" else "player_1"
+                            if "side" in shots_df.columns:
+                                cur_side = shots_df.at[i, "side"]
+                                shots_df.at[i, "side"] = "far" if cur_side == "near" else "near"
+
         # Rally-based sequential alternation for remaining unassigned shots (Tier 3)
         # Uses the last assigned/filled shot to determine the next player,
         # preserving alternation (physical law in badminton) without

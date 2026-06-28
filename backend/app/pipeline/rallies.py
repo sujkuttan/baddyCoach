@@ -142,6 +142,12 @@ class RallySegmentationStage:
         min_s = min_shots or settings.rally_min_shots
         shots_df = shots_df.sort_values("frame").reset_index(drop=True)
 
+        # Net y-position for shuttle-crossing detection
+        net_y = None
+        corners = court.get("corners_pixel") if court else None
+        if corners and len(corners) >= 4:
+            net_y = (corners[0][1] + corners[2][1]) / 2.0
+
         rallies = []
         rally_id = 0
         rally_start = shots_df.iloc[0]["frame"]
@@ -156,14 +162,28 @@ class RallySegmentationStage:
 
             rally_ending = _is_rally_ending_shot(stroke_type, stroke_confidence, next_gap)
 
-            # Dead-shuttle check: scan shuttle track between consecutive shots
+            # Dead-shuttle check (long window — continuous video)
             dead_shuttle = _find_dead_shuttle_window(
                 shuttle_df,
                 int(shots_df.iloc[i - 1]["frame"]),
                 int(shots_df.iloc[i]["frame"]),
             )
 
-            if frame_gap > threshold or dead_shuttle or rally_ending:
+            # Scene-cut check (pause-record: recording cut → shuttle position jumps)
+            scene_cut = False
+            if shuttle_df is not None and len(shuttle_df) > 3:
+                seg = shuttle_df[
+                    (shuttle_df["frame"] >= int(shots_df.iloc[i - 1]["frame"])) &
+                    (shuttle_df["frame"] <= int(shots_df.iloc[i]["frame"]))
+                ].copy().sort_values("frame")
+                if len(seg) >= 5:
+                    dx = np.diff(seg["x"].values)
+                    dy = np.diff(seg["y"].values)
+                    disp = np.sqrt(dx * dx + dy * dy)
+                    if np.median(disp) >= 1.0:
+                        scene_cut = disp.max() > 50 * np.median(disp)
+
+            if frame_gap > threshold or dead_shuttle or scene_cut or rally_ending:
                 if len(rally_shots_idx) >= min_s:
                     rally_id += 1
                     end_frame = int(shots_df.iloc[rally_shots_idx[-1]]["frame"])

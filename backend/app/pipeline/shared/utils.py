@@ -143,10 +143,11 @@ def _find_dead_shuttle_window(
         (shuttle_df["frame"] <= end_frame)
     ].copy().sort_values("frame")
 
-    if len(segment) < settings.rally_dead_frames:
+    threshold = min_gap_frames if min_gap_frames is not None else settings.rally_dead_frames
+    if len(segment) < threshold:
         return False
 
-    dead_frames = settings.rally_dead_frames
+    dead_frames = threshold
     min_conf = settings.shuttle_min_conf
 
     x = segment["x"].values.astype(np.float64)

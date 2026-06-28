@@ -117,6 +117,7 @@ class Settings(BaseSettings):
     physics_window_frames: int = 12       # post-contact analysis window (~0.4s @30fps)
     physics_min_valid: int = 4            # min real shuttle points in window to use physics
     physics_quality_min: float = 0.35     # below this, defer entirely to BST
+    physics_min_conf_override: float = 0.25  # skip physics override when BST conf below this
     physics_speed_fast_mps: float = 8.0   # court-space speed thresholds (homography valid)
     physics_speed_slow_mps: float = 3.0
     physics_speed_fast_norm: float = 0.45   # calibrated from phone footage — px_speed_per_s ~0.2-1.1

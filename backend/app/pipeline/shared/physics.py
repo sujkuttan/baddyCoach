@@ -499,6 +499,9 @@ def apply_physics_ensemble(
             else:
                 shot["stroke_source"] = "bst"
                 bst_count += 1
+        elif c_bst < settings.physics_min_conf_override:
+            shot["stroke_source"] = "bst_no_physics"
+            no_physics_count += 1
         else:
             # BST impossible → physics VETO
             alt = None

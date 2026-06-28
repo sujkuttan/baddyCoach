@@ -540,20 +540,17 @@ class BSTClassifier:
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory.
 
-        The clip shuttle is already in court-normalized [0,1] range:
-          channel 0 = court_x / court_length  (0=far end, 1=near end)
-          channel 1 = court_y / court_width   (0=left, 1=right)
-
-        These map approximately 1:1 to pixel-normalized coordinates:
-          court_x (far→near) ≈ pixel_y (top→bottom)
-          court_y (left→right) ≈ pixel_x (left→right)
-
-        So the thresholds (designed for pixel-space [0,1]) work directly
-        on shuttle without any extra conversion.
+        The clip shuttle is normalized to [0,1] range by video resolution
+        (x/vid_w, y/vid_h) or court dimensions, giving approximately the
+        same scale as pixel-normalized coordinates.
 
         Only the POST-HIT half of the trajectory is analyzed to avoid the
         V-shaped averaging problem from between-2-hits clips (the trajectory
         reverses direction at the hit point).
+
+        Checks fast strokes first by max_speed, then uses direction and
+        endpoint to discriminate slower strokes. Falls back to unknown
+        rather than defaulting to a single class.
         """
         seq_len = self.seq_len if self.seq_len is not None else 30
         shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
@@ -561,7 +558,6 @@ class BSTClassifier:
         if len(shuttle) < 2:
             return "unknown"
 
-        # Use only post-hit half of the trajectory
         mid = len(shuttle) // 2
         post_hit = shuttle[mid:]
 
@@ -574,25 +570,32 @@ class BSTClassifier:
         dx = np.diff(valid_traj[:, 0])
         speed = np.sqrt(dx**2 + dy**2)
 
-        mean_speed = float(np.mean(speed))
         max_speed = float(np.max(speed))
         mean_dy = float(np.mean(dy))
         end_y = float(valid_traj[-1, 1])
 
-        if max_speed > 0.15 and mean_dy > 0.05:
-            return "smash"
-        elif mean_speed < 0.03:
-            return "net_shot"
-        elif mean_dy < -0.03 and mean_speed > 0.05:
-            return "clear"
-        elif mean_speed > 0.08 and abs(mean_dy) < 0.02:
-            return "drive"
-        elif mean_dy > 0.04 and mean_speed > 0.05 and end_y > 0.5:
-            return "lift"
-        elif end_y > 0.7 and mean_speed < 0.06:
-            return "drop"
-        else:
+        if max_speed < 0.02:
             return "unknown"
+
+        if mean_dy > 0.05 and max_speed > 0.08:
+            return "smash"
+
+        if mean_dy < -0.04:
+            if end_y > 0.5 and max_speed > 0.06:
+                return "clear"
+            if end_y < 0.3:
+                return "drop"
+
+        if abs(mean_dy) < 0.03 and max_speed > 0.06:
+            return "drive"
+
+        if mean_dy > 0.03 and end_y > 0.5 and max_speed > 0.05:
+            return "lift"
+
+        if max_speed < 0.05:
+            return "net_shot"
+
+        return "unknown"
 
 
 def normalize_shuttlecock(arr: np.ndarray, v_width: int, v_height: int) -> np.ndarray:
