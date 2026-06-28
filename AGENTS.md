@@ -362,14 +362,21 @@ python -m pytest -m "not gpu and not model"
 ## Current Status (2025-06-28)
 
 ### Pipeline Performance (test_match.mp4, 300s)
-- **320 shots**, 11 rallies, 45/55 player split
+- **313 shots**, **22 rallies** (was 11 after scene-cut fix), 47/53 player split
 - **12 unique stroke types**, 13/25 BST classes active
-- **73% BST coverage** (no physics override), 22% physics override, 3% physics fallback
-- **0% rule-based** in final output (122 rule-based fallbacks → all "unknown")
-- **Mean conf: 0.33** (model clips), 0.19 (bst_no_physics)
+- **~20% physics override** (after aggressive block guard), 57.5% bst_no_physics, 3% fallback
+- **0% rule-based** in final output (125 rule-based fallbacks → all "unknown")
+- **Mean conf: 0.33** (model clips, T=1.0 vs 0.23 at T=1.3415)
+
+### Key Findings from Latest Colab Run
+- **T=1.0 increased override rate:** Mean conf 0.33 (vs 0.23 at T=1.3415) pushed 36% more clips above `physics_min_conf_override=0.25` → 117 overrides (37.4%), up from 72 (22.5%). The temperature change, not the code, caused the surge.
+- **Block no-op overrides:** 55/117 overrides were BST→block → physics→block (no-op). These just changed the source tag without altering the stroke type.
+- **Aggressive block guard (commit `70927c1`):** If BST predicted "block" and physics would keep it as "block", the override is skipped entirely. Physics can still override TO block from a non-block BST prediction (legitimate correction), but no-op block-overrides are eliminated.
+- **Scene-cut rally segmentation** produced 22 rallies (up from 11) with reasonable structure (max gaps 26-84 frames, mean 14 shots/rally). No over-splitting detected.
+- **37% rule-based fallback is confirmed intrinsic** to the BST model, not a pipeline bug. Feature quality identical between rule-based and model-processed clips.
 
 ### Confirmed Model Limitations
-- **37% rule-based fallback is intrinsic** to the BST model, not a data pipeline issue. Feature quality (missing_bbox=0, missing_pose=0, shuttle_valid=96, jnb_std=0.23) is identical between rule-based and model-processed clips. The model genuinely outputs uniform logits for these clips.
+- **37% rule-based fallback is intrinsic** — feature quality identical between RB and model clips (missing_bbox=0, shuttle_valid=93-95, jnb_std=0.22-0.23). Model outputs uniform logits for these clips regardless of temperature.
 - **14/25 classes active** (model predicts 14 of 25 ShuttleSet classes). Classes 1, 4, 10-12, 15, 19-22, 24 never activated.
 - **Prior correction** (`bst_logit_bias.json`) is essential — prevents 28 model clips from predicting unknown. Self-calibrated bias would be worse.
 
@@ -384,7 +391,8 @@ python -m pytest -m "not gpu and not model"
 6. ~~Player attribution balance flip~~ (Done)
 7. ~~Rule-based predictor max_speed rewrite~~ (Done)
 8. ~~Physics gate: low-confidence BST skip~~ (Done)
-9. ~~Physics block pivot guard~~ (Done)
+9. ~~Physics block pivot guard (Option A+C)~~ (Done)
+10. ~~Aggressive block guard (no-op override prevention)~~ (Done)
 
 ### High (reliability)
 10. Fix TrackNet integration (official arch + InpaintNet)
