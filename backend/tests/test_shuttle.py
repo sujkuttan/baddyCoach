@@ -21,7 +21,12 @@ def test_shuttle_tracking_stores_parquet(tmp_job_dir):
     assert "shuttle" in result.artifacts
     df = store.get_parquet("shuttle")
     assert len(df) == 3
-    assert list(df.columns) == ["frame", "x", "y", "confidence", "was_interpolated"]
+    assert "frame" in df.columns
+    assert "x" in df.columns
+    assert "y" in df.columns
+    assert "velocity" in df.columns
+    assert "acceleration" in df.columns
+    assert "curvature" in df.columns
 
 
 def test_shuttle_tracking_empty_data(tmp_job_dir):

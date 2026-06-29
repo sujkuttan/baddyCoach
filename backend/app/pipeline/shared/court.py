@@ -262,6 +262,84 @@ def make_undistorter(K, dist, size):
     return undistort
 
 
+class CourtNormalizer:
+    """Unified court coordinate normalizer.
+
+    Converts image-pixel positions (shuttle, player bbox, keypoints) to
+    court-space metres via homography.  Optionally mirrors far-side
+    coordinates so both players share a common (near-side) reference frame.
+
+    Usage:
+        normalizer = CourtNormalizer(H, court_length=13.4, court_width=6.1)
+        cx, cy = normalizer.image_to_court((px, py))
+        cx, cy = normalizer.normalize_player_position(bbox)
+        mx, my = normalizer.mirror_far_side_if_needed((cx, cy), "far")
+    """
+
+    def __init__(self, homography_matrix: np.ndarray | None,
+                 court_length: float = COURT_LENGTH,
+                 court_width: float = COURT_WIDTH):
+        self.H = homography_matrix
+        self.court_length = court_length
+        self.court_width = court_width
+
+    def image_to_court(self, point_px: tuple[float, float]) -> tuple[float, float] | None:
+        """Convert a single image-pixel point (u, v) to court metres (x, y).
+
+        Returns None if no valid homography.
+        """
+        if self.H is None:
+            return None
+        try:
+            return image_to_court(self.H, point_px)
+        except Exception:
+            return None
+
+    def normalize_player_position(self, player_bbox: list[float]) -> tuple[float, float] | None:
+        """Convert a player detection bbox [x1, y1, x2, y2] to court-space
+        foot position (metres).  Uses bbox bottom-centre as the foot point."""
+        if not player_bbox or len(player_bbox) < 4:
+            return None
+        foot_px = foot_point_from_bbox(player_bbox)
+        return self.image_to_court(foot_px)
+
+    def mirror_far_side_if_needed(self, point_court: tuple[float, float],
+                                   player_side: str) -> tuple[float, float]:
+        """Mirror court-space x for the far-side player so both players
+        share a common near-side reference frame.
+
+        In the un-mirrored court frame, x increases away from the camera
+        (near → far).  After mirroring, x increases left-to-right in the
+        viewer's perspective for *both* players.
+
+        Returns (mirrored_x, y) — unchanged if player_side == "near".
+        """
+        x, y = point_court
+        if player_side == "far":
+            x = self.court_length - x
+        return (x, y)
+
+    def foot_from_pose(self, keypoints_xy: np.ndarray,
+                       conf: np.ndarray | None = None,
+                       conf_thr: float = 0.3) -> tuple[float, float] | None:
+        """Court-space foot position from COCO-17 ankle keypoints.
+
+        Returns (x_court, y_court) or None when both ankles are low-confidence.
+        """
+        foot_px = foot_midpoint_from_pose(keypoints_xy, conf, conf_thr)
+        if foot_px is None:
+            return None
+        return self.image_to_court(foot_px)
+
+    def to_unit(self, cx: float, cy: float) -> tuple[float, float]:
+        """Court metres → unit [0, 1], clamped."""
+        return court_to_unit(cx, cy, self.court_length, self.court_width)
+
+    def clamp(self, cx: float, cy: float) -> tuple[float, float]:
+        """Clamp to valid court dimensions."""
+        return clamp_to_court(cx, cy)
+
+
 def foot_midpoint_from_pose(keypoints_xy, conf=None, conf_thr=0.3):
     """COCO-17 ankles are indices 15 (left) and 16 (right).
     Returns (u, v) midpoint of ankles, or None if both low-confidence."""

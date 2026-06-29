@@ -1,250 +1,248 @@
 import numpy as np
 import pandas as pd
-from scipy.signal import find_peaks
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
 
+# ── Global-hit-candidate detector (shuttle-centric, no player dependency) ──
+
+def _angle_between(v1: np.ndarray, v2: np.ndarray) -> float:
+    """Angle (radians) between two 2D vectors."""
+    dot = float(np.dot(v1, v2))
+    norm = float(np.linalg.norm(v1) * np.linalg.norm(v2))
+    if norm < 1e-6:
+        return 0.0
+    return float(np.arccos(np.clip(dot / norm, -1.0, 1.0)))
+
+
+def _menger_curvature(a: np.ndarray, b: np.ndarray, c: np.ndarray) -> float:
+    """Menger curvature for three consecutive points = 4*area / (|AB|*|BC|*|CA|)."""
+    ab = np.linalg.norm(a - b)
+    bc = np.linalg.norm(b - c)
+    ca = np.linalg.norm(c - a)
+    if ab < 1e-6 or bc < 1e-6 or ca < 1e-6:
+        return 0.0
+    area = abs((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])) / 2.0
+    return 4.0 * area / (ab * bc * ca)
+
+
+def _normalize_by_p95(values: np.ndarray) -> np.ndarray:
+    """95th-percentile normalisation, robust to extreme frames."""
+    m = float(np.percentile(values[np.isfinite(values)], 95)) if np.any(np.isfinite(values)) else 1.0
+    return values / (m + 1e-6) if m > 0 else values
+
+
+def non_max_suppression(candidates: list[dict], min_gap: int) -> list[dict]:
+    """Greedy non-maximum suppression: keep highest-score candidate within each
+    min_gap-sized window, preserving the strongest detections."""
+    if len(candidates) < 2:
+        return candidates
+    sorted_cands = sorted(candidates, key=lambda c: c["score"], reverse=True)
+    kept = []
+    suppressed = set()
+    for i, c in enumerate(sorted_cands):
+        if i in suppressed:
+            continue
+        kept.append(c)
+        for j in range(i + 1, len(sorted_cands)):
+            if abs(c["frame"] - sorted_cands[j]["frame"]) < min_gap:
+                suppressed.add(j)
+    return sorted(kept, key=lambda c: c["frame"])
+
+
+class GlobalHitCandidateDetector:
+    """Detect hit candidates from shuttle trajectory alone.
+
+    Four-signal fusion: direction change, speed delta, curvature,
+    visibility transition.  No player-dependent signals (no proximity gate,
+    no swing acceleration).  Candidate scoring is purely shuttle-centric.
+    """
+
+    def __init__(self, window: int = 3, direction_weight: float = 0.45,
+                 speed_weight: float = 0.30, curvature_weight: float = 0.20,
+                 visibility_weight: float = 0.05, threshold: float = 0.62,
+                 min_gap_frames: int = 6):
+        self.window = window
+        self.direction_weight = direction_weight
+        self.speed_weight = speed_weight
+        self.curvature_weight = curvature_weight
+        self.visibility_weight = visibility_weight
+        self.threshold = threshold
+        self.min_gap_frames = min_gap_frames
+
+    @classmethod
+    def from_settings(cls) -> "GlobalHitCandidateDetector":
+        return cls(
+            window=getattr(settings, 'hit_window_frames', 3),
+            direction_weight=getattr(settings, 'hit_direction_weight', 0.45),
+            speed_weight=getattr(settings, 'hit_speed_weight', 0.30),
+            curvature_weight=getattr(settings, 'hit_curvature_weight', 0.20),
+            visibility_weight=getattr(settings, 'hit_visibility_weight', 0.05),
+            threshold=getattr(settings, 'hit_candidate_threshold', 0.62),
+            min_gap_frames=getattr(settings, 'hit_min_gap_frames', 6),
+        )
+
+    def detect(self, shuttle_track: pd.DataFrame) -> list[dict]:
+        """Detect hit candidates from cleaned shuttle trajectory.
+
+        Parameters
+        ----------
+        shuttle_track : pd.DataFrame
+            Must contain columns ``x``, ``y`` (pixel coords, NaN for missing
+            frames).  May contain ``was_interpolated``; interpolated regions
+            are down-weighted via the visibility score.
+
+        Returns
+        -------
+        candidates : list[dict]
+            Each dict has keys ``frame``, ``score``, ``direction_change``,
+            ``speed_delta``, ``curvature`` (raw sub-scores before
+            weighting) and ``visibility_transition``.
+        """
+        x = shuttle_track["x"].values.astype(np.float64)
+        y = shuttle_track["y"].values.astype(np.float64)
+        n = len(x)
+        w = self.window
+
+        # Fill NaNs with forward-fill so diff/angle computations don't
+        # collapse.  Track original NaN locations for the visibility score.
+        orig_nan = np.isnan(x)
+        x_filled = pd.Series(x).ffill().bfill().values
+        y_filled = pd.Series(y).ffill().bfill().values
+
+        # Interpolated flag for visibility transition scoring
+        is_interpolated = orig_nan.copy()
+        if "was_interpolated" in shuttle_track.columns:
+            is_interpolated = is_interpolated | shuttle_track["was_interpolated"].values.astype(bool)
+
+        # Velocity before and after each frame (vector from t-w to t and t to t+w)
+        v_before = np.zeros((n, 2), dtype=np.float64)
+        v_after = np.zeros((n, 2), dtype=np.float64)
+
+        for t in range(w, n - w):
+            v_before[t] = [x_filled[t] - x_filled[t - w],
+                           y_filled[t] - y_filled[t - w]]
+            v_after[t] = [x_filled[t + w] - x_filled[t],
+                          y_filled[t + w] - y_filled[t]]
+
+        speed_before = np.linalg.norm(v_before, axis=1)
+        speed_after = np.linalg.norm(v_after, axis=1)
+
+        # 1. Direction change: angle between v_before and v_after
+        direction_signal = np.zeros(n, dtype=np.float64)
+        for t in range(w, n - w):
+            direction_signal[t] = _angle_between(v_before[t], v_after[t])
+
+        # 2. Speed delta: absolute change in speed
+        speed_delta_signal = np.abs(speed_after - speed_before)
+
+        # 3. Menger curvature
+        curvature_signal = np.zeros(n, dtype=np.float64)
+        for t in range(1, n - 1):
+            if any(orig_nan[t - 1:t + 2]):
+                continue
+            curvature_signal[t] = _menger_curvature(
+                np.array([x_filled[t - 1], y_filled[t - 1]]),
+                np.array([x_filled[t], y_filled[t]]),
+                np.array([x_filled[t + 1], y_filled[t + 1]]),
+            )
+
+        # 4. Visibility transition: shuttle appears/disappears (occlusion)
+        visibility_signal = np.zeros(n, dtype=np.float64)
+        vis_changes = np.diff((~orig_nan).astype(int))
+        change_frames = np.where(np.abs(vis_changes) > 0)[0] + 1
+        visibility_signal[change_frames] = 1.0
+
+        # Normalize each signal
+        direction_norm = _normalize_by_p95(direction_signal)
+        speed_delta_norm = _normalize_by_p95(speed_delta_signal)
+        curvature_norm = _normalize_by_p95(curvature_signal)
+
+        # Combined event score
+        combined = (
+            self.direction_weight * direction_norm +
+            self.speed_weight * speed_delta_norm +
+            self.curvature_weight * curvature_norm +
+            self.visibility_weight * visibility_signal
+        )
+
+        # Build candidates
+        candidates = []
+        for t in range(w, n - w):
+            if not np.isfinite(combined[t]):
+                continue
+            if combined[t] >= self.threshold:
+                candidates.append({
+                    "frame": t,
+                    "score": float(combined[t]),
+                    "direction_change": float(direction_signal[t]),
+                    "speed_delta": float(speed_delta_signal[t]),
+                    "curvature": float(curvature_signal[t]),
+                    "visibility_transition": int(visibility_signal[t]),
+                })
+
+        # Suppress scene-cut induced teleport false positives:
+        # when shuttle displacement exceeds 10× the median, suppress nearby frames.
+        med_disp = float(np.median(
+            np.sqrt(np.diff(x_filled) ** 2 + np.diff(y_filled) ** 2)
+        ))
+        if np.isfinite(med_disp) and med_disp > 1.0:
+            disp = np.sqrt(
+                np.diff(x_filled, prepend=x_filled[0]) ** 2 +
+                np.diff(y_filled, prepend=y_filled[0]) ** 2
+            )
+            cut_frames = np.where(disp > 10 * med_disp)[0]
+            candidates = [
+                c for c in candidates
+                if not any(abs(c["frame"] - cf) <= 2 for cf in cut_frames)
+            ]
+
+        # Non-maximum suppression
+        return non_max_suppression(candidates, self.min_gap_frames)
+
+
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
-    input_keys = ["shuttle_raw", "pose"]
+    input_keys = ["shuttle"]
     output_keys = ["hits"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
-        shuttle_df = artifacts.get_parquet("shuttle_raw")
+        shuttle_df = artifacts.get_parquet("shuttle")
         if shuttle_df is None or len(shuttle_df) == 0:
-            return StageResult.from_error("Shuttle tracking data required")
+            # Fallback to shuttle_raw if cleaned shuttle unavailable
+            shuttle_df = artifacts.get_parquet("shuttle_raw")
+            if shuttle_df is None or len(shuttle_df) == 0:
+                return StageResult.from_error("Shuttle tracking data required")
+            shuttle_df["x"] = shuttle_df["x"].ffill().bfill()
+            shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
 
-        # Fill NaN in x,y from trajectory cleaning: carry-forward fills gaps
-        # with zero-motion (dx=0, dy=0), avoiding NaN propagation in np.diff
-        # while producing no fake teleports or false peaks.
-        shuttle_df["x"] = shuttle_df["x"].ffill().bfill()
-        shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
-
-        pose_df = artifacts.get_parquet("pose")
-
-        # Resolution-independent diagonal for pixel-space thresholds
-        vid_w = max(float(shuttle_df["x"].max()), 640) if len(shuttle_df) > 0 else 1920
-        vid_h = max(float(shuttle_df["y"].max()), 480) if len(shuttle_df) > 0 else 1080
-        diag = np.sqrt(vid_w**2 + vid_h**2)
-        # Thresholds as fraction of diagonal (0.1% for reversal, 5% for proximity)
-        rev_threshold = 0.001 * diag
-        prox_scale = 0.05 * diag
-
-        reversal_score = self._compute_reversal(shuttle_df, rev_threshold)
-        trajectory_score = self._compute_trajectory_change(shuttle_df)
-        speed_score = self._compute_speed_peaks(shuttle_df)
-        swing_score = self._compute_swing_acceleration(pose_df, n_frames=len(shuttle_df)) if pose_df is not None else np.zeros(len(shuttle_df))
-        proximity_score = self._compute_proximity(shuttle_df, pose_df, prox_scale) if pose_df is not None else np.zeros(len(shuttle_df))
-
-        # Proximity gate: zero out all other signals where shuttle is far from players
-        gate = (proximity_score >= settings.hit_proximity_gate).astype(np.float64)
-
-        combined = (
-            gate * (
-                settings.hit_reversal_weight * reversal_score +
-                settings.hit_trajectory_weight * trajectory_score +
-                settings.hit_speed_weight * speed_score +
-                settings.hit_swing_weight * swing_score
-            ) +
-            settings.hit_proximity_weight * proximity_score
-        )
-
-        # Zero out hit signals at scene-cut boundaries (pause-record teleport)
-        # Shuttle teleport produces false reversal/speed peaks; detect via
-        # large displacement between consecutive frames and mute ±2 frames.
-        x_vals = shuttle_df["x"].values
-        y_vals = shuttle_df["y"].values
-        dx = np.abs(np.diff(x_vals, prepend=x_vals[0]))
-        dy = np.abs(np.diff(y_vals, prepend=y_vals[0]))
-        disp = np.sqrt(dx**2 + dy**2)
-        med_disp = np.median(disp)
-        if med_disp > 1.0:
-            cut_mask = disp > 10 * med_disp
-            cut_frames = np.where(cut_mask)[0]
-            for cf in cut_frames:
-                start = max(0, cf - 2)
-                end = min(len(combined), cf + 3)
-                combined[start:end] = 0.0
-
-        peaks, _ = find_peaks(
-            combined,
-            height=settings.hit_confidence_threshold,
-            distance=3,
-        )
-        hit_frames = peaks
-
-        hits = []
-        for idx in hit_frames:
-            frame = int(shuttle_df.iloc[idx]["frame"])
-            hits.append({
-                "frame": frame,
-                "confidence": float(combined[idx]),
-            })
+        detector = GlobalHitCandidateDetector.from_settings()
+        candidates = detector.detect(shuttle_df)
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:
+            n = len(shuttle_df)
             debug_hit_df = pd.DataFrame({
-                "frame": shuttle_df["frame"].values,
-                "reversal_raw": reversal_score,
-                "trajectory_raw": trajectory_score,
-                "speed_raw": speed_score,
-                "swing_raw": swing_score,
-                "proximity_raw": proximity_score,
-                "combined": combined,
-                "is_peak": [False] * len(shuttle_df),
+                "frame": shuttle_df["frame"].values if "frame" in shuttle_df.columns else range(n),
+                "combined": np.zeros(n, dtype=np.float64),
+                "is_peak": False,
+                "_placeholder": np.zeros(n),
             })
-            debug_hit_df.loc[peaks, "is_peak"] = True
+            debug_frames = [c["frame"] for c in candidates]
+            debug_scores = [c["score"] for c in candidates]
+            debug_hit_df.loc[debug_frames, "combined"] = debug_scores
+            debug_hit_df.loc[debug_frames, "is_peak"] = True
             artifacts.set_parquet("debug_hit_scores", debug_hit_df)
 
-        if len(hits) > 1:
-            fps = float(config.processing_fps or settings.fps)
-            min_gap = max(3, int(fps * settings.hit_dedup_gap_seconds))
-            hits = sorted(hits, key=lambda h: h["frame"])
-            deduped = [hits[0]]
-            for h in hits[1:]:
-                gap = h["frame"] - deduped[-1]["frame"]
-                if gap >= min_gap:
-                    deduped.append(h)
-                elif h["confidence"] > deduped[-1]["confidence"]:
-                    deduped[-1] = h
-            hits = deduped
-
+        hits = [{"frame": c["frame"], "confidence": c["score"]} for c in candidates]
         hits_data = pd.DataFrame(hits)
         artifacts.set_parquet("hits", hits_data)
 
-        logger.info(f"Localized {len(hits)} hit frames from {len(shuttle_df)} shuttle samples")
+        logger.info(f"Localized {len(hits)} hit frames via shuttle-centric detector")
 
         return StageResult.success(
             artifacts={"hits": artifacts.path("hits")},
-            metadata={"hits": hits, "hit_count": len(hits), "frames_analyzed": len(shuttle_df)}
+            metadata={"hit_count": len(hits), "frames_analyzed": len(shuttle_df)}
         )
-
-    def _compute_reversal(self, shuttle_df: pd.DataFrame, rev_threshold: float = 1.0) -> np.ndarray:
-        """Shuttle vertical-direction-reversal signal.
-
-        A hit reverses the shuttle's vertical trajectory (up→down or down→up).
-        This is the strongest, most camera-robust physical cue — it works with
-        pixel coordinates regardless of court detection quality.
-        """
-        y = shuttle_df["y"].values
-        dy = np.diff(y, prepend=y[0])
-
-        # Sign of vertical velocity: +1 = moving down, -1 = moving up, 0 = stationary
-        sign = np.sign(dy)
-        sign[(sign > -0.01) & (sign < 0.01)] = 0
-
-        # Reversal at frame t when sign flips AND both sides have non-trivial motion
-        reversal = np.zeros(len(y), dtype=np.float64)
-        rev_mask = (sign[:-1] * sign[1:] < 0) & (np.abs(dy[:-1]) > rev_threshold) & (np.abs(dy[1:]) > rev_threshold)
-        reversal_indices = np.where(rev_mask)[0] + 1  # t+1 is the reversal frame
-        reversal[reversal_indices] = 1.0
-
-        # Spread energy across a narrow window around each reversal
-        for ri in reversal_indices:
-            start = max(0, ri - 2)
-            end = min(len(y), ri + 3)
-            # Triangular window: peak at reversal, taper off
-            for ti in range(start, end):
-                dist = abs(ti - ri)
-                reversal[ti] = max(reversal[ti], 1.0 - dist * 0.3)
-
-        return reversal
-
-    def _compute_trajectory_change(self, shuttle_df: pd.DataFrame) -> np.ndarray:
-        """Direction-change signal from shuttle trajectory angle."""
-        x = shuttle_df["x"].values
-        y = shuttle_df["y"].values
-        dx = np.diff(x, prepend=x[0])
-        dy = np.diff(y, prepend=y[0])
-        angle = np.arctan2(dy, dx)
-        angle_diff = np.abs(np.diff(angle, prepend=angle[0]))
-        score = angle_diff / (np.pi + 1e-6)
-        m = np.percentile(score, 95)
-        return score / (m + 1e-6) if m > 0 else score
-
-    def _compute_speed_peaks(self, shuttle_df: pd.DataFrame) -> np.ndarray:
-        """Speed-peak signal from shuttle velocity."""
-        x = shuttle_df["x"].values
-        y = shuttle_df["y"].values
-        speed = np.sqrt(np.diff(x, prepend=x[0])**2 + np.diff(y, prepend=y[0])**2)
-        peaks, _ = find_peaks(speed, distance=3)
-        score = np.zeros(len(speed))
-        score[peaks] = speed[peaks]
-        m = np.percentile(score, 95)
-        return score / (m + 1e-6) if m > 0 else score
-
-    def _compute_swing_acceleration(self, pose_df: pd.DataFrame, n_frames: int = 0) -> np.ndarray:
-        """Wrist acceleration signal.
-
-        Raw wrist velocity is noisy; acceleration (change in velocity) is a
-        sharper indicator of impact — the racket suddenly decelerates upon
-        contacting the shuttle.
-        """
-        if n_frames == 0:
-            n_frames = pose_df["frame"].max() + 1
-        score = np.zeros(n_frames)
-
-        for player_id in pose_df["player_id"].unique():
-            player_poses = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
-            if len(player_poses) < 4:
-                continue
-
-            frames = player_poses["frame"].values
-            wrist_positions = []
-            for _, row in player_poses.iterrows():
-                kps = np.array(row['keypoints'].tolist())
-                if kps.ndim == 1:
-                    kps = np.array(kps.tolist())
-                if kps.shape == (17, 3):
-                    wrist = (kps[9][:2] + kps[10][:2]) / 2
-                    wrist_positions.append(wrist)
-                else:
-                    wrist_positions.append(np.array([np.nan, np.nan]))
-            wrist_positions = np.array(wrist_positions)
-
-            # Velocity: frame-to-frame displacement
-            vel = np.zeros_like(wrist_positions)
-            vel[1:] = wrist_positions[1:] - wrist_positions[:-1]
-            vel[0] = vel[1]
-
-            # Acceleration: change in velocity (sharp jerk at impact)
-            acc = np.zeros(len(vel))
-            acc[2:] = np.sqrt(np.sum((vel[2:] - vel[1:-1])**2, axis=1))
-            acc = np.nan_to_num(acc, 0)
-
-            for ti in range(min(len(frames), n_frames)):
-                fi = int(frames[ti])
-                if fi >= n_frames:
-                    continue
-                score[fi] = max(score[fi], acc[ti])
-
-        m = np.percentile(score, 95)
-        return score / (m + 1e-6) if m > 0 else score
-
-    def _compute_proximity(self, shuttle_df: pd.DataFrame, pose_df: pd.DataFrame, prox_scale: float = 100.0) -> np.ndarray:
-        """Wrist-to-shuttle proximity. Used as a gate, not an additive floor."""
-        score = np.zeros(len(shuttle_df))
-        shuttle_positions = shuttle_df[["x", "y"]].values
-        shuttle_frames = shuttle_df["frame"].values
-
-        for player_id in pose_df["player_id"].unique():
-            player_poses = pose_df[pose_df["player_id"] == player_id]
-            for _, row in player_poses.iterrows():
-                frame_idx = int(row["frame"])
-                if frame_idx >= len(score):
-                    continue
-                kps = np.array(row["keypoints"].tolist())
-                if kps.ndim == 1:
-                    kps = np.array(kps.tolist())
-                if kps.shape == (17, 3):
-                    wrist = (kps[9][:2] + kps[10][:2]) / 2
-                    shuttle_pos_idx = min(np.searchsorted(shuttle_frames, frame_idx), len(shuttle_positions) - 1)
-                    shuttle_pos = shuttle_positions[shuttle_pos_idx]
-                    dist = np.sqrt(np.sum((wrist - shuttle_pos)**2))
-                    score[frame_idx] = max(score[frame_idx], 1.0 / (1.0 + dist / prox_scale))
-
-        m = np.percentile(score, 95)
-        return score / (m + 1e-6) if m > 0 else score

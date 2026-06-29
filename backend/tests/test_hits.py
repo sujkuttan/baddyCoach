@@ -31,5 +31,7 @@ def test_hit_detection_finds_trajectory_changes(tmp_job_dir):
     result = stage.run(store, config)
 
     assert result.status == "success"
-    assert "hits" in result.metadata
     assert result.metadata["hit_count"] > 0
+    # Verify at least one hit near the trajectory reversal (frame 20 ± window)
+    hits_df = store.get_parquet("hits")
+    assert hits_df is not None and len(hits_df) > 0

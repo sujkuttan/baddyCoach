@@ -63,6 +63,19 @@ def run_pipeline(job_id: str):
         sample_interval = sample_rate if sample_rate > 0 else max(1, int(video_fps / 10))
         effective_fps = video_fps / sample_interval
         frames = _extract_frames(video_path, sample_interval=sample_interval)
+        # Store structured video metadata
+        cap = cv2.VideoCapture(video_path)
+        total_source_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        store.set("video_metadata", {
+            "video_id": job_id,
+            "fps": round(effective_fps, 2),
+            "source_fps": video_fps,
+            "width": vid_w,
+            "height": vid_h,
+            "duration_seconds": round(total_source_frames / max(1.0, video_fps), 2),
+            "total_frames": total_source_frames,
+        })
     else:
         frames = []
         effective_fps = 30.0

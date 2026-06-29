@@ -50,15 +50,63 @@ class Settings(BaseSettings):
     track_stitch_enabled: bool = True
     tracker_config_path: Path = _project_root / "backend/app/config/bytetrack_badminton.yaml"
 
-    # Hit detection weights & thresholds
-    hit_reversal_weight: float = 0.45
-    hit_trajectory_weight: float = 0.20
-    hit_speed_weight: float = 0.15
-    hit_swing_weight: float = 0.15
-    hit_proximity_weight: float = 0.05
-    hit_proximity_gate: float = 0.3  # minimum proximity to allow any hit signal
-    hit_confidence_threshold: float = 0.7
-    hit_dedup_gap_seconds: float = 0.2    # fast exchanges can be <0.5s apart
+    # Hit detection — shuttle-centric GlobalHitCandidateDetector (Section 7)
+    hit_window_frames: int = 3           # ±window for velocity vectors
+    hit_direction_weight: float = 0.45   # direction-change signal weight
+    hit_speed_weight: float = 0.30       # speed-delta signal weight
+    hit_curvature_weight: float = 0.20   # curvature signal weight
+    hit_visibility_weight: float = 0.05  # visibility-transition signal weight
+    hit_candidate_threshold: float = 0.62  # minimum event score to accept a candidate
+    hit_min_gap_frames: int = 6          # non-maximum suppression window
+
+    # Ownership scoring weights (Section 10)
+    ownership_trajectory_weight: float = 0.35
+    ownership_court_side_weight: float = 0.20
+    ownership_proximity_weight: float = 0.15
+    ownership_motion_weight: float = 0.15
+    ownership_pose_feasibility_weight: float = 0.10
+    ownership_turn_prior_weight: float = 0.05
+    ownership_window_frames: int = 3         # ±window for trajectory vector
+    ownership_net_margin: float = 0.75       # metres — ambiguous zone around net
+    ownership_prox_sigma_norm: float = 0.15  # normalised proximity scaling
+    ownership_prox_sigma_meters: float = 0.75
+    ownership_prox_min_pose_conf: float = 0.25
+    ownership_min_pose_conf: float = 0.35    # minimum keypoint confidence
+    ownership_unknown_score: float = 0.50    # default score when data missing
+    ownership_strong_reach: float = 0.75     # arm-reach ratio: natural reach
+    ownership_medium_reach: float = 1.25     # plausible reach upper bound
+    ownership_weak_reach: float = 1.75       # max stretched reach
+    ownership_alternate_score: float = 0.95  # turn prior: alternation
+    ownership_same_player_score: float = 0.05
+    ownership_first_hit_score: float = 0.50
+
+    # Trajectory sub-score (YAML trajectory section)
+    ownership_traj_min_shuttle_conf: float = 0.30
+    ownership_traj_interp_penalty: float = 0.80
+
+    # Court-side sub-score (YAML court_side section)
+    ownership_court_net_y: float = 6.7
+    ownership_court_wrong_side_score: float = 0.20
+
+    # Motion sub-score weights (YAML motion section)
+    ownership_motion_wrist_weight: float = 0.50
+    ownership_motion_elbow_weight: float = 0.30
+    ownership_motion_shoulder_weight: float = 0.20
+
+    # Viterbi transition probabilities (YAML viterbi section)
+    viterbi_p_alternate: float = 0.95
+    viterbi_p_same: float = 0.05
+    viterbi_epsilon: float = 1e-6
+
+    # Side-specific calibration stats (YAML calibration section)
+    calib_near_mean: float = 0.62
+    calib_near_std: float = 0.14
+    calib_far_mean: float = 0.48
+    calib_far_std: float = 0.18
+
+    # Post-attribution confidence / uncertainty (YAML confidence section)
+    confidence_min_owner_confidence: float = 0.60
+    confidence_uncertain_margin: float = 0.12
 
     # Stroke classification thresholds
     stroke_smoothing_window: int = 2  # ±neighbors

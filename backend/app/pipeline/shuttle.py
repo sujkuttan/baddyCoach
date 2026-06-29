@@ -5,8 +5,50 @@ import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
-from app.pipeline.shared.shuttle_utils import clean_trajectory
+from app.pipeline.shared.shuttle_utils import clean_trajectory, ShuttleSmoother
 from app.config.settings import settings
+
+
+def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.DataFrame:
+    """Add court-space coordinates, speed, and direction to shuttle dataframe.
+
+    Computes x_court, y_court (metres via homography), speed_court (m/s),
+    and direction_x, direction_y (normalised) for each frame with valid pixel coords.
+    """
+    from app.pipeline.shared.court import image_to_court, COURT_LENGTH, COURT_WIDTH
+
+    court_xs = np.full(len(df), np.nan, dtype=np.float64)
+    court_ys = np.full(len(df), np.nan, dtype=np.float64)
+    speeds = np.full(len(df), np.nan, dtype=np.float64)
+    dir_xs = np.full(len(df), np.nan, dtype=np.float64)
+    dir_ys = np.full(len(df), np.nan, dtype=np.float64)
+
+    prev_cx, prev_cy = None, None
+    for i, (_, row) in enumerate(df.iterrows()):
+        x, y = row.get("x"), row.get("y")
+        if pd.notna(x) and pd.notna(y):
+            cx, cy = image_to_court(H, (float(x), float(y)))
+            cx = max(0.0, min(COURT_LENGTH, cx))
+            cy = max(0.0, min(COURT_WIDTH, cy))
+            court_xs[i] = cx
+            court_ys[i] = cy
+            if prev_cx is not None:
+                dx = cx - prev_cx
+                dy = cy - prev_cy
+                speed = np.sqrt(dx * dx + dy * dy) * fps
+                speeds[i] = speed
+                norm = np.sqrt(dx * dx + dy * dy) + 1e-8
+                dir_xs[i] = dx / norm
+                dir_ys[i] = dy / norm
+            prev_cx, prev_cy = cx, cy
+
+    df = df.copy()
+    df["x_court"] = court_xs
+    df["y_court"] = court_ys
+    df["speed_court"] = speeds
+    df["direction_x"] = dir_xs
+    df["direction_y"] = dir_ys
+    return df
 
 
 def _count_big_jumps(x, y, threshold: float) -> int:
@@ -110,6 +152,21 @@ class ShuttleTrackingStage:
 
         if not settings.shuttle_clean_enabled:
             artifacts.set_parquet("shuttle_raw", df.copy())
+
+        # Enrich cleaned shuttle with court-space coordinates when homography is available
+        court = artifacts.get("court")
+        metadata = artifacts.get("video_metadata") or {}
+        fps = metadata.get("fps", settings.fps)
+        if court and court.get("valid", False) and court.get("homography") is not None:
+            H = np.array(court["homography"])
+            df = _add_court_space_columns(df, H, float(fps))
+            logger.info("Added court-space columns to shuttle data")
+
+        # Compute derived kinematics (velocity, acceleration, curvature)
+        smoother = ShuttleSmoother(settings)
+        df["velocity"] = smoother.compute_velocity(df)
+        df["acceleration"] = smoother.compute_acceleration(df)
+        df["curvature"] = smoother.compute_curvature(df)
 
         artifacts.set_parquet("shuttle", df)
 

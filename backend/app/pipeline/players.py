@@ -95,9 +95,17 @@ def stitch_tracks(detections: list[dict], court_mid_y: float) -> dict:
             "detection_count": len(dets),
             "is_synthetic": any(d.get("is_synthetic", False) for d in dets),
             "detections": [
-                {"frame": d["frame"], "bbox": d["bbox"],
-                 "confidence": d["confidence"],
-                 "is_synthetic": d.get("is_synthetic", False)}
+                {
+                    "frame": d["frame"],
+                    "bbox": d["bbox"],
+                    "confidence": d["confidence"],
+                    "is_synthetic": d.get("is_synthetic", False),
+                    "center_px": [(d["bbox"][0] + d["bbox"][2]) / 2.0,
+                                  (d["bbox"][1] + d["bbox"][3]) / 2.0],
+                    "foot_point_px": [(d["bbox"][0] + d["bbox"][2]) / 2.0,
+                                      float(d["bbox"][3])],
+                    "bbox_height": float(d["bbox"][3] - d["bbox"][1]),
+                }
                 for d in dets
             ],
         })
@@ -225,6 +233,7 @@ class PlayerTrackingStage:
 
         Stitches track-ID fragments into exactly 2 persistent identities
         (near/far) using per-frame side assignment + centroid distance continuity.
+        Enriches each detection with derived fields (center, foot, height, court coords).
         """
         if not detections:
             return StageResult.from_error("No player detections provided")
@@ -233,6 +242,23 @@ class PlayerTrackingStage:
             players_data = self._stitch_tracks(detections, court_mid_y)
         else:
             players_data = self._group_by_track_id(detections, court_mid_y)
+
+        # Enrich with court-space coordinates when homography is available
+        court = artifacts.get("court")
+        if court and court.get("valid", False) and court.get("homography") is not None:
+            H = np.array(court["homography"])
+            from app.pipeline.shared.court import image_to_court
+            for player in players_data.get("players", []):
+                for det in player.get("detections", []):
+                    bbox = det.get("bbox")
+                    if bbox and len(bbox) == 4:
+                        foot_px = ((bbox[0] + bbox[2]) / 2.0, float(bbox[3]))
+                        try:
+                            cx, cy = image_to_court(H, foot_px)
+                            det["x_court"] = round(cx, 3)
+                            det["y_court"] = round(cy, 3)
+                        except Exception:
+                            pass
 
         artifacts.set("players", players_data)
 
@@ -289,11 +315,23 @@ class PlayerTrackingStage:
 
         players_data = {
             "players": [
-                {"id": p["id"], "side": p["side"], "detection_count": len(p["detections"]),
-                 "is_synthetic": p.get("is_synthetic", False),
-                 "detections": [{"frame": d["frame"], "bbox": d["bbox"], "confidence": d["confidence"],
-                                 "is_synthetic": d.get("is_synthetic", False)}
-                                for d in p["detections"]]}
+                {
+                    "id": p["id"], "side": p["side"], "detection_count": len(p["detections"]),
+                    "is_synthetic": p.get("is_synthetic", False),
+                    "detections": [
+                        {
+                            "frame": d["frame"], "bbox": d["bbox"],
+                            "confidence": d["confidence"],
+                            "is_synthetic": d.get("is_synthetic", False),
+                            "center_px": [(d["bbox"][0] + d["bbox"][2]) / 2.0,
+                                          (d["bbox"][1] + d["bbox"][3]) / 2.0],
+                            "foot_point_px": [(d["bbox"][0] + d["bbox"][2]) / 2.0,
+                                              float(d["bbox"][3])],
+                            "bbox_height": float(d["bbox"][3] - d["bbox"][1]),
+                        }
+                        for d in p["detections"]
+                    ],
+                }
                 for p in players.values()
             ],
             "total_frames": max(d["frame"] for d in detections) + 1,
