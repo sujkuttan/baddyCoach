@@ -176,10 +176,10 @@ class PlayerAttributionStage:
                 heuristic_idx = shots_df[
                     r_mask & (shots_df["attribution_tier"].isin(HEURISTIC_TIERS))
                 ].index if config.debug_level >= 1 else shots_df[r_mask].index
-                if len(heuristic_idx) > 3:
+                if len(heuristic_idx) >= 3:
                     p1 = (shots_df.loc[heuristic_idx, "player_id"] == "player_1").sum()
                     pct = p1 / len(heuristic_idx)
-                    if pct > 0.6 or pct < 0.4:
+                    if pct > 0.55 or pct < 0.45:
                         for i in heuristic_idx:
                             cur = shots_df.at[i, "player_id"]
                             shots_df.at[i, "player_id"] = "player_2" if cur == "player_1" else "player_1"

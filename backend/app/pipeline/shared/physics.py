@@ -491,7 +491,7 @@ def apply_physics_ensemble(
         if is_fallback:
             if phys_stroke != "unknown" and c_p > 0:
                 shot["stroke_type"] = phys_stroke
-                shot["stroke_confidence"] = c_p
+                shot["stroke_confidence"] = min(c_p, 0.85)
                 shot["shuttleset_class_id"] = 0
                 shot["is_rule_based"] = True
                 shot["is_bst_fallback"] = True
