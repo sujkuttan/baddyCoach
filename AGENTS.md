@@ -315,73 +315,75 @@ python -m pytest -m "not gpu and not model"
 - **Investigation confirmed:** 122 rule-based fallbacks (37%) are a genuine model limitation, not a data quality issue. Feature stats are identical between rule-based and model-processed clips (missing_bbox=0, missing_pose=0, shuttle_valid=96, jnb_std=0.23). The model outputs uniform logits for these clips regardless of temperature or prior correction.
 - **Prior correction kept:** Cached `bst_logit_bias.json` prevents 28 model-processed clips from predicting unknown. Self-calibrated bias would be worse (65 vs 55 unknown).
 
-### ✅ Latest Colab Run Results (test_match.mp4, 300s, 2025-06-28)
-- **320 shots**, **11 rallies** (~29 shots/rally), 45%/55% player split
-- **12 unique stroke types** per player (was 7) — drop, push, rush, cross_court, short_serve now visible
-- **13/25 BST classes active** (was 7/25) — Top_smash(56), Bottom_block(79), Bottom_lift(26), Top_clear(9), Top_push(8), Top_rush(9), Top_drop(3), etc.
-- **0 rule-based shots** in final output (was 78+)
-- **73.1% BST coverage** (234/320 = bst_no_physics), **22.5% physics_override**, **3.4% physics_fallback**
-- **Mean BST model conf: 0.33** (up from ~0.22)
-- Rule-based fallback rate unchanged at 36.7% (model limitation)
+### ✅ Spec-Aligned Rule-Based Classifier (Fixed — 2025-06-29)
+- **Was:** `_rule_based_predict` used 3 features (max_speed, mean_dy, end_y) → 78/78 fallbacks predicted "net_shot"
+- **Fix:** Created `backend/app/pipeline/shared/stroke_features.py` with spec-aligned 35+ feature extraction (court-space shuttle stats, JnB-derived joint angles, player zones, contact height, landing zones), two-level hierarchical classifier (family→specific), confidence estimation with evidence consistency check (capped at 0.85), structured evidence dict (contact_height, player_zone, outgoing_trajectory, landing_zone), and top-3 alternatives.
+- **Impact:** 8 different rule-based stroke types (smash, defensive_lift, soft_lift_or_push, drive, net_shot, etc.) with explainable evidence. Old flat if-else replaced with `extract_clip_features` → `classify_family` → `classify_by_family` pipeline.
+- **Files:** `backend/app/pipeline/shared/stroke_features.py` (NEW), `backend/app/models/bst.py` (_rule_based_predict rewritten)
 
-## 2025-06-25: Stroke Classification Root Cause Analysis
+### ✅ Balance Flip Iteration Bug (Fixed — 2025-06-29)
+- **Was:** `attribution.py:183` used `for i in heuristic_idx` where `heuristic_idx` was a boolean mask Series when `debug_level < 1`. Iterating a boolean mask yields `True`/`False` values, not integer indices → `shots_df.at[True, "player_id"]` accesses a non-existent label → nothing gets flipped. The balance flip **never actually ran** in colab (debug_level=0).
+- **Impact:** Player balance skewed 58.8%/41.2% instead of expected ~50/50. 22/32 rallies had >60% one player.
+- **Fix:** `shots_df[r_mask].index` instead of bare `r_mask`. Always get `.index` for correct iteration.
 
-### ⚠️ Rule-Based Classifier: Court-Space vs Pixel-Space Normalization (Fixed)
-- **Issue:** All 69 rule-based shots (33.8%) predict "drive" regardless of actual trajectory
-- **Root cause:** Clip construction (`strokes.py:82-83`) normalizes shuttle by court dimensions (`x/13.4`, `y/6.1`), but rule-based thresholds (`bst.py:363-376`) were designed for pixel-space normalization (`x/1920`, `y/1080` → range [0,1])
-- **Impact:** `end_y` ALWAYS negative after court-normalization → "lift" (needs `end_y > 0.5`) and "drop" (needs `end_y > 0.7`) can NEVER trigger; `mean_speed > 0.03` always → "net_shot" can NEVER trigger; most trajectories fall through to "drive" or "unknown".
-- **Secondary issue:** Between-2-hits clips span ~3.3s (100 frames at 30fps), covering BOTH incoming shuttle (toward player) and outgoing shuttle (away from player). The trajectory direction reverses at hit point → V-shaped average → "drive"-like signal.
-- **Validation:** Reproduced with actual shuttle.parquet data (69 shots → 18 drive/21 clear/16 smash/14 unknown with 11-frame window, but 100-frame clip collapses to always-drive).
-- **Fix:** (1) Add `vid_w, vid_h` to clip dict; denormalize shuttle by court dims, renormalize by video dims before rule-based predict. (2) Extract only POST-HIT frames from clip for rule-based analysis.
+### ✅ NaN Side Fill (Fixed — 2025-06-29)
+- **Was:** `attribution.py:242` guarded by `if "side" not in shots_df.columns` — but Tier 1 (BST alpha/class_id) creates the column first, so the fillna never runs for Tiers 2-4. 108/250 shots (43%) had `side=NaN`.
+- **Fix:** Unconditional fillna: `shots_df["side"] = shots_df["side"].fillna(shots_df["player_id"].map(_side_lookup).fillna("near"))`
 
-### ⚠️ BST Predicts Only 7 of 25 Classes (Unfixed)
-- **Issue:** Model outputs only class IDs 3, 4, 5 (Top) and 16, 17, 18, 23 (Bottom) → smash, lift, clear, short_serve. NEVER net_shot, block, drop, push, rush, cross_court.
-- **Confirmed across two matches:** Run 1 (same 7 classes) and Run 2 (same 7 classes). Both matches known to contain net shots and drops.
-- **Mean confidence:** 0.26, max 0.633 — very low entropy distribution across all clips.
-- **Root cause (hypothesized):** (a) Per-frame YOLO tracking with no temporal ID linking → `det_bbox_lookup` fails when player track ID changes mid-clip (166 unique track_ids for 18,000 detections across 2 players). Missing detections → zeros in joints/bbox → garbled features. (b) Class ordering in `SHUTTLESET_CLASSES` may not match training checkpoint order — checkpoint filename `CG_JnB_bone_merged` uses ShuttleSet ordering, but code defines extra classes (block, short_serve, long_serve) at different positions.
-- **Fix:** (a) Add temporal detection smoothing: interpolate bbox across frames when track ID switches. (b) Verify class ordering by running inference on a labeled ShuttleSet sample.
+### ✅ Internal Label Leaks (Fixed — 2025-06-29)
+- **Was:** `classify_by_family` in `stroke_features.py` returned family-level names (`mid_height_unknown`, `overhead_unknown`, `underhand_unknown`, `net_unknown`) as stroke types when no specific match was found in that family. 4 `mid_height_unknown` shots leaked to final output.
+- **Fix:** Post-routing remap: `mid_height_unknown` → `drive`, `overhead_unknown` → `clear`, `underhand_unknown` → `lift`, `net_unknown` → `net_shot`.
 
-### ⚠️ Temporal Smoothing Skips Non-Unknown Strokes (Revised 2025-06-25)
-- **Issue:** Line 273: `if stype != "unknown": continue` — smoothing only corrects unknown strokes. Low-confidence "drive" (1 BST drive at conf=0.089) and other determinate predictions remain untouched even when surrounded by opposite stroke types.
-- **Fix (initial):** Smooth any stroke with confidence < 0.2, not just "unknown"
-- **Fix (revised):** Reverted to unknown-only smoothing. The expanded scope caused rule-based "net_shot" bias (78 shots, conf~0.22) to overwrite 13 determinate BST predictions (lift, smash, short_serve, etc.) to net_shot via majority vote. Determinate predictions, even low-confidence, are preserved to avoid rule-based neighborhood dominance.
+### ✅ Rule-Based Confidence Cap (Fixed — 2025-06-29)
+- **Was:** `estimate_confidence` used max 0.95 cap with feature-margin boost only. 10 rule-based shots had 0.99 confidence despite contradictory evidence (e.g., "net_shot" with `landing_zone=deep (rear court)` and `player_zone=back court`).
+- **Fix:** Added `_evidence_consistent()` check per stroke type (e.g., net_shot expects `contact=below waist` + `zone=front/mid court`). Evidence mismatch applies -0.20 penalty. Max cap lowered to 0.85. [User caveat: net kill shots can have deep landing — the consistency check uses zone, not landing zone, for net_shot]
 
-### ✅ Rally Winner Logic Fragile (Fixed — 2025-06-25)
-- **Was:** `_infer_end_reason` required confidence ≥ 0.5 for "winner" → no shot in Run 2 qualifies (max conf 0.633 for BST, 0.3 for rule-based). 13/14 rallies end in "unforced_error". Winner = "player who didn't hit last shot" — accidentally correct for errors but wrong for genuine winners/net shots.
-- **Fix:** Lower winner confidence threshold to 0.3, or add trajectory-speed-based winner detection (smash/kill near net = likely winner).
+### ✅ Shot Log Display in LabelingView UI (Added — 2025-06-29)
+- **Was:** LabelingView showed only final predicted stroke type + confidence + source.
+- **Fix:** Added per-shot detail showing BST output (class_id, pre-override stroke/conf), rule-based evidence (formatted key-value rows), physics override trail (bst_stroke → final). All data already in report.json via `shots_df.to_dict(orient="records")`.
+- **File:** `frontend/src/views/LabelingView.tsx`
 
-### ⚠️ Double InpaintNet + Missing Homography Conversion (Fixed — 2025-06-26)
-- **Issue:** Shuttle coordinates had range x ∈ [-7.32, 14.14] far beyond court (13.4×6.1m). `_build_clip` divided these by court_length/court_width (treating them as meters), producing garbage inputs to BST.
-- **Root cause:** Two separate bugs compounded:
-  1. **Double InpaintNet:** TrackNetV3 internally runs `_rectify_trajectory` (linear interpolation + moving average smoothing). The colab pipeline then ran a **second** `InpaintNet` instance on the already-rectified pixel coords, completely overwriting them with garbage values from a checkpoint trained on a different coordinate space.
-  2. **Missing homography:** Neither pipeline applied `image_to_court(homography, (x, y))` to TrackNet's pixel output. The shuttle coordinates (pixels) were divided directly by court_length (13.4m), e.g., 1920px / 13.4m ≈ 143 — until the double InpaintNet warped them to intermediate garbage values.
-- **Impact:** Feature quality collapsed — JnB and shuttle stats nearly identical across all classes (zero_frac=0.0535, jnb_min=-0.569, jnb_max=0.682 for class_23, other_BST, and unknown). Model saw negligible discriminative signal.
-- **Fix (colab pipeline `colab/pipeline.py:972-988`):** Removed the second InpaintNet pass entirely. Added `image_to_court(H, (x, y))` to convert pixel → court-space meters before storing shuttle data.
-- **Fix (backend `backend/app/pipeline/strokes.py:121-128`):** Added `image_to_court(homography, (sx, sy))` in `_build_clip` alongside the existing foot position homography conversion.
+## Current Status (2025-06-29)
 
-### ✅ Colab Re-run with Double InpaintNet + Homography Fix (2025-06-26)
-- **Expected:** Shuttle range should shrink to ±6.7m × ±3.05m (court dimensions). Feature diversity should increase as JnB/shuttle inputs are no longer garbage. BST should escape the 49% short_serve bias.
+### Pipeline Performance (test_match.mp4, 300s on T4)
+- **250 shots**, **32 rallies** (after scene-cut fix), 14 unique stroke types
+- **68.8% BST coverage** (172/250), **31.2% rule-based** (78/250)
+- **14/25 BST classes active** — most diverse yet (smash, block, lift, clear, rush, drive, drop, net_shot, push, short_serve, cross_court)
+- **Physics override**: 68/250 (27.2%), 167 bst_no_physics (66.8%), 12 physics_fallback (4.8%)
+- **0% rule-based "unknown"** — old flat if-else replaced with hierarchical classifier
+- **Mean BST conf: 0.319** (T=1.0), mean rule-based conf: 0.390
+- **Evidence on all 78 rule-based shots** — contact_height, player_zone, outgoing_trajectory, landing_zone
+- **8 rule-based stroke types** — smash (27), defensive_lift (17), soft_lift_or_push (13), drive (10), net_shot (5), mid_height_unknown→drive (4), clear (1), drop (1)
+- **Pipeline time**: 833.2s (2.8× real-time), zero errors
+- **Attribution tiers**: racket_proximity 66.4%, bst_class_id 29.6%, rally_alternation 2%, fallback 2%
 
-## Current Status (2025-06-28)
-
-### Pipeline Performance (test_match.mp4, 300s)
-- **313 shots**, **22 rallies** (was 11 after scene-cut fix), 47/53 player split
-- **12 unique stroke types**, 13/25 BST classes active
-- **~20% physics override** (after aggressive block guard), 57.5% bst_no_physics, 3% fallback
-- **0% rule-based** in final output (125 rule-based fallbacks → all "unknown")
-- **Mean conf: 0.33** (model clips, T=1.0 vs 0.23 at T=1.3415)
-
-### Key Findings from Latest Colab Run
-- **T=1.0 increased override rate:** Mean conf 0.33 (vs 0.23 at T=1.3415) pushed 36% more clips above `physics_min_conf_override=0.25` → 117 overrides (37.4%), up from 72 (22.5%). The temperature change, not the code, caused the surge.
-- **Block no-op overrides:** 55/117 overrides were BST→block → physics→block (no-op). These just changed the source tag without altering the stroke type.
-- **Aggressive block guard (commit `70927c1`):** If BST predicted "block" and physics would keep it as "block", the override is skipped entirely. Physics can still override TO block from a non-block BST prediction (legitimate correction), but no-op block-overrides are eliminated.
-- **Scene-cut rally segmentation** produced 22 rallies (up from 11) with reasonable structure (max gaps 26-84 frames, mean 14 shots/rally). No over-splitting detected.
-- **37% rule-based fallback is confirmed intrinsic** to the BST model, not a pipeline bug. Feature quality identical between rule-based and model-processed clips.
+### ⚠️ Known Issues (addressed in commit e9640e9)
+- **Balance flip was silently broken** — `for i in boolean_mask` iterated True/False values, not indices. Fix: always use `.index`. Re-run needed to verify ~50/50 split.
+- **NaN side on 43% of shots** — Tiers 2-4 never set `side`; fillna guard prevented fix. Fix: unconditional fillna.
+- **4 `mid_height_unknown` leaks** — internal family labels reached final output. Fix: remap to `drive`.
+- **10 shots with 0.99 conf despite contradictory evidence** — evidence consistency check added with -0.20 penalty. Max rule-based cap lowered to 0.85.
 
 ### Confirmed Model Limitations
-- **37% rule-based fallback is intrinsic** — feature quality identical between RB and model clips (missing_bbox=0, shuttle_valid=93-95, jnb_std=0.22-0.23). Model outputs uniform logits for these clips regardless of temperature.
-- **14/25 classes active** (model predicts 14 of 25 ShuttleSet classes). Classes 1, 4, 10-12, 15, 19-22, 24 never activated.
-- **Prior correction** (`bst_logit_bias.json`) is essential — prevents 28 model clips from predicting unknown. Self-calibrated bias would be worse.
+- **31.2% rule-based fallback is intrinsic** — feature quality identical between RB and model clips (missing_bbox=0, shuttle_valid=93-95, jnb_std=0.22-0.23). Model outputs uniform logits for these clips regardless of temperature.
+- **11/25 BST classes never activated** — model cannot predict these regardless of pipeline quality.
+- **defensive_lift, soft_lift_or_push are 100% rule-based** — BST never outputs these classes.
+- **Prior correction** (`bst_logit_bias.json`) is essential — prevents 28 model clips from predicting unknown.
+
+### Rule-Based Classifier Overview
+```
+stroke_features.py:
+  extract_clip_features() → ~35 features (shuttle, joint angles, zones)
+    ↓
+  classify_family() → overhead/underhand/net/mid_height/serve
+    ↓
+  classify_by_family() → 15 specific types (smash, drop, clear, lift, 
+                          defensive_lift, net_shot, drive, block, push, etc.)
+    ↓
+  estimate_confidence() → 0.10-0.85 with evidence consistency check
+  _build_evidence() → structured dict (contact_height, player_zone, 
+                      outgoing_trajectory, landing_zone)
+  top3_alternatives() → (stroke, confidence) alternatives
+```
 
 ## Recommended Actions (Priority)
 
@@ -392,30 +394,39 @@ python -m pytest -m "not gpu and not model"
 4. ~~Fix recovery-time pixel/meter mismatch~~ (Done)
 5. ~~Scene-cut rally segmentation~~ (Done)
 6. ~~Player attribution balance flip~~ (Done)
-7. ~~Rule-based predictor max_speed rewrite~~ (Done)
+7. ~~Rule-based predictor spec-aligned rewrite~~ (Done)
 8. ~~Physics gate: low-confidence BST skip~~ (Done)
-9. ~~Physics block pivot guard (Option A+C)~~ (Done)
-10. ~~Aggressive block guard (no-op override prevention)~~ (Done)
+9. ~~Physics block pivot guard + aggressive block guard~~ (Done)
+10. ~~Balance flip iteration bug (boolean vs .index)~~ (Done — e9640e9)
+11. ~~NaN side fill for Tiers 2-4~~ (Done — e9640e9)
+12. ~~Internal label leak (mid_height_unknown)~~ (Done — e9640e9)
+13. ~~Rule-based confidence cap + evidence consistency~~ (Done — e9640e9)
 
 ### High (reliability)
-10. ~~Fix TrackNet integration (arch sync + InpaintNet)~~ (Done — 2025-06-29)
-11. ~~Use BST Top/Bottom output for attribution~~ (Done — 2025-06-29)
-12. ~~Compute analytics in meters via homography~~ (Done)
-13. Replace per-frame YOLO with proper tracking
-14. ~~Externalize config with pydantic-settings~~ (Done)
-15. Add auth + upload validation
-16. Respect `court.valid` flag
+14. ~~Fix TrackNet integration (arch sync + InpaintNet)~~ (Done — 2025-06-29)
+15. ~~Use BST Top/Bottom output for attribution~~ (Done — 2025-06-29)
+16. ~~Compute analytics in meters via homography~~ (Done)
+17. Replace per-frame YOLO with proper tracking
+18. ~~Externalize config with pydantic-settings~~ (Done)
+19. Add auth + upload validation
+20. Respect `court.valid` flag
 
-### Phone-Video Pipeline (pause-record) — 2025-06-28
+### Medium (quality)
+21. Re-run colab pipeline to verify balance flip fix (~50/50 split expected)
+22. Add shot_log formal table to report.json schema (data already in shots array)
+23. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
+
+### Phone-Video Pipeline
 - ~~Temporal gap detection for scene cuts~~ (Done — `rallies.py`: NaN-streak check alongside spatial displacement)
 - ~~Scene-cut propagation to shots + rally metadata~~ (Done — `scene_cut_before` column on rallies and shots)
 - ~~UI attribution tier badges~~ (Done — green/orange/red/magenta dots in StrokeListPanel)
 - ~~UI scene-cut warning~~ (Done — "SC" column with ⚠️ in rally breakdown)
+- ~~UI shot log with BST/rule-based/physics trail~~ (Done — LabelingView.tsx)
 
 ### Nice-to-have
-17. Unify backend/colab pipelines
-18. ~~Replace single-frame technique score~~ (Done)
-19. Cross-session progress tracking
-20. Structured logging + data-quality score
-21. Promote grounded LLM narration
-22. License compliance audit
+24. Unify backend/colab pipelines
+25. ~~Replace single-frame technique score~~ (Done)
+26. Cross-session progress tracking
+27. Structured logging + data-quality score
+28. Promote grounded LLM narration
+29. License compliance audit
