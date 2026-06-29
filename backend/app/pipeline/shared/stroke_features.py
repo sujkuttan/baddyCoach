@@ -343,17 +343,29 @@ def classify_serve(feats: dict) -> str:
 def classify_by_family(family: str, feats: dict) -> str:
     """Route to the correct family-specific classifier."""
     if family == 'serve':
-        return classify_serve(feats)
+        stroke = classify_serve(feats)
     elif family == 'overhead':
-        return classify_overhead(feats)
+        stroke = classify_overhead(feats)
     elif family == 'underhand':
-        return classify_underhand(feats)
+        stroke = classify_underhand(feats)
     elif family == 'net':
-        return classify_net(feats)
+        stroke = classify_net(feats)
     elif family == 'defensive_block':
-        return classify_mid_height(feats)
+        stroke = classify_mid_height(feats)
     else:
-        return classify_mid_height(feats)
+        stroke = classify_mid_height(feats)
+
+    # Map internal family fallbacks to user-facing types
+    if stroke == 'mid_height_unknown':
+        stroke = 'drive'
+    elif stroke == 'overhead_unknown':
+        stroke = 'clear'
+    elif stroke == 'underhand_unknown':
+        stroke = 'lift'
+    elif stroke == 'net_unknown':
+        stroke = 'net_shot'
+
+    return stroke
 
 
 # ── Confidence, evidence, top-3 ────────────────────────────────────
@@ -369,12 +381,34 @@ _FAMILY_STROKES = {
 }
 
 
-def estimate_confidence(stroke: str, feats: dict) -> float:
-    """Estimate confidence 0-1 based on feature margins."""
-    if stroke in ('overhead_unknown', 'underhand_unknown', 'net_unknown',
-                  'mid_height_unknown', 'serve_unknown', 'unknown'):
-        return 0.20
+def _evidence_consistent(stroke: str, feats: dict, evidence: dict) -> bool:
+    """Check if evidence supports the predicted stroke type."""
+    landing = evidence.get('landing_zone', '')
+    traj = evidence.get('outgoing_trajectory', '')
+    contact = evidence.get('contact_height', '')
+    zone = evidence.get('player_zone', '')
 
+    signatures = {
+        'smash': lambda: traj == 'descending' and landing in ('mid court', 'deep (rear court)'),
+        'clear': lambda: traj == 'ascending' and landing == 'deep (rear court)',
+        'drop': lambda: traj == 'descending' and landing == 'short (front court)',
+        'drive': lambda: traj in ('flat', 'descending') and landing in ('mid court', 'short (front court)'),
+        'lift': lambda: traj == 'ascending' and contact == 'below waist',
+        'defensive_lift': lambda: traj == 'ascending' and landing == 'deep (rear court)',
+        'net_shot': lambda: contact == 'below waist' and zone in ('front court', 'mid court'),
+        'block': lambda: traj in ('flat', 'descending') and landing in ('short (front court)', 'mid court'),
+        'push': lambda: traj in ('flat', 'ascending') and landing == 'mid court',
+        'soft_lift_or_push': lambda: traj == 'ascending' and landing == 'mid court',
+        'short_serve': lambda: landing == 'short (front court)',
+        'rush': lambda: traj == 'flat' and landing == 'short (front court)',
+        'cross_court': lambda: 'rear' in landing or 'mid' in landing,
+    }
+    checker = signatures.get(stroke)
+    return checker() if checker else True
+
+
+def estimate_confidence(stroke: str, feats: dict) -> float:
+    """Estimate confidence 0-1 based on feature margins and evidence consistency."""
     if not feats.get('usable', False):
         return 0.10
 
@@ -396,7 +430,12 @@ def estimate_confidence(stroke: str, feats: dict) -> float:
     if stroke in ('net_shot', 'block', 'push') and max_speed < _NET_SHOT_SPEED * 2:
         base -= 0.05
 
-    return min(0.95, max(0.10, base))
+    # Evidence consistency: if evidence contradicts the stroke, penalize
+    evidence = _build_evidence(stroke, feats)
+    if not _evidence_consistent(stroke, feats, evidence):
+        base -= 0.20
+
+    return min(0.85, max(0.10, base))
 
 
 def _build_evidence(stroke: str, feats: dict) -> dict:

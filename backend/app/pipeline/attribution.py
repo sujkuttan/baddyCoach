@@ -175,7 +175,7 @@ class PlayerAttributionStage:
                          (shots_df["frame"] <= int(rally["end_frame"]))
                 heuristic_idx = shots_df[
                     r_mask & (shots_df["attribution_tier"].isin(HEURISTIC_TIERS))
-                ].index if config.debug_level >= 1 else r_mask
+                ].index if config.debug_level >= 1 else shots_df[r_mask].index
                 if len(heuristic_idx) > 3:
                     p1 = (shots_df.loc[heuristic_idx, "player_id"] == "player_1").sum()
                     pct = p1 / len(heuristic_idx)
@@ -185,7 +185,8 @@ class PlayerAttributionStage:
                             shots_df.at[i, "player_id"] = "player_2" if cur == "player_1" else "player_1"
                             if "side" in shots_df.columns:
                                 cur_side = shots_df.at[i, "side"]
-                                shots_df.at[i, "side"] = "far" if cur_side == "near" else "near"
+                                if pd.notna(cur_side):
+                                    shots_df.at[i, "side"] = "far" if cur_side == "near" else "near"
 
         # Rally-based sequential alternation for remaining unassigned shots (Tier 3)
         # Uses the last assigned/filled shot to determine the next player,
@@ -241,6 +242,8 @@ class PlayerAttributionStage:
             _side_lookup[_p["id"]] = _p.get("side", "near")
         if "side" not in shots_df.columns:
             shots_df["side"] = shots_df["player_id"].map(_side_lookup).fillna("near")
+        else:
+            shots_df["side"] = shots_df["side"].fillna(shots_df["player_id"].map(_side_lookup).fillna("near"))
 
         if config.debug_level >= 1:
             tier_counts = shots_df["attribution_tier"].value_counts().to_dict()

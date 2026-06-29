@@ -237,6 +237,48 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                   <span className="font-mono text-[9px] text-text-muted">{current.stroke_source || "bst"}</span>
                 </div>
 
+                {/* BST / rule-based / physics source trail */}
+                {current.is_rule_based && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[9px] text-text-muted">BST:</span>
+                    <span className="font-mono text-[9px] text-error-red">fallback (class_id=0)</span>
+                    {current.rule_evidence && (
+                      <span className="font-mono text-[9px] text-warning-yellow" title={JSON.stringify(current.rule_evidence)}>
+                        &#9432; evidence
+                      </span>
+                    )}
+                  </div>
+                )}
+                {!current.is_rule_based && current.shuttleset_class_id != null && current.shuttleset_class_id > 0 && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[9px] text-text-muted">BST:</span>
+                    <span className="font-mono text-[9px] text-text-primary">
+                      class_id={current.shuttleset_class_id}
+                      {current.bst_stroke_before_override && current.bst_stroke_before_override !== current.stroke_type
+                        ? ` (${current.bst_stroke_before_override} @ ${Math.round((current.bst_conf_before_override || 0) * 100)}%)`
+                        : ` (${current.stroke_type} @ ${Math.round((current.stroke_confidence || 0) * 100)}%)`
+                      }
+                    </span>
+                  </div>
+                )}
+                {current.bst_stroke_before_override && current.bst_stroke_before_override !== current.stroke_type && (
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-[9px] text-text-muted">Physics:</span>
+                    <span className="font-mono text-[9px] text-orange-400">
+                      {current.bst_stroke_before_override} &rarr; {current.stroke_type}
+                    </span>
+                  </div>
+                )}
+                {current.rule_evidence && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1">
+                    {Object.entries(current.rule_evidence).map(([k, v]) => (
+                      <span key={k} className="font-mono text-[8px] text-text-muted/70">
+                        {k.replace(/_/g, ' ')}: <span className="text-text-muted">{String(v)}</span>
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 {/* Class buttons */}
                 <div className="grid grid-cols-6 gap-1.5">
                   {COACH_CLASSES.map((cls) => {
