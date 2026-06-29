@@ -216,7 +216,10 @@ class HitFrameLocalizationStage:
             acc = np.nan_to_num(acc, 0)
 
             for ti in range(min(len(frames), n_frames)):
-                score[int(frames[ti])] = max(score[int(frames[ti])], acc[ti])
+                fi = int(frames[ti])
+                if fi >= n_frames:
+                    continue
+                score[fi] = max(score[fi], acc[ti])
 
         m = np.percentile(score, 95)
         return score / (m + 1e-6) if m > 0 else score
