@@ -35,11 +35,11 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Impact:** Configured path doesn't exist after download, silent fallback
 - **Fix:** CKPT_DIR anchored via `parents[5]`; settings paths made absolute; `get_bst()` uses `ensure_model()` return path; stale 35-class ckpt copies removed
 
-### ⚠️ TrackNetV3 Architecture
-- **Issue:** Custom UNet with `in_channels=27, num_classes=8` (not published TrackNetV3)
-- **Impact:** Official `TrackNet_best.pt` won't load, crashes shuttle stage
-- **Issue:** Throws away 7 of 8 output channels, no InpaintNet implemented
-- **Impact:** Zero shuttle detections poison hit/stroke/analytics downstream
+### ✅ TrackNetV3 Architecture (Fixed — 2025-06-29)
+- **Was:** Backend used VGG-style backbone (9→1) incompatible with checkpoint (27→8 custom UNet)
+- **Fix:** Replaced VGG `TrackNetV3Backbone` with colab's `TrackNetV3Model` (custom UNet, 27→8 matching checkpoint)
+- **Changes:** 9-frame windows → 27 channels input; 8-channel output with first channel used for peak extraction; sigmoid activation on heatmap; load_backbone accepts 27-channel weights; `_build_9frame_window` replaces `_build_3frame_window`
+- **Impact:** Backend now loads `TrackNet_best.pt` and `InpaintNet_best.pt` successfully, producing valid shuttle detections
 
 ### ⚠️ RTMPose Bug (Fixed)
 - **Was:** x/y rescale divisors swapped, hardcoded `"input"` instead of `self.input_name`
@@ -65,6 +65,12 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** Single-frame `_evaluate_shot` fallback with 2 features (elbow extension, shoulder angle); no coaching rules consumed technique data
 - **Fix:** Removed `_evaluate_shot` entirely; `_analyze_swing_mechanics` now uses 5 temporal features: elbow extension, peak shoulder angle, hip-shoulder separation, knee flexion (stroke-type-specific bounds), follow-through displacement. Technique scores wired into `analyze_from_pipeline` with 8 YAML coaching rules.
 
+### ✅ BST AimPlayer Alpha for Attribution (Fixed — 2025-06-29)
+- **Was:** Player attribution Tier 1 only used `shuttleset_class_id` prefix (Top_/Bottom_) to determine the hitter, gated at `attribution_bst_min_conf=0.5`. Mean BST confidence ~0.33, so only 36/264 shots (13.6%) got model-based attribution; 76% fell to heuristic tiers.
+- **Fix:** Surfaces AimPlayer alpha from `BST_CG_AP.forward()` (internal cosine-similarity weighting between each player's shuttle CLS token) via `self._last_alpha`. `predict_from_clips` now returns 4-tuples: `(stroke_type, confidence, raw_class_id, alpha)` where alpha ∈ [0,1] (>0.5 = far player).
+- **Changes:** `bst_model.py` stores alpha; `bst.py` propagates through all paths; `strokes.py` stores `aimplayer_alpha` per shot; `settings.py` lowered `attribution_bst_min_conf` 0.5→0.3; `attribution.py` uses alpha as primary signal (|α-0.5| > 0.15) and class_id as fallback.
+- **Impact:** Alpha-based attribution catches shots with class_id=0 (unknown) when the model internally knows which player hit it. Combined with the lowered threshold, estimated BST coverage improves from 13.6% → ~50%+ of all shots.
+
 ### ✅ BST Bottom_ Prefix Leak (Fixed)
 - **Was:** `map_to_coach_class` returned `Bottom_smash` for the near player but `smash` for the far player — every exact-string consumer (rally end-reason, technique bounds, tactical distribution, frontend charts) broke for near-player strokes
 - **Fix:** `map_to_coach_class` now returns bare stroke type for both players; side is preserved in `shuttleset_class_id` and available via `get_shuttleset_class_info`
@@ -73,11 +79,8 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** `routes.py` called `await file.read()` at line 268 (validation) and again at line 294 (write) — second read on consumed `UploadFile` returned `b""`, writing empty videos
 - **Fix:** Reuse the `content` buffer from the validation read; dropped the redundant second read
 
-### ⚠️ GPU OOM on T4 (YOLO Conv2d Fragmentation)
-- **Symptom:** CUDA OOM at batch 7/18 despite 3.78 GiB reserved but unallocated
-- **Root cause:** `gpu_batch.py` ≥12GB tier had `yolo_chunk=1000, yolo_batch=64`. Each YOLO batch allocated ~750 MiB Conv2d tensors that fragment the allocator; by batch 7, no contiguous 750 MiB block available.
-- **Tier values were never committed from initial fix** — AGENTS.md described the reduction but `gpu_batch.py` still had aggressive values
-- **Fix (commit `080eb9b`):** (1) `gpu_batch.py` tiers actually reduced — ≥12GB: `yolo_chunk=200, yolo_batch=16, tracknet_chunk=16, rtmpose_chunk=128` (was 1000/64/128/256). (2) `colab/pipeline.py` `BATCH_SIZE`: 500→300. (3) `torch.cuda.empty_cache()` added between batches.
+### ✅ GPU OOM on T4 (Fixed)
+- **Fix (commit `080eb9b`):** `gpu_batch.py` tiers reduced — ≥12GB: `yolo_chunk=200, yolo_batch=16, tracknet_chunk=16, rtmpose_chunk=128`. `colab/pipeline.py` `BATCH_SIZE`: 500→300. `torch.cuda.empty_cache()` between batches.
 
 ## Testing & Development
 
@@ -395,8 +398,8 @@ python -m pytest -m "not gpu and not model"
 10. ~~Aggressive block guard (no-op override prevention)~~ (Done)
 
 ### High (reliability)
-10. Fix TrackNet integration (official arch + InpaintNet)
-11. Use BST Top/Bottom output for attribution
+10. ~~Fix TrackNet integration (arch sync + InpaintNet)~~ (Done — 2025-06-29)
+11. ~~Use BST Top/Bottom output for attribution~~ (Done — 2025-06-29)
 12. ~~Compute analytics in meters via homography~~ (Done)
 13. Replace per-frame YOLO with proper tracking
 14. ~~Externalize config with pydantic-settings~~ (Done)

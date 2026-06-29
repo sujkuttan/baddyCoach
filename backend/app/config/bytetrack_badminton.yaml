@@ -1,0 +1,12 @@
+# Badminton-optimized ByteTrack config
+# 2 players, fast movement, frequent close proximity at net
+# Key changes from Ultralytics defaults:
+#   new_track_thresh: 0.6 → 0.8 (reluctant to create new track IDs)
+#   match_thresh: 0.8 → 0.7 (more permissive matching through occlusion)
+tracker_type: bytetrack
+track_high_thresh: 0.5
+track_low_thresh: 0.1
+new_track_thresh: 0.8
+act_thresh: 0.5
+match_thresh: 0.7
+fuse_score: True

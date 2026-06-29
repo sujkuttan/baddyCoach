@@ -63,18 +63,8 @@ class YOLOv8Tracker:
             cfg = get_gpu_batch_config(device)
             self._batch_size = cfg["yolo_batch"]
         
-        # Try to use ByteTrack or BoT-SORT for better tracking
-        self.tracker = None
-        try:
-            from bot_sort import BoTSORT
-            self.tracker = BoTSORT(model_path or "yolov8s.pt", device=device, track_high_thresh=0.6)
-        except ImportError:
-            try:
-                from byte_tracker import ByteTrack
-                self.tracker = ByteTrack(model_path or "yolov8s.pt", device=device, track_high_thresh=0.6)
-            except ImportError:
-                # Fallback to YOLO's tracking
-                pass
+        # ByteTrack is built into Ultralytics' model.track() with persist=True.
+        # Custom config at backend/app/config/bytetrack_badminton.yaml tunes it for badminton.
 
     def track_frames(self, frames: list[np.ndarray]) -> dict:
         all_detections = {}
@@ -83,12 +73,14 @@ class YOLOv8Tracker:
 
         for chunk_start in range(0, len(frames), chunk_size):
             chunk = frames[chunk_start:chunk_start + chunk_size]
+            from app.config.settings import settings
             results = self.model.track(
                 chunk,
                 classes=[0],
                 conf=self.conf_threshold,
                 verbose=False,
                 persist=True,
+                tracker=str(settings.tracker_config_path),
                 batch=batch_size,
                 stream=True,
                 device=self.device,

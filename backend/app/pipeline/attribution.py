@@ -101,35 +101,53 @@ class PlayerAttributionStage:
         if config.debug_level >= 1:
             shots_df["attribution_tier"] = "none"
 
-        # Try to use BST shuttleset_class_id for Top/Bottom attribution (Tier 1)
+        # Try to use BST output for attribution (Tier 1)
+        # Uses two signals from the BST model:
+        #   A. AimPlayer alpha (continuous hitter probability, strongest signal)
+        #      alpha > 0.5 → far player (p1), alpha < 0.5 → near player (p2)
+        #   B. shuttleset_class_id prefix (Top_=far, Bottom_=near, only if confident)
+        # Alpha is preferred when confident; class_id fills in when alpha is uncertain.
         from app.models.bst import get_shuttleset_class_info, SHUTTLESET_CLASSES
         bst_side_to_playerside = {"top": "far", "bottom": "near"}
+        alpha_conf_thresh = 0.15  # |alpha - 0.5| above this = confident hitter attribution
         if "shuttleset_class_id" in shots_df.columns:
             max_known_id = len(SHUTTLESET_CLASSES) - 1
             warned_range = False
             for idx, shot in shots_df.iterrows():
+                if pd.notna(shot.get("player_id")):
+                    continue
+
                 class_id = shot.get("shuttleset_class_id", 0)
-                if class_id <= 0:
-                    continue
-                if class_id > max_known_id:
-                    if not warned_range:
-                        logger.warning(f"BST class_id={class_id} exceeds SHUTTLESET_CLASSES range ({max_known_id})")
-                        warned_range = True
-                    continue
-                stroke_type, side = get_shuttleset_class_info(class_id)
-                if side is None:
-                    continue
-                # Skip BST side when confidence is too low — shuttle direction is more reliable
-                if shot.get("stroke_confidence", 0) < settings.attribution_bst_min_conf:
-                    continue
-                player_side = bst_side_to_playerside[side]
-                for p in players_data.get("players", []):
-                    if p.get("side") == player_side:
-                        shots_df.at[idx, "player_id"] = p["id"]
-                        shots_df.at[idx, "side"] = player_side
-                        if config.debug_level >= 1:
-                            shots_df.at[idx, "attribution_tier"] = "bst_side"
-                        break
+                alpha = shot.get("aimplayer_alpha", 0.5)
+                conf = shot.get("stroke_confidence", 0)
+                used_signal = None
+
+                # Signal A: AimPlayer alpha (available for all clips, even class_id=0)
+                alpha_confidence = abs(alpha - 0.5)
+                if alpha_confidence > alpha_conf_thresh:
+                    player_side = "far" if alpha > 0.5 else "near"
+                    for p in players_data.get("players", []):
+                        if p.get("side") == player_side:
+                            shots_df.at[idx, "player_id"] = p["id"]
+                            shots_df.at[idx, "side"] = player_side
+                            used_signal = "bst_alpha"
+                            break
+
+                # Signal B: class_id prefix (only when confident enough)
+                if used_signal is None and class_id > 0 and class_id <= max_known_id:
+                    if conf >= settings.attribution_bst_min_conf:
+                        _, side = get_shuttleset_class_info(class_id)
+                        if side is not None:
+                            player_side = bst_side_to_playerside[side]
+                            for p in players_data.get("players", []):
+                                if p.get("side") == player_side:
+                                    shots_df.at[idx, "player_id"] = p["id"]
+                                    shots_df.at[idx, "side"] = player_side
+                                    used_signal = "bst_class_id"
+                                    break
+
+                if used_signal and config.debug_level >= 1:
+                    shots_df.at[idx, "attribution_tier"] = used_signal
 
         # Per-shot racket-arm proximity for unassigned shots (Tier 2)
         # Camera-angle-independent: uses wrist-to-shuttle distance at hit frame.

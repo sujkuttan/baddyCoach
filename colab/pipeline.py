@@ -494,9 +494,11 @@ class YOLOv8Tracker:
 
         for chunk_start in range(0, len(frames), yolo_chunk):
             chunk = frames[chunk_start:chunk_start + yolo_chunk]
+            from app.config.settings import settings
             results = self.model.track(
                 chunk, classes=[0], conf=self.conf,
                 verbose=False, persist=True, device=self.device,
+                tracker=str(settings.tracker_config_path),
                 batch=batch_size, stream=True
             )
             for local_idx, r in enumerate(results):
@@ -1081,6 +1083,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     # conversion happens inside _build_clip (strokes.py) via image_to_court:
     # the single homography transform that both pipelines share. Do NOT apply
     # another image_to_court here — that would double-transform the coordinates.
+
+    # Log raw ByteTrack fragmentation before stitching
+    raw_ids = set(d.get("track_id") for d in all_player_detections if d.get("track_id") is not None)
+    n_frames = len(set(d["frame"] for d in all_player_detections))
+    print(f"    ByteTrack raw: {len(raw_ids)} unique track IDs across {n_frames} frames "
+          f"({len(all_player_detections)} detections)")
 
     # Build player summary via shared stitch_tracks (nearest-centroid joint assignment)
     court_mid_y = (corners[0][1] + corners[2][1]) / 2 if corners and len(corners) >= 4 else (vid_h * 0.5)

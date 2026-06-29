@@ -359,12 +359,14 @@ class BSTClassifier:
                           of shape (n_clips, n_classes) for downstream ensemble.
 
         Returns:
-            List of (stroke_type, confidence, raw_class_id) tuples.
+            List of (stroke_type, confidence, raw_class_id, alpha) tuples.
+            alpha ∈ [0, 1]: >0.5 = far player (p1), <0.5 = near player (p2).
+            0.5 = uncertain / no model available.
             If return_probs=True, returns (results, probs_matrix).
         """
         batch_size = batch_size or self.batch_size
         if self.model is None:
-            results = [(self._rule_based_predict(clip), 0.5, 0) for clip in clips]
+            results = [(self._rule_based_predict(clip), 0.5, 0, 0.5) for clip in clips]
             if return_probs:
                 n_classes = getattr(self, 'n_classes', 25)
                 return results, np.zeros((len(clips), n_classes))
@@ -383,8 +385,9 @@ class BSTClassifier:
         n_clips = len(clips)
         raw_logits_list = [None] * n_clips
         clip_data = [None] * n_clips  # per-clip metadata for the second pass
+        alpha_list = [0.5] * n_clips  # AimPlayer alpha per clip
 
-        # ── Pass 1: collect raw logits ────────────────────────────────
+        # ── Pass 1: collect raw logits + alpha ────────────────────────
         for batch_start in range(0, n_clips, batch_size):
             batch_end = min(batch_start + batch_size, n_clips)
             batch_clips = clips[batch_start:batch_end]
@@ -404,17 +407,23 @@ class BSTClassifier:
                 with torch.no_grad():
                     logits = self.model(JnB, shuttle, pos, video_len)
                     logits_np = logits.float().cpu().numpy()
+                    if hasattr(self.model, '_last_alpha') and self.model._last_alpha is not None:
+                        alpha_np = self.model._last_alpha.float().cpu().numpy()
+                    else:
+                        alpha_np = np.full(len(batch_clips), 0.5)
 
                 for j in range(len(batch_clips)):
                     idx = batch_start + j
                     raw_logits_list[idx] = logits_np[j]
                     clip_data[idx] = batch_clips[j]
+                    alpha_list[idx] = float(alpha_np[j])
 
             except Exception as e:
                 logger.error("BST batch inference error at clip %d: %s", batch_start, e)
                 for j in range(len(batch_clips)):
                     idx = batch_start + j
                     raw_logits_list[idx] = "error"
+                    alpha_list[idx] = 0.5
 
         # ── Apply prior correction to all collected logits ─────────────
         valid_mask = [r is not None and isinstance(r, np.ndarray) for r in raw_logits_list]
@@ -439,7 +448,7 @@ class BSTClassifier:
                         "is_rule_based": True,
                         "fallback_stroke_type": fallback,
                     })
-                results[i] = (fallback, 0.5, 0)
+                results[i] = (fallback, 0.5, 0, alpha_list[i])
                 probs_list[i] = np.zeros(n_classes)
                 continue
 
@@ -497,15 +506,16 @@ class BSTClassifier:
                         debug_info["fallback_stroke_type"] = fallback
                     if debug_collector is not None:
                         debug_collector.append(debug_info)
-                    results[i] = (fallback, rule_conf, 0)
+                    results[i] = (fallback, rule_conf, 0, alpha_list[i])
                     continue
 
             stroke_type = map_to_coach_class(pred_idx)
             if debug_info:
                 debug_info["stroke_type"] = stroke_type
+                debug_info["aimplayer_alpha"] = alpha_list[i]
             if debug_collector is not None:
                 debug_collector.append(debug_info)
-            results[i] = (stroke_type, confidence, pred_idx)
+            results[i] = (stroke_type, confidence, pred_idx, alpha_list[i])
 
         # Restore BatchNorm running stats
         for m, prev in _bn_restore:
@@ -532,10 +542,10 @@ class BSTClassifier:
         """Predict stroke type for a single clip.
 
         Returns:
-            (stroke_type, confidence, raw_class_id)
+            (stroke_type, confidence, raw_class_id, alpha)
         """
         results = self.predict_from_clips([clip])
-        return results[0] if results else ("unknown", 0.0, 0)
+        return results[0] if results else ("unknown", 0.0, 0, 0.5)
 
     def _rule_based_predict(self, clip: dict) -> str:
         """Fallback rule-based prediction using shuttle trajectory.

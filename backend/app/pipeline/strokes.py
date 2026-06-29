@@ -381,7 +381,7 @@ class StrokeClassificationStage:
             artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
 
         # Phase 3: build shot records from results
-        for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id)) in enumerate(zip(clip_hit_pairs, all_results)):
+        for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha)) in enumerate(zip(clip_hit_pairs, all_results)):
             # Track if this specific shot fell back to rule-based prediction
             # raw_class_id == 0 catches three paths:
             #   1. Model never loaded (all clips fallback)
@@ -395,6 +395,7 @@ class StrokeClassificationStage:
                 "stroke_type": stroke_type,
                 "stroke_confidence": confidence,
                 "shuttleset_class_id": raw_class_id,
+                "aimplayer_alpha": alpha,
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }

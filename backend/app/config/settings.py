@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     # Player tracking
     max_players: int = 2
     track_stitch_enabled: bool = True
+    tracker_config_path: Path = _project_root / "backend/app/config/bytetrack_badminton.yaml"
 
     # Hit detection weights & thresholds
     hit_reversal_weight: float = 0.45
@@ -76,7 +77,7 @@ class Settings(BaseSettings):
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5
-    attribution_bst_min_conf: float = 0.5
+    attribution_bst_min_conf: float = 0.3
 
     # Rally segmentation thresholds
     rally_gap_threshold: int = 90

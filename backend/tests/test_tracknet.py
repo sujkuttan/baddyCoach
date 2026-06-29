@@ -7,24 +7,24 @@ from pathlib import Path
 # ─── Synthetic architecture tests (no weights needed) ──────────────────────
 
 @pytest.mark.cpu_only
-def test_tracknet_backbone_forward():
-    """Verify VGG-style backbone produces correct output shape."""
-    from app.models.tracknet import TrackNetV3Backbone
-    model = TrackNetV3Backbone(in_channels=9)
+def test_tracknet_model_forward():
+    """Verify custom UNet backbone produces correct output shape."""
+    from app.models.tracknet import TrackNetV3Model
+    model = TrackNetV3Model()
     model.eval()
-    batch = torch.randn(2, 9, 288, 512)
+    batch = torch.randn(2, 27, 288, 512)
     with torch.no_grad():
         out = model(batch)
-    assert out.shape == (2, 1, 288, 512), f"Expected (2, 1, 288, 512), got {out.shape}"
+    assert out.shape == (2, 8, 288, 512), f"Expected (2, 8, 288, 512), got {out.shape}"
 
 
 @pytest.mark.cpu_only
-def test_tracknet_backbone_output_range():
+def test_tracknet_model_output_range():
     """Verify backbone output is a reasonable heatmap (finite values)."""
-    from app.models.tracknet import TrackNetV3Backbone
-    model = TrackNetV3Backbone(in_channels=9)
+    from app.models.tracknet import TrackNetV3Model
+    model = TrackNetV3Model()
     model.eval()
-    batch = torch.randn(1, 9, 288, 512)
+    batch = torch.randn(1, 27, 288, 512)
     with torch.no_grad():
         out = model(batch)
     assert torch.isfinite(out).all(), "Output contains non-finite values"
@@ -76,19 +76,19 @@ def test_tracknet_v3_too_few_frames():
 
 
 @pytest.mark.cpu_only
-def test_build_3frame_window():
-    """Verify 3-frame window construction."""
-    from app.models.tracknet import _build_3frame_window
-    preprocessed = [np.zeros((288, 512, 3), dtype=np.float32) for _ in range(5)]
+def test_build_9frame_window():
+    """Verify 9-frame window construction."""
+    from app.models.tracknet import _build_9frame_window
+    preprocessed = [np.zeros((288, 512, 3), dtype=np.float32) for _ in range(10)]
     # Middle frame
-    window = _build_3frame_window(preprocessed, 2)
-    assert window.shape == (9, 288, 512)
-    # First frame (edge case — repeats frame 0)
-    window = _build_3frame_window(preprocessed, 0)
-    assert window.shape == (9, 288, 512)
-    # Last frame (edge case — repeats frame 4)
-    window = _build_3frame_window(preprocessed, 4)
-    assert window.shape == (9, 288, 512)
+    window = _build_9frame_window(preprocessed, 5)
+    assert window.shape == (27, 288, 512)
+    # First frame (edge case — pads frame 0)
+    window = _build_9frame_window(preprocessed, 0)
+    assert window.shape == (27, 288, 512)
+    # Last frame (edge case — pads frame last)
+    window = _build_9frame_window(preprocessed, 9)
+    assert window.shape == (27, 288, 512)
 
 
 @pytest.mark.cpu_only
@@ -105,22 +105,21 @@ def test_extract_peak():
 
 
 @pytest.mark.cpu_only
-def test_tracknet_backbone_load_state_dict():
-    """Verify the backbone can accept a synthetic state_dict."""
+def test_tracknet_model_load_state_dict():
+    """Verify the model can accept a synthetic state_dict."""
     import torch
     import torch.nn as nn
-    from app.models.tracknet import TrackNetV3Backbone
-    model = TrackNetV3Backbone(in_channels=9)
-    # Create a synthetic state_dict with matching shapes
+    from app.models.tracknet import TrackNetV3Model
+    model = TrackNetV3Model()
     sd = {}
     for name, param in model.named_parameters():
         sd[name] = torch.randn(param.shape)
     model.load_state_dict(sd, strict=False)
     model.eval()
-    batch = torch.randn(1, 9, 288, 512)
+    batch = torch.randn(1, 27, 288, 512)
     with torch.no_grad():
         out = model(batch)
-    assert out.shape == (1, 1, 288, 512)
+    assert out.shape == (1, 8, 288, 512)
 
 
 # ─── Integration tests (need checkpoint files) ────────────────────────────
@@ -152,7 +151,7 @@ def test_tracknet_predict_batch():
     model = TrackNetV3(str(model_path), device="cpu")
     frames = [np.random.randint(0, 255, (720, 1280, 3), dtype=np.uint8) for _ in range(6)]
     results = model.predict_batch(frames, batch_size=3)
-    assert len(results) == 4
+    assert len(results) == 6
     for r in results:
         assert 'x' in r
         assert 'y' in r
