@@ -11,6 +11,10 @@ from pathlib import Path
 from typing import Optional
 
 from app.config.settings import settings
+from app.pipeline.shared.stroke_features import (
+    extract_clip_features, classify_family, classify_by_family,
+    estimate_confidence, _build_evidence, top3_alternatives,
+)
 
 logger = logging.getLogger("bst")
 
@@ -366,7 +370,19 @@ class BSTClassifier:
         """
         batch_size = batch_size or self.batch_size
         if self.model is None:
-            results = [(self._rule_based_predict(clip), 0.5, 0, 0.5) for clip in clips]
+            results = []
+            for clip in clips:
+                st, conf, ev, top3 = self._rule_based_predict(clip)
+                results.append((st, conf, 0, 0.5))
+                if debug_collector is not None:
+                    debug_collector.append({
+                        "pred_class_id": 0,
+                        "pred_confidence": conf,
+                        "is_rule_based": True,
+                        "fallback_stroke_type": st,
+                        "rule_evidence": ev,
+                        "rule_top3": top3,
+                    })
             if return_probs:
                 n_classes = getattr(self, 'n_classes', 25)
                 return results, np.zeros((len(clips), n_classes))
@@ -440,15 +456,17 @@ class BSTClassifier:
         corr_idx = 0
         for i in range(n_clips):
             if not valid_mask[i]:
-                fallback = self._rule_based_predict(clips[i])
+                fallback, rb_conf, rb_ev, rb_top3 = self._rule_based_predict(clips[i])
                 if debug_collector is not None:
                     debug_collector.append({
                         "pred_class_id": 0,
-                        "pred_confidence": 0.0,
+                        "pred_confidence": rb_conf,
                         "is_rule_based": True,
                         "fallback_stroke_type": fallback,
+                        "rule_evidence": rb_ev,
+                        "rule_top3": rb_top3,
                     })
-                results[i] = (fallback, 0.5, 0, alpha_list[i])
+                results[i] = (fallback, rb_conf, 0, alpha_list[i])
                 probs_list[i] = np.zeros(n_classes)
                 continue
 
@@ -499,11 +517,13 @@ class BSTClassifier:
                         debug_info["second_best_class_id"] = second_idx
                         debug_info["second_best_confidence"] = second_conf
                 else:
-                    fallback = self._rule_based_predict(clip_data[i])
-                    rule_conf = min(confidence, 0.3)
+                    fallback, rule_conf, ev, top3 = self._rule_based_predict(clip_data[i])
+                    rule_conf = min(rule_conf, 0.3)
                     if debug_info:
                         debug_info["is_rule_based"] = True
                         debug_info["fallback_stroke_type"] = fallback
+                        debug_info["rule_evidence"] = ev
+                        debug_info["rule_top3"] = top3
                     if debug_collector is not None:
                         debug_collector.append(debug_info)
                     results[i] = (fallback, rule_conf, 0, alpha_list[i])
@@ -547,65 +567,27 @@ class BSTClassifier:
         results = self.predict_from_clips([clip])
         return results[0] if results else ("unknown", 0.0, 0, 0.5)
 
-    def _rule_based_predict(self, clip: dict) -> str:
-        """Fallback rule-based prediction using shuttle trajectory.
+    def _rule_based_predict(self, clip: dict) -> tuple:
+        """Hierarchical rule-based prediction using stroke_features module.
 
-        The clip shuttle is normalized to [0,1] range by video resolution
-        (x/vid_w, y/vid_h) or court dimensions, giving approximately the
-        same scale as pixel-normalized coordinates.
+        Implements the spec's two-level classifier:
+          1. classify_family → family (overhead/underhand/net/mid_height/serve)
+          2. classify_by_family → specific stroke within that family
 
-        Only the POST-HIT half of the trajectory is analyzed to avoid the
-        V-shaped averaging problem from between-2-hits clips (the trajectory
-        reverses direction at the hit point).
-
-        Checks fast strokes first by max_speed, then uses direction and
-        endpoint to discriminate slower strokes. Falls back to unknown
-        rather than defaulting to a single class.
+        Returns:
+            (stroke_type, confidence, evidence_dict, top3_list)
         """
-        seq_len = self.seq_len if self.seq_len is not None else 30
-        shuttle = clip.get('shuttle', np.zeros((seq_len, 2)))
+        feats = extract_clip_features(clip)
+        if not feats.get('usable', False):
+            return ('unknown', 0.10, {}, [])
 
-        if len(shuttle) < 2:
-            return "unknown"
+        family = classify_family(feats)
+        stroke = classify_by_family(family, feats)
+        confidence = estimate_confidence(stroke, feats)
+        evidence = _build_evidence(stroke, feats)
+        top3 = top3_alternatives(feats, stroke)
 
-        mid = len(shuttle) // 2
-        post_hit = shuttle[mid:]
-
-        valid = (post_hit[:, 0] != 0) | (post_hit[:, 1] != 0)
-        if valid.sum() < 2:
-            return "unknown"
-        valid_traj = post_hit[valid]
-
-        dy = np.diff(valid_traj[:, 1])
-        dx = np.diff(valid_traj[:, 0])
-        speed = np.sqrt(dx**2 + dy**2)
-
-        max_speed = float(np.max(speed))
-        mean_dy = float(np.mean(dy))
-        end_y = float(valid_traj[-1, 1])
-
-        if max_speed < 0.02:
-            return "unknown"
-
-        if mean_dy > 0.05 and max_speed > 0.08:
-            return "smash"
-
-        if mean_dy < -0.04:
-            if end_y > 0.5 and max_speed > 0.06:
-                return "clear"
-            if end_y < 0.3:
-                return "drop"
-
-        if abs(mean_dy) < 0.03 and max_speed > 0.06:
-            return "drive"
-
-        if mean_dy > 0.03 and end_y > 0.5 and max_speed > 0.05:
-            return "lift"
-
-        if max_speed < 0.05:
-            return "net_shot"
-
-        return "unknown"
+        return (stroke, confidence, evidence, top3)
 
 
 def normalize_shuttlecock(arr: np.ndarray, v_width: int, v_height: int) -> np.ndarray:

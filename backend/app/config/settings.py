@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     stroke_smoothing_window: int = 2  # ±neighbors
     stroke_smoothing_majority_count: int = 3
     stroke_dedup_gap_seconds: float = 0.2
+    rule_based_shuttle_norm: str = "court"  # normalize shuttle by court dims for rule-based fallback
     bst_temperature: float = 1.0  # softmax temperature; >1 = softer, <1 = sharper. 0 = use cached.
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)

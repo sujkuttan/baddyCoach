@@ -400,6 +400,14 @@ class StrokeClassificationStage:
                 "is_bst_fallback": is_rule_based,
             }
 
+            if is_rule_based and bst_debug_collector is not None and i < len(bst_debug_collector):
+                ev = bst_debug_collector[i].get("rule_evidence", {})
+                top3 = bst_debug_collector[i].get("rule_top3", [])
+                if ev:
+                    shot["rule_evidence"] = ev
+                if top3:
+                    shot["rule_top3"] = top3
+
             if settings.report_include_logits and bst_debug_collector is not None and i < len(bst_debug_collector):
                 logits_str = bst_debug_collector[i].get("logits_all")
                 if logits_str:
