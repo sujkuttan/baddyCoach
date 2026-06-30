@@ -180,6 +180,14 @@ class Settings(BaseSettings):
     physics_agree_boost: float = 0.5      # confidence boost weight when BST & physics agree
     physics_max_override_frac: float = 0.40  # sanity guard: revert all if override fraction exceeds this
 
+    # Context fusion layer (soft logit nudge before physics gate)
+    fusion_enabled: bool = True
+    fusion_shuttle_weight: float = 0.15
+    fusion_zone_weight: float = 0.10
+    fusion_height_weight: float = 0.10
+    fusion_context_weight: float = 0.05
+    fusion_logit_clip: float = 2.0
+
     # Court geometry reliability
     geometry_max_trapezoid_ratio: float = 0.92  # top_width/bottom_width threshold; >0.92 → rectangle → unreliable
 

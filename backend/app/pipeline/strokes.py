@@ -559,10 +559,20 @@ class StrokeClassificationStage:
                 "stroke_confidence": confidence,
             })
 
+        # Phase 3a: context fusion layer — nudge BST logits by physics/context
+        fps = float(config.processing_fps or settings.fps)
+        if settings.fusion_enabled and probs_matrix is not None and len(shots) > 0:
+            from app.pipeline.shared.context_fusion import ContextFusion
+            shuttle_raw_fusion = artifacts.get_parquet("shuttle_raw")
+            fusion = ContextFusion.from_settings()
+            probs_matrix = fusion.fuse(
+                shots, probs_matrix,
+                shuttle_raw_fusion, pose_df, court, fps, vid_w, vid_h,
+            )
+
         # Phase 3b: physics-consistency gate + BST × physics ensemble
         shuttle_raw = artifacts.get_parquet("shuttle_raw")
         pose_df_physics = pose_df
-        fps = float(config.processing_fps or settings.fps)
 
         # Build 25-class name list matching predict_from_clips output ordering
         physics_classes = ["unknown"] + COACH_STROKE_CLASSES + COACH_STROKE_CLASSES
