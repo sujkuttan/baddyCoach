@@ -1,3 +1,4 @@
+import json
 import numpy as np
 import pandas as pd
 
@@ -238,6 +239,30 @@ class PlayerAttributionStage:
                                 shots_df.at[idx, "court_y"] = round(cy, 3)
                             except Exception:
                                 pass
+
+        # ── Post-attribution confidence calibration ──
+        if settings.report_include_logits:
+            from app.models.bst import BSTClassifier
+            T_far, T_near = BSTClassifier.load_calibration_cache()
+            n_calibrated = 0
+            for idx, shot in shots_df.iterrows():
+                logits_raw = shot.get("logits")
+                if not logits_raw or shot.get("is_rule_based", False):
+                    continue
+                try:
+                    logits = np.array(json.loads(logits_raw) if isinstance(logits_raw, str) else logits_raw)
+                except Exception:
+                    continue
+                side = shot.get("side", "near")
+                T = T_far if side == "far" else T_near
+                _, calibrated_conf, top3 = BSTClassifier.calibrate_probs(logits, T)
+                shots_df.at[idx, "calibrated_confidence"] = calibrated_conf
+                shots_df.at[idx, "calibrated_top3"] = json.dumps(top3)
+                n_calibrated += 1
+            if n_calibrated > 0:
+                logger.info("Confidence calibration",
+                            T_far=f"{T_far:.3f}", T_near=f"{T_near:.3f}",
+                            n_calibrated=n_calibrated)
 
         artifacts.set_parquet("shots", shots_df)
 

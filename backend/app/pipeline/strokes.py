@@ -509,6 +509,11 @@ class StrokeClassificationStage:
                 if top3:
                     shot["rule_top3"] = top3
 
+            if bst_debug_collector is not None and i < len(bst_debug_collector):
+                raw_conf = bst_debug_collector[i].get("bst_raw_confidence")
+                if raw_conf is not None and not is_rule_based:
+                    shot["bst_raw_confidence"] = raw_conf
+
             if settings.report_include_logits and bst_debug_collector is not None and i < len(bst_debug_collector):
                 logits_str = bst_debug_collector[i].get("logits_all")
                 if logits_str:
@@ -561,6 +566,8 @@ class StrokeClassificationStage:
 
         # Phase 3a: context fusion layer — nudge BST logits by physics/context
         fps = float(config.processing_fps or settings.fps)
+        shuttle_raw = artifacts.get_parquet("shuttle_raw")
+        pose_df_physics = pose_df
         if settings.fusion_enabled and probs_matrix is not None and len(shots) > 0:
             from app.pipeline.shared.context_fusion import ContextFusion
             shuttle_raw_fusion = artifacts.get_parquet("shuttle_raw")
@@ -570,9 +577,21 @@ class StrokeClassificationStage:
                 shuttle_raw_fusion, pose_df, court, fps, vid_w, vid_h,
             )
 
-        # Phase 3b: physics-consistency gate + BST × physics ensemble
-        shuttle_raw = artifacts.get_parquet("shuttle_raw")
-        pose_df_physics = pose_df
+        # Phase 3b: hierarchical family classifier — reduce cross-family noise
+        if settings.hierarchical_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+            from app.pipeline.shared.hierarchical_classifier import hierarchical_refine
+            probs_matrix = hierarchical_refine(probs_matrix, penalty=settings.hierarchical_penalty)
+
+        # Phase 3b.5: confusion-pair correction — resolve within-family ambiguities
+        if settings.confusion_pair_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+            from app.pipeline.shared.confusion_pairs import resolve_confusion_pairs
+            probs_matrix = resolve_confusion_pairs(
+                probs_matrix, shots, shuttle_raw,
+                pose_df, court, fps, vid_w, vid_h,
+                boost=settings.confusion_pair_boost,
+            )
+
+        # Phase 3c: physics-consistency gate + BST × physics ensemble
 
         # Build 25-class name list matching predict_from_clips output ordering
         physics_classes = ["unknown"] + COACH_STROKE_CLASSES + COACH_STROKE_CLASSES

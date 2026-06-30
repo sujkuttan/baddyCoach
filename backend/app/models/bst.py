@@ -78,7 +78,7 @@ class BSTClassifier:
         self.n_classes = 25
         self.classes = COACH_STROKE_CLASSES
         self.batch_size = batch_size if batch_size is not None else self._default_batch_size()
-        self.temperature = temperature if temperature is not None else 1.0
+        self.temperature = 1.0  # always raw T=1.0; calibration is post-hoc in attribution
         self.adapt_batchnorm = adapt_batchnorm
 
         if model_path and Path(model_path).exists():
@@ -173,9 +173,8 @@ class BSTClassifier:
             self.model = model
             self.seq_len = seq_len
             self.n_classes = n_classes
-            self._load_temperature()
-            logger.info("BST loaded: class=BST_CG_AP, in_dim=%d, seq_len=%d, n_classes=%d, temperature=%.3f",
-                        in_dim, seq_len, n_classes, self.temperature)
+            logger.info("BST loaded: class=BST_CG_AP, in_dim=%d, seq_len=%d, n_classes=%d",
+                        in_dim, seq_len, n_classes)
         except Exception as e:
             logger.error("BST load error: %s", e)
             import traceback
@@ -184,42 +183,60 @@ class BSTClassifier:
                                         "n_missing": 0, "n_unexpected": 0,
                                         "core_missing": [str(e)]})
 
-    TEMPERATURE_CACHE = None
-
-    @classmethod
-    def _temperature_cache_path(cls) -> Optional[Path]:
+    @staticmethod
+    def _temperature_cache_path() -> Optional[Path]:
         try:
             from app.pipeline.shared.models import CKPT_DIR
             return CKPT_DIR / "bst" / "bst_temperature.json"
         except Exception:
             return None
 
-    def _load_temperature(self):
-        """Load cached temperature, unless overridden by constructor param.
+    @staticmethod
+    def load_calibration_cache() -> tuple[float, float]:
+        """Load per-side temperatures from calibration cache.
 
-        Calibration is now exclusively via scripts/calibrate_bst.py
-        with ground-truth labels from the labeling UI. The degenerate
-        self-label path (fitting T against pred_class_id) has been
-        retired — it drives T→0 and measures nothing.
-
-        See _load_temperature docstring for the old auto-fit recipe
-        (removed 2025-06-27).
+        Returns:
+            (T_far, T_near) — defaults to (1.0, 1.0) if cache missing.
         """
-        if self.temperature != 1.0:
-            return
-        cache_path = self._temperature_cache_path()
-        if cache_path and cache_path.exists():
-            try:
+        try:
+            from app.pipeline.shared.models import CKPT_DIR
+            cache_path = CKPT_DIR / "bst" / "bst_temperature.json"
+            if cache_path.exists():
                 import json
                 with open(cache_path) as f:
                     data = json.load(f)
-                cached = float(data.get("temperature", 1.0))
-                self.temperature = cached
-                logger.info("Loaded cached temperature: T=%.3f", cached)
-                logger.info("NOTE: This temperature may be stale after InpaintNet fix. "
-                           "Re-calibrate via scripts/calibrate_bst.py or the inline recipe in _load_temperature docstring.")
-            except Exception as e:
-                logger.warning("Could not load cached temperature: %s", e)
+                T_far = float(data.get("temperature_far", data.get("temperature", 1.0)))
+                T_near = float(data.get("temperature_near", data.get("temperature", 1.0)))
+                return T_far, T_near
+        except Exception as e:
+            logger.warning("Could not load calibration cache: %s", e)
+        return 1.0, 1.0
+
+    @staticmethod
+    def calibrate_probs(logits: np.ndarray, T: float) -> tuple[np.ndarray, float, list]:
+        """Apply temperature scaling and return (probs, confidence, top3).
+
+        Args:
+            logits: (25,) raw logit vector.
+            T: Temperature scalar (>0). T=1.0 is identity.
+
+        Returns:
+            (probs, max_confidence, top3_list)
+            where top3_list = [(class_name, confidence), ...]
+        """
+        probs = np.exp(logits / T)
+        probs = probs / probs.sum()
+        sorted_idx = np.argsort(probs)[::-1]
+        confidence = float(probs[sorted_idx[0]])
+
+        cls_names = ["unknown"] + COACH_STROKE_CLASSES + COACH_STROKE_CLASSES
+        top3 = []
+        for k in range(min(3, len(sorted_idx))):
+            idx = sorted_idx[k]
+            name = cls_names[idx] if idx < len(cls_names) else "unknown"
+            top3.append([name, float(probs[idx])])
+
+        return probs, confidence, top3
 
     @staticmethod
     def _load_logit_bias(n_classes: int) -> Optional[np.ndarray]:
@@ -291,7 +308,7 @@ class BSTClassifier:
 
     @staticmethod
     def _save_temperature(temperature: float):
-        """Persist calibrated temperature to cache file."""
+        """Persist calibrated temperature to cache file (legacy, single T)."""
         cache_path = BSTClassifier._temperature_cache_path()
         if cache_path is None:
             return
@@ -299,7 +316,9 @@ class BSTClassifier:
             import json
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             with open(cache_path, "w") as f:
-                json.dump({"temperature": float(temperature)}, f)
+                json.dump({"temperature": float(temperature),
+                           "temperature_far": float(temperature),
+                           "temperature_near": float(temperature)}, f)
             logger.info("Saved temperature T=%.3f -> %s", temperature, cache_path)
         except Exception as e:
             logger.warning("Could not save temperature: %s", e)
@@ -526,13 +545,15 @@ class BSTClassifier:
             logits_np = corrected[corr_idx] if corrected is not None else raw_logits_list[i]
             corr_idx += 1
 
-            probs = np.exp(logits_np / self.temperature)
-            probs = probs / probs.sum()
+            # Raw T=1.0 probabilities (calibration is post-hoc in attribution)
+            raw_probs = np.exp(logits_np)
+            raw_probs = raw_probs / raw_probs.sum()
 
-            probs_list[i] = probs
+            probs_list[i] = raw_probs
 
-            pred_idx = int(np.argmax(probs))
-            confidence = float(probs[pred_idx])
+            pred_idx = int(np.argmax(raw_probs))
+            confidence = float(raw_probs[pred_idx])
+            raw_confidence = confidence  # before any override or fallback
 
             clip_jnb = clip_data[i]['JnB']
             jnb_min = float(clip_jnb.min())
@@ -543,13 +564,14 @@ class BSTClassifier:
             if debug_collector is not None:
                 logit_class_0 = float(logits_np[0])
                 logit_max = float(logits_np.max())
-                sorted_idxs = np.argsort(probs)[::-1]
-                top5 = [(int(sorted_idxs[k]), float(probs[sorted_idxs[k]]))
+                sorted_idxs = np.argsort(raw_probs)[::-1]
+                top5 = [(int(sorted_idxs[k]), float(raw_probs[sorted_idxs[k]]))
                         for k in range(5)]
 
                 debug_info = {
                     "pred_class_id": pred_idx,
                     "pred_confidence": confidence,
+                    "bst_raw_confidence": raw_confidence,
                     "logit_class_0": logit_class_0,
                     "logit_max": logit_max,
                     "top5": top5,
@@ -560,8 +582,8 @@ class BSTClassifier:
                 }
 
             if pred_idx == 0:
-                second_idx = int(np.argsort(probs)[-2])
-                second_conf = float(probs[second_idx])
+                second_idx = int(np.argsort(raw_probs)[-2])
+                second_conf = float(raw_probs[second_idx])
                 if second_conf > 0.3:
                     pred_idx = second_idx
                     confidence = second_conf

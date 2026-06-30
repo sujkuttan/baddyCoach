@@ -135,6 +135,11 @@ def load_from_csv(csv_path: Path, logits_source: str = "results.json",
     n_labeled = sum(valid_mask)
     n_total = len(logits)
 
+    # Extract side labels if available (for per-side calibration)
+    side_values = None
+    if "side" in labeled.columns:
+        side_values = labeled["side"].values[valid_mask]
+
     metadata = {
         "n_csv_rows": len(df),
         "n_labeled": n_labeled,
@@ -144,6 +149,8 @@ def load_from_csv(csv_path: Path, logits_source: str = "results.json",
         "n_unsure": len(df[df["label_status"] == "unsure"]),
         "hit_precision": len(df[df["label_status"] != "not_a_shot"]) / max(1, len(df)),
     }
+    if side_values is not None:
+        metadata["side"] = side_values
 
     return logits, labels, metadata
 
@@ -236,6 +243,8 @@ def main():
     parser.add_argument("--logits-source", type=str, default="results.json",
                         help="Logits source for CSV mode: 'results.json' or parquet path")
     parser.add_argument("--output", type=str, help="Output path for temperature JSON (default: CKPT_DIR/bst/bst_temperature.json)")
+    parser.add_argument("--per-side", action="store_true",
+                        help="Compute separate temperatures for far/near players (requires 'side' column in CSV)")
     args = parser.parse_args()
 
     # ── Resolve backend path ──────────────────────────────────────────────
@@ -296,17 +305,58 @@ def main():
     # ── Compute optimal temperature ─────────────────────────────────────
     from app.models.bst import BSTClassifier
 
-    T_opt = BSTClassifier.compute_optimal_temperature(logits, labels)
-    print(f"\nOptimal temperature: T = {T_opt:.4f}")
+    result = {}
+    if args.per_side and "side" in metadata:
+        # Per-side calibration
+        far_mask = metadata.get("side") == "far"
+        near_mask = ~far_mask
+        if far_mask.sum() >= 30:
+            T_far = BSTClassifier.compute_optimal_temperature(logits[far_mask], labels[far_mask])
+            result["temperature_far"] = round(T_far, 4)
+            print(f"\nFar-player optimal temperature: T_far = {T_far:.4f} (n={far_mask.sum()})")
+        else:
+            print(f"WARNING: Too few far-player samples ({far_mask.sum()}), using global T")
+            T_far = 1.0
+        if near_mask.sum() >= 30:
+            T_near = BSTClassifier.compute_optimal_temperature(logits[near_mask], labels[near_mask])
+            result["temperature_near"] = round(T_near, 4)
+            print(f"Near-player optimal temperature: T_near = {T_near:.4f} (n={near_mask.sum()})")
+        else:
+            print(f"WARNING: Too few near-player samples ({near_mask.sum()}), using global T")
+            T_near = 1.0
+        if far_mask.sum() < 30 or near_mask.sum() < 30:
+            T_opt = BSTClassifier.compute_optimal_temperature(logits, labels)
+            result["temperature_far"] = result.get("temperature_far", round(T_opt, 4))
+            result["temperature_near"] = result.get("temperature_near", round(T_opt, 4))
+    else:
+        T_opt = BSTClassifier.compute_optimal_temperature(logits, labels)
+        result["temperature"] = round(T_opt, 4)
+        result["temperature_far"] = round(T_opt, 4)
+        result["temperature_near"] = round(T_opt, 4)
+        print(f"\nOptimal temperature: T = {T_opt:.4f}")
 
     # ── Calibration report ──────────────────────────────────────────────
-    report = calibration_report(logits, labels, T_opt, metadata, coach_class_names)
+    if not args.per_side:
+        report = calibration_report(logits, labels, T_opt, metadata, coach_class_names)
+    else:
+        T_far = result.get("temperature_far", 1.0)
+        T_near = result.get("temperature_near", 1.0)
+        report_lines = [
+            f"Far-player  T = {T_far:.4f}  (n={far_mask.sum()})",
+            f"Near-player T = {T_near:.4f}  (n={near_mask.sum()})",
+            "",
+            "Far-player calibration:",
+        ]
+        report_lines.append(calibration_report(logits[far_mask], labels[far_mask], T_far, metadata, coach_class_names))
+        report_lines.extend(["", "Near-player calibration:"])
+        report_lines.append(calibration_report(logits[near_mask], labels[near_mask], T_near, metadata, coach_class_names))
+        report = "\n".join(report_lines)
     print("\n" + report)
 
     # ── Save ────────────────────────────────────────────────────────────
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w") as f:
-        json.dump({"temperature": round(T_opt, 4)}, f)
+        json.dump(result, f)
     print(f"\nSaved to {output_path}")
 
 

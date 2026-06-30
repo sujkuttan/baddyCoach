@@ -56,30 +56,13 @@ def test_bst_default_temperature():
     assert classifier.temperature == 1.0
 
 
-def test_bst_custom_temperature():
+def test_bst_temperature_always_1():
+    """BSTClassifier always uses T=1.0 (raw probs); calibration is post-hoc."""
     from app.models.bst import BSTClassifier
     classifier = BSTClassifier(temperature=2.5)
-    assert classifier.temperature == 2.5
+    assert classifier.temperature == 1.0
     classifier2 = BSTClassifier(temperature=0.5)
-    assert classifier2.temperature == 0.5
-
-
-def test_temperature_affects_probs():
-    """Verify T != 1.0 changes softmax output."""
-    import torch
-    from app.models.bst import BSTClassifier, COACH_STROKE_CLASSES
-
-    classifier = BSTClassifier()
-    logits = torch.randn(1, 12) * 3.0
-
-    probs_T1 = torch.softmax(logits / 1.0, dim=1).numpy()
-    probs_T2 = torch.softmax(logits / 2.0, dim=1).numpy()
-    probs_T05 = torch.softmax(logits / 0.5, dim=1).numpy()
-
-    # T=2.0 should have lower max prob than T=1.0 (softer)
-    assert probs_T2.max() < probs_T1.max()
-    # T=0.5 should have higher max prob than T=1.0 (sharper)
-    assert probs_T05.max() > probs_T1.max()
+    assert classifier2.temperature == 1.0
 
 
 def test_compute_optimal_temperature():
@@ -99,24 +82,32 @@ def test_compute_optimal_temperature():
     assert isinstance(T_opt, float)
 
 
-def test_temperature_cache_roundtrip(tmp_path):
-    """Verify temperature cache save and reload."""
+def test_calibration_cache_roundtrip(tmp_path):
+    """Verify calibration cache save and load_calibration_cache."""
+    import json as json_mod
     from app.models.bst import BSTClassifier
+    import app.pipeline.shared.models as models_mod
 
     cache_path = tmp_path / "bst" / "bst_temperature.json"
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
-    original = BSTClassifier._temperature_cache_path
-    BSTClassifier._temperature_cache_path = classmethod(lambda cls: cache_path)
+    original_path = models_mod.CKPT_DIR
+    models_mod.CKPT_DIR = tmp_path
 
     try:
         BSTClassifier._save_temperature(2.5)
-        assert cache_path.exists()
+        T_far, T_near = BSTClassifier.load_calibration_cache()
+        assert T_far == 2.5
+        assert T_near == 2.5
 
-        data = json.loads(cache_path.read_text())
-        assert data["temperature"] == 2.5
+        # Per-side cache
+        with open(cache_path, "w") as f:
+            json_mod.dump({"temperature_far": 1.3, "temperature_near": 1.8}, f)
+        T_far, T_near = BSTClassifier.load_calibration_cache()
+        assert T_far == 1.3
+        assert T_near == 1.8
     finally:
-        BSTClassifier._temperature_cache_path = original
+        models_mod.CKPT_DIR = original_path
 
 
 def test_temperature_calibration_script_runs():
@@ -265,3 +256,60 @@ def test_prior_correction_disabled_is_noop():
         np.testing.assert_array_equal(corrected, logits)
     finally:
         settings.bst_prior_correction_enabled = orig_enabled
+
+
+# ── Calibration tests ────────────────────────────────────────────
+
+def test_calibrate_probs_identity_at_T1():
+    """T=1.0 should preserve the argmax of raw logits."""
+    from app.models.bst import BSTClassifier
+    rng = np.random.RandomState(42)
+    logits = rng.randn(25).astype(np.float64)
+    raw_probs = np.exp(logits)
+    raw_probs = raw_probs / raw_probs.sum()
+    raw_top = int(np.argmax(raw_probs))
+
+    calibrated_probs, conf, top3 = BSTClassifier.calibrate_probs(logits, T=1.0)
+    assert int(np.argmax(calibrated_probs)) == raw_top
+    assert len(top3) == 3
+    assert top3[0][1] == conf
+
+
+def test_calibrate_probs_T2_softer():
+    """T > 1 produces softer distribution (lower max confidence)."""
+    from app.models.bst import BSTClassifier
+    rng = np.random.RandomState(42)
+    logits = rng.randn(25).astype(np.float64)
+    _, conf_T1, _ = BSTClassifier.calibrate_probs(logits, T=1.0)
+    _, conf_T2, _ = BSTClassifier.calibrate_probs(logits, T=2.0)
+    assert conf_T2 < conf_T1
+
+
+def test_calibrate_probs_T05_sharper():
+    """T < 1 produces sharper distribution (higher max confidence)."""
+    from app.models.bst import BSTClassifier
+    rng = np.random.RandomState(42)
+    logits = rng.randn(25).astype(np.float64)
+    _, conf_T1, _ = BSTClassifier.calibrate_probs(logits, T=1.0)
+    _, conf_T05, _ = BSTClassifier.calibrate_probs(logits, T=0.5)
+    assert conf_T05 > conf_T1
+
+
+def test_calibrate_probs_top3_ordering():
+    """Top3 returned in descending confidence order."""
+    from app.models.bst import BSTClassifier
+    rng = np.random.RandomState(42)
+    logits = rng.randn(25).astype(np.float64)
+    _, _, top3 = BSTClassifier.calibrate_probs(logits, T=1.0)
+    assert len(top3) == 3
+    assert top3[0][1] >= top3[1][1] >= top3[2][1]
+
+
+def test_calibrate_probs_valid_probs():
+    """Calibrated probabilities sum to 1 and are non-negative."""
+    from app.models.bst import BSTClassifier
+    rng = np.random.RandomState(42)
+    logits = rng.randn(25).astype(np.float64)
+    probs, _, _ = BSTClassifier.calibrate_probs(logits, T=1.5)
+    assert abs(probs.sum() - 1.0) < 1e-6
+    assert np.all(probs >= 0)

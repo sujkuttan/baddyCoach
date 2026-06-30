@@ -113,7 +113,9 @@ class Settings(BaseSettings):
     stroke_smoothing_majority_count: int = 3
     stroke_dedup_gap_seconds: float = 0.2
     rule_based_shuttle_norm: str = "court"  # normalize shuttle by court dims for rule-based fallback
-    bst_temperature: float = 1.0  # softmax temperature; >1 = softer, <1 = sharper. 0 = use cached.
+    bst_temperature: float = 1.0  # DEPRECATED: use bst_temperature_far/near instead. Global default.
+    bst_temperature_far: float = 1.0   # softmax temperature for far-player strokes; >1 = softer
+    bst_temperature_near: float = 1.0  # softmax temperature for near-player strokes; >1 = softer
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
@@ -179,6 +181,14 @@ class Settings(BaseSettings):
     physics_cross_court_dx: float = 0.30  # normalized lateral travel for cross_court cue
     physics_agree_boost: float = 0.5      # confidence boost weight when BST & physics agree
     physics_max_override_frac: float = 0.40  # sanity guard: revert all if override fraction exceeds this
+
+    # Hierarchical classifier (family-level structural prior)
+    hierarchical_enabled: bool = True
+    hierarchical_penalty: float = 1.5
+
+    # Confusion-pair correction (within-family pairwise disambiguation)
+    confusion_pair_enabled: bool = True
+    confusion_pair_boost: float = 0.3
 
     # Context fusion layer (soft logit nudge before physics gate)
     fusion_enabled: bool = True
