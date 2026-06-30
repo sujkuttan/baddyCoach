@@ -10,8 +10,6 @@ Runs after context fusion, before the physics gate.
 import numpy as np
 from app.models.bst import COACH_STROKE_CLASSES
 
-LOG = __import__("logging").getLogger("hierarchical")
-
 # ── Family definitions ──────────────────────────────────────────
 # Each family groups coach stroke classes that share a biomechanical
 # pattern. cross_court is ungrouped (exempt from penalty).
@@ -35,9 +33,6 @@ for family, classes in FAMILY_MAP.items():
         _CLASS_TO_FAMILIES.setdefault(c, set()).add(family)
 for cls, families in _MULTI_FAMILY.items():
     _CLASS_TO_FAMILIES.setdefault(cls, set()).update(families)
-
-# Family labels for the 25-class ordering (per-player mirroring)
-_FAMILIES_ORDERED = sorted(FAMILY_MAP.keys())  # deterministic ordering
 
 # ── Per-shot scoring helpers ─────────────────────────────────────
 

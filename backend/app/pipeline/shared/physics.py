@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.config.settings import settings
-from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, court_geometry_reliable
+from app.pipeline.shared.court import image_to_court, court_geometry_reliable
 from app.pipeline.shared.logging import logger
 
 

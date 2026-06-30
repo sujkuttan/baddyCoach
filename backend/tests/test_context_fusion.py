@@ -181,16 +181,6 @@ def _make_shuttle_df(start_frame: int, n_frames: int,
     })
 
 
-def _make_court():
-    return {
-        "valid": True,
-        "homography": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
-        "court_length": 13.4,
-        "court_width": 6.10,
-        "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)],
-    }
-
-
 def _make_court_trapezoid():
     """Non-rectangular corners so court_geometry_reliable passes.
     Homography maps pixel → court meters (13.4×6.1)."""

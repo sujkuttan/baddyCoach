@@ -6,17 +6,6 @@ from app.models.bst import COACH_STROKE_CLASSES
 
 # ── Helpers ─────────────────────────────────────────────────────
 
-def _uniform_probs(n_classes=25):
-    return np.ones((1, n_classes), dtype=np.float64) / n_classes
-
-
-def _make_probs(active_class: int, n_classes=25, conf=0.6):
-    """One-hot-ish: active_class gets `conf`, rest uniform."""
-    probs = np.full((1, n_classes), (1.0 - conf) / (n_classes - 1), dtype=np.float64)
-    probs[0, active_class] = conf
-    return probs
-
-
 _CLASS_NAMES = ["unknown"] + COACH_STROKE_CLASSES + COACH_STROKE_CLASSES
 
 

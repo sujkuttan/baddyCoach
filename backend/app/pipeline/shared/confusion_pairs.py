@@ -5,7 +5,6 @@ Runs after the hierarchical classifier, before the physics gate.
 """
 
 import numpy as np
-from app.config.settings import settings
 from app.pipeline.shared.physics import extract_physics_features, Features
 from app.models.bst import COACH_STROKE_CLASSES
 

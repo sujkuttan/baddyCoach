@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+from collections import Counter
 
 from app.config.settings import settings
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
@@ -300,7 +301,6 @@ class StrokeClassificationStage:
         court = artifacts.get("court") or {}
 
         from app.pipeline.shared.models import get_bst
-        from app.config.settings import settings
 
         classifier = get_bst()
         if classifier is None:
@@ -318,8 +318,6 @@ class StrokeClassificationStage:
         elif shuttle_df is not None and len(shuttle_df) > 0:
             vid_w = max(float(shuttle_df["x"].max()), 640)
             vid_h = max(float(shuttle_df["y"].max()), 480)
-
-        hit_frames = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
         # Get player side info for consistent ordering (p0=Far, p1=Near)
         players_data = artifacts.get("players") or {}
@@ -341,7 +339,6 @@ class StrokeClassificationStage:
 
         shots = []
         bst_clips_registry = {}
-        previous_shots = []
         hit_frames_sorted = sorted(int(h["frame"]) for h in hits_df.to_dict('records'))
 
         # Phase 1: build all clips (fast, no model inference)
@@ -558,23 +555,15 @@ class StrokeClassificationStage:
 
             shots.append(shot)
 
-            previous_shots.append({
-                "stroke_type": stroke_type,
-                "frame": frame,
-                "stroke_confidence": confidence,
-            })
-
         # Phase 3a: context fusion layer — nudge BST logits by physics/context
         fps = float(config.processing_fps or settings.fps)
         shuttle_raw = artifacts.get_parquet("shuttle_raw")
-        pose_df_physics = pose_df
         if settings.fusion_enabled and probs_matrix is not None and len(shots) > 0:
             from app.pipeline.shared.context_fusion import ContextFusion
-            shuttle_raw_fusion = artifacts.get_parquet("shuttle_raw")
             fusion = ContextFusion.from_settings()
             probs_matrix = fusion.fuse(
                 shots, probs_matrix,
-                shuttle_raw_fusion, pose_df, court, fps, vid_w, vid_h,
+                shuttle_raw, pose_df, court, fps, vid_w, vid_h,
             )
 
         # Phase 3b: hierarchical family classifier — reduce cross-family noise
@@ -598,7 +587,7 @@ class StrokeClassificationStage:
 
         shots = apply_physics_ensemble(
             shots, probs_matrix, physics_classes,
-            shuttle_raw, pose_df_physics, court, fps, vid_w, vid_h,
+            shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
 
         # Post-classification temporal smoothing: overwrite unknown strokes
@@ -616,7 +605,6 @@ class StrokeClassificationStage:
                     if j != i and shots[j]["stroke_type"] != "unknown":
                         neighbors.append(shots[j]["stroke_type"])
                 if neighbors:
-                    from collections import Counter
                     majority, count = Counter(neighbors).most_common(1)[0]
                     if majority != stype and count >= settings.stroke_smoothing_majority_count:
                         shots[i]["stroke_type"] = majority
@@ -674,7 +662,6 @@ class StrokeClassificationStage:
     def _compute_distribution(shots):
         if not shots:
             return {}
-        from collections import Counter
         dist = Counter(s["stroke_type"] for s in shots)
         total = len(shots)
         return {k: v / total for k, v in dist.items()}

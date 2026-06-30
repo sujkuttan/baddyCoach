@@ -4,7 +4,7 @@ import pandas as pd
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.court import (
-    image_to_court, foot_midpoint_from_pose, foot_point_from_bbox,
+    image_to_court, foot_midpoint_from_pose,
     COURT_LENGTH, COURT_WIDTH,
 )
 from app.pipeline.shared.ownership_scorer import OwnershipScorer, ViterbiConfig, assign_hit_owners_viterbi
