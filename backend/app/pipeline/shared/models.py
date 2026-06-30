@@ -36,13 +36,13 @@ MODEL_REGISTRY: dict[str, tuple[Path, str | None, str | None]] = {
         None,
     ),
     "bst": (
-        CKPT_DIR / "bst" / "bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt",
-        "1428xaaM8Z41agIdvI8ckSDqDNFYvyEPp",
+        CKPT_DIR / "bst" / "bst_CG_AP_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt",
+        "1DCht1xHf9dCukuy2B7_N8Kh2M-I-wMqY",
         None,
     ),
     "bst_colab": (
-        CKPT_DIR / "bst" / "bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt",
-        "1428xaaM8Z41agIdvI8ckSDqDNFYvyEPp",
+        CKPT_DIR / "bst" / "bst_CG_AP_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt",
+        "1DCht1xHf9dCukuy2B7_N8Kh2M-I-wMqY",
         None,
     ),
     "rtmpose": (

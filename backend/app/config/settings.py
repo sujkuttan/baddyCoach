@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     yolov8_model_path: Path | None = None
     rtmpose_model_path: Path | None = _project_root / "ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
     hrnet_model_path: Path | None = _project_root / "ckpts/mmpose/hrnet_w32_coco_256x192.onnx"
-    bst_model_path: Path | None = _project_root / "ckpts/bst/bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"
+    bst_model_path: Path | None = _project_root / "ckpts/bst/bst_CG_AP_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"
     pose_model: str = "rtmpose"  # rtmpose, mmpose, hybrid
 
     # Environment variables
