@@ -15,6 +15,7 @@ from app.pipeline.shared.stroke_features import (
     extract_clip_features, classify_family, classify_by_family,
     estimate_confidence, _build_evidence, top3_alternatives,
 )
+from app.pipeline.shared.bst_validator import BSTInputValidator
 
 logger = logging.getLogger("bst")
 
@@ -363,9 +364,11 @@ class BSTClassifier:
                           of shape (n_clips, n_classes) for downstream ensemble.
 
         Returns:
-            List of (stroke_type, confidence, raw_class_id, alpha) tuples.
+            List of (stroke_type, confidence, raw_class_id, alpha,
+                     aim_attention_p0, aim_attention_p1) tuples.
             alpha ∈ [0, 1]: >0.5 = far player (p1), <0.5 = near player (p2).
             0.5 = uncertain / no model available.
+            aim_attention_p0/p1: cos(p0/p1_shuttle_CLS, shuttle_CLS), raw attention.
             If return_probs=True, returns (results, probs_matrix).
         """
         batch_size = batch_size or self.batch_size
@@ -373,7 +376,7 @@ class BSTClassifier:
             results = []
             for clip in clips:
                 st, conf, ev, top3 = self._rule_based_predict(clip)
-                results.append((st, conf, 0, 0.5))
+                results.append((st, conf, 0, 0.5, 0.0, 0.0))
                 if debug_collector is not None:
                     debug_collector.append({
                         "pred_class_id": 0,
@@ -398,10 +401,38 @@ class BSTClassifier:
                     _bn_restore.append((m, m.track_running_stats))
                     m.track_running_stats = False
 
+        # ── Lazy-create the input validator ───────────────────────────
+        if not hasattr(self, '_validator') or self._validator is None:
+            self._validator = BSTInputValidator(
+                seq_len=self.seq_len,
+                n_classes=getattr(self, 'n_classes', 25),
+                shuttle_norm=settings.bst_shuttle_norm,
+                joint_norm=settings.bst_joint_norm,
+                level=settings.bst_validation_level,
+                clip_boundary=settings.bst_clip_boundary,
+            )
+
+        # ── Per-clip validation (before batching) ─────────────────────
+        for i, clip in enumerate(clips):
+            debug = clip.get("_debug_clip", {})
+            frame_range = f"frames {debug.get('frame_start', '?')}-{debug.get('frame_end', '?')}"
+            try:
+                clip_result = self._validator.validate_clip(clip)
+                if clip_result.n_warnings > 0 or clip_result.n_errors > 0:
+                    msg = clip_result.warnings[0] if clip_result.warnings else clip_result.errors[0]
+                    logger.warning(
+                        "BST clip %d %s: %s",
+                        i, frame_range, msg.replace("BST VALIDATION: ", "").replace("BST VALIDATION FAIL: ", ""),
+                    )
+            except Exception as e:
+                logger.warning("BST clip %d %s validation error: %s", i, frame_range, e)
+
         n_clips = len(clips)
         raw_logits_list = [None] * n_clips
         clip_data = [None] * n_clips  # per-clip metadata for the second pass
         alpha_list = [0.5] * n_clips  # AimPlayer alpha per clip
+        p1_sim_list = [0.0] * n_clips  # cos(p0_shuttle_CLS, shuttle_CLS)
+        p2_sim_list = [0.0] * n_clips  # cos(p1_shuttle_CLS, shuttle_CLS)
 
         # ── Pass 1: collect raw logits + alpha ────────────────────────
         for batch_start in range(0, n_clips, batch_size):
@@ -412,6 +443,15 @@ class BSTClassifier:
                 JnB_np = np.stack([c['JnB'] for c in batch_clips])
                 shuttle_np = np.stack([c['shuttle'] for c in batch_clips])
                 pos_np = np.stack([c['pos'] for c in batch_clips])
+
+                # ── Batch-level validation just before model call ─────
+                try:
+                    self._validator.validate_batch(JnB_np, shuttle_np, pos_np)
+                except Exception as e:
+                    logger.warning(
+                        "BST batch %d-%d pre-inference validation error: %s",
+                        batch_start, batch_end - 1, e,
+                    )
 
                 JnB = torch.from_numpy(JnB_np).float().to(self.device)
                 shuttle = torch.from_numpy(shuttle_np).float().to(self.device)
@@ -428,11 +468,22 @@ class BSTClassifier:
                     else:
                         alpha_np = np.full(len(batch_clips), 0.5)
 
+                    if hasattr(self.model, '_last_p1_sim') and self.model._last_p1_sim is not None:
+                        p1_sim_np = self.model._last_p1_sim.float().cpu().numpy()
+                    else:
+                        p1_sim_np = np.zeros(len(batch_clips))
+                    if hasattr(self.model, '_last_p2_sim') and self.model._last_p2_sim is not None:
+                        p2_sim_np = self.model._last_p2_sim.float().cpu().numpy()
+                    else:
+                        p2_sim_np = np.zeros(len(batch_clips))
+
                 for j in range(len(batch_clips)):
                     idx = batch_start + j
                     raw_logits_list[idx] = logits_np[j]
                     clip_data[idx] = batch_clips[j]
                     alpha_list[idx] = float(alpha_np[j])
+                    p1_sim_list[idx] = float(p1_sim_np[j])
+                    p2_sim_list[idx] = float(p2_sim_np[j])
 
             except Exception as e:
                 logger.error("BST batch inference error at clip %d: %s", batch_start, e)
@@ -440,6 +491,8 @@ class BSTClassifier:
                     idx = batch_start + j
                     raw_logits_list[idx] = "error"
                     alpha_list[idx] = 0.5
+                    p1_sim_list[idx] = 0.0
+                    p2_sim_list[idx] = 0.0
 
         # ── Apply prior correction to all collected logits ─────────────
         valid_mask = [r is not None and isinstance(r, np.ndarray) for r in raw_logits_list]
@@ -466,7 +519,7 @@ class BSTClassifier:
                         "rule_evidence": rb_ev,
                         "rule_top3": rb_top3,
                     })
-                results[i] = (fallback, rb_conf, 0, alpha_list[i])
+                results[i] = (fallback, rb_conf, 0, alpha_list[i], p1_sim_list[i], p2_sim_list[i])
                 probs_list[i] = np.zeros(n_classes)
                 continue
 
@@ -526,7 +579,7 @@ class BSTClassifier:
                         debug_info["rule_top3"] = top3
                     if debug_collector is not None:
                         debug_collector.append(debug_info)
-                    results[i] = (fallback, rule_conf, 0, alpha_list[i])
+                    results[i] = (fallback, rule_conf, 0, alpha_list[i], p1_sim_list[i], p2_sim_list[i])
                     continue
 
             stroke_type = map_to_coach_class(pred_idx)
@@ -535,7 +588,7 @@ class BSTClassifier:
                 debug_info["aimplayer_alpha"] = alpha_list[i]
             if debug_collector is not None:
                 debug_collector.append(debug_info)
-            results[i] = (stroke_type, confidence, pred_idx, alpha_list[i])
+            results[i] = (stroke_type, confidence, pred_idx, alpha_list[i], p1_sim_list[i], p2_sim_list[i])
 
         # Restore BatchNorm running stats
         for m, prev in _bn_restore:
@@ -562,10 +615,11 @@ class BSTClassifier:
         """Predict stroke type for a single clip.
 
         Returns:
-            (stroke_type, confidence, raw_class_id, alpha)
+            (stroke_type, confidence, raw_class_id, alpha,
+             aim_attention_p0, aim_attention_p1)
         """
         results = self.predict_from_clips([clip])
-        return results[0] if results else ("unknown", 0.0, 0, 0.5)
+        return results[0] if results else ("unknown", 0.0, 0, 0.5, 0.0, 0.0)
 
     def _rule_based_predict(self, clip: dict) -> tuple:
         """Hierarchical rule-based prediction using stroke_features module.

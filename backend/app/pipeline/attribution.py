@@ -183,6 +183,28 @@ class PlayerAttributionStage:
                             (abs(owner_score - other_score) < uncert_margin)
                 shots_df.at[idx, "owner_uncertain"] = uncertain
 
+        # ── Post-attribution consistency: BST AimPlayer vs external owner ──
+        # After Viterbi assigns final owners, check if BST's internal AimPlayer
+        # attention agrees. Flag conflicts for debugging.
+        for idx, shot in shots_df.iterrows():
+            alpha = shot.get("aimplayer_alpha")
+            side = shot.get("side")
+            if alpha is None or side is None:
+                shots_df.at[idx, "attention_owner_match"] = None
+                shots_df.at[idx, "attention_alpha_owner"] = None
+                continue
+            alpha_owner = "far" if alpha > 0.5 else ("near" if alpha < 0.5 else None)
+            if alpha_owner is None:
+                shots_df.at[idx, "attention_owner_match"] = None
+                shots_df.at[idx, "attention_alpha_owner"] = None
+                continue
+            shots_df.at[idx, "attention_alpha_owner"] = alpha_owner
+            shots_df.at[idx, "attention_owner_match"] = (side == alpha_owner)
+
+        if config.debug_level >= 1:
+            matches = shots_df["attention_owner_match"].value_counts().to_dict()
+            logger.info("Attention-owner consistency", matches=str(matches))
+
         # ── Derive side from player_id ──
         _side_lookup = {}
         for _p in players_data.get("players", []):

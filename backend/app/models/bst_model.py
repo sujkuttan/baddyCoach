@@ -437,6 +437,8 @@ class BST_CG_AP(BST_CG):
         p2_shuttle_sim = self.cos_sim(p2_shuttle_cls, shuttle_cls)
         alpha = (p1_shuttle_sim - p2_shuttle_sim + 2.0) / 4.0
         self._last_alpha = alpha.detach()
+        self._last_p1_sim = p1_shuttle_sim.detach()
+        self._last_p2_sim = p2_shuttle_sim.detach()
         p1_conclusion = alpha.view(b, 1) * p1_conclusion
         p2_conclusion = (1.0 - alpha.view(b, 1)) * p2_conclusion
 

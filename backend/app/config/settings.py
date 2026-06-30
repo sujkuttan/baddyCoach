@@ -123,6 +123,8 @@ class Settings(BaseSettings):
     bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
+    bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
+    bst_validation_level: str = "warn"  # "off" | "warn" | "error" — BST input tensor validation
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5

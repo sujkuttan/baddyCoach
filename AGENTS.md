@@ -2,13 +2,14 @@
 
 ## Architecture Overview
 
-**13-stage FastAPI pipeline** processing badminton videos into coaching reports:
+**16-stage FastAPI pipeline** processing badminton videos into coaching reports:
 
 ```
 court_detection → player_tracking → shuttle_tracking → pose_estimation → 
-hit_frame_localization → stroke_classification → player_attribution → 
-rally_segmentation → court_position_analytics → footwork_analytics → 
-fitness_analytics → tactical_analytics → technical_analytics → coach_recommendations
+hit_frame_localization → stroke_classification → rally_segmentation → 
+player_attribution → rally_finalization → shot_context → 
+court_position_analytics → footwork_analytics → fitness_analytics → 
+tactical_analytics → technical_analytics → data_quality
 ```
 
 **Key components:**
@@ -19,9 +20,10 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 
 ## Critical Architecture Notes
 
-### ✅ Stage Ordering Bug (Fixed)
-- **Was:** `rally_segmentation` ran before `player_attribution`, misattributing winners to player_1
-- **Fix:** Reordered so `player_attribution` (index 6) runs before `rally_segmentation` (index 7), with rally alternation algorithm for winner determination
+### ✅ Stage Ordering: rally → attribution (Viterbi needs rally data)
+- **Current order:** `rally_segmentation` (index 6) → `player_attribution` (index 7)
+- **Rationale:** Viterbi HMM decoder requires rally boundaries to assign owners per-rally; attribution after rally is the correct ordering
+- **Historical note:** An earlier heuristic attribution did not need rally data and ran before rally_segmentation; this was correct for that approach but incompatible with the current Viterbi-based method
 
 ### ✅ BST Model Integration (Fixed)
 - **Issue:** BST likely not running due to sequence-length mismatch
@@ -65,6 +67,16 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Was:** Single-frame `_evaluate_shot` fallback with 2 features (elbow extension, shoulder angle); no coaching rules consumed technique data
 - **Fix:** Removed `_evaluate_shot` entirely; `_analyze_swing_mechanics` now uses 5 temporal features: elbow extension, peak shoulder angle, hip-shoulder separation, knee flexion (stroke-type-specific bounds), follow-through displacement. Technique scores wired into `analyze_from_pipeline` with 8 YAML coaching rules.
 
+### ✅ Ownership-Based Post-Attribution Consistency Check (Added — 2025-06-30)
+- **What:** Compares BST's internal AimPlayer attention (raw cosine sims from `BST_CG_AP.forward()`) against the final external owner assigned by Viterbi. Flags conflicts when the model's own attention focus disagrees with the pipeline-assigned owner.
+- **Raw sims exposed:** `bst_model.py` now stores `_last_p1_sim` and `_last_p2_sim` (cos(p0/p1_shuttle_CLS, shuttle_CLS)) alongside `_last_alpha`. These propagate through `bst.py` as `aim_attention_p0`/`aim_attention_p1` in the 6-tuple results `(stroke_type, confidence, raw_class_id, alpha, aim_attention_p0, aim_attention_p1)`.
+- **Per-shot fields in shots_df:**
+  - `aim_attention_p0`, `aim_attention_p1` — raw cosine similarities (stored in `strokes.py`)
+  - `attention_alpha_owner` — derived from alpha: `"far"` if alpha > 0.5, `"near"` if alpha < 0.5, `None` if alpha == 0.5
+  - `attention_owner_match` — `True` if `attention_alpha_owner == side`, `False` if they disagree, `None` if alpha is 0.5 or side missing
+- **Use case:** `attention_owner_match=False` flags bad clips, wrong p0/p1 ordering, or hit-frame errors for debugging.
+- **4 new tests** + 1 updated test. 350 pass total.
+
 ### ✅ BST AimPlayer Alpha for Attribution (Fixed — 2025-06-29)
 - **Was:** Player attribution Tier 1 only used `shuttleset_class_id` prefix (Top_/Bottom_) to determine the hitter, gated at `attribution_bst_min_conf=0.5`. Mean BST confidence ~0.33, so only 36/264 shots (13.6%) got model-based attribution; 76% fell to heuristic tiers.
 - **Fix:** Surfaces AimPlayer alpha from `BST_CG_AP.forward()` (internal cosine-similarity weighting between each player's shuttle CLS token) via `self._last_alpha`. `predict_from_clips` now returns 4-tuples: `(stroke_type, confidence, raw_class_id, alpha)` where alpha ∈ [0,1] (>0.5 = far player).
@@ -82,7 +94,23 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 ### ✅ GPU OOM on T4 (Fixed)
 - **Fix (commit `080eb9b`):** `gpu_batch.py` tiers reduced — ≥12GB: `yolo_chunk=200, yolo_batch=16, tracknet_chunk=16, rtmpose_chunk=128`. `colab/pipeline.py` `BATCH_SIZE`: 500→300. `torch.cuda.empty_cache()` between batches.
 
-## Testing & Development
+### ✅ Multi-Signal Ownership + Viterbi HMM (Added — 2025-06-29)
+- **Was:** Attribution used a heuristic cascade: Tier 1 (BST AimPlayer alpha / class_id prefix), Tier 2 (racket proximity), Tier 3 (greedy rally alternation), Tier 4 (fallback). Tier 3/4 had no physics or pose-awareness — shuttle direction + alternation alone.
+- **Now:** Six sub-scores (trajectory_ownership, court_side_feasibility, normalized_proximity, racket_motion, pose_contact_feasibility, initial_turn_prior) weighted and combined per-shot. Emissions fed into per-rally Viterbi HMM (`p_alternate=0.95`, `p_same=0.05`).
+- **New file:** `backend/app/pipeline/shared/ownership_scorer.py` — 6 sub-score functions + `OwnershipScorer` class + `ViterbiConfig` + Viterbi decoder.
+- **Restructured attribution.py:** Old Tiers 2-4 removed; `PlayerAttributionStage.run()` now calls `OwnershipScorer.score()` per shot, runs Viterbi per rally, and sets `owner_uncertain` flag.
+- **Settings:** 16 new fields in `Settings` (`trajectory_*`, `court_side_*`, `motion_*`, `viterbi_*`, `calibration_*`, `confidence_*`) matching YAML config.
+- **Sub-score details:**
+  - `trajectory_ownership_score` — court-space cosine similarity of `v_in→to_player` and `v_out→away_from_player`
+  - `court_side_feasibility_score` — per-side logic: near player must be on near side of net, far player on far side
+  - `normalized_proximity_score` — court-coordinate distance `exp(-dist_m / sigma_meters)` with bbox-pixel fallback
+  - `racket_motion_score` — wrist/elbow/shoulder angular velocities (0.50/0.30/0.20 weights), central difference at hit frame
+  - `pose_contact_feasibility_score` — wrist-to-shuttle distance / arm length tiers (<0.75→1.0, <1.25→0.7, <1.75→0.4, ≥1.75→0.1)
+  - `initial_turn_prior_score` — unchanged (already matched spec)
+- **Side-specific calibration:** `near_z = (near_raw - near_mean) / near_std`, sigmoid, renormalize — applied as last step in `OwnershipScorer.score()`.
+- **Uncertainty flag:** `owner_uncertain = True` if owner score < 0.60 or near/far gap < 0.12.
+- **Dead code removed:** `_wrist_from_kps`, `_elbow_from_kps`, `_shoulder_from_kps`, `_arm_length`, `_normalize_by_p95`.
+- **Commit:** `8b8f701` (12 files, +1737 lines, new `ownership_scorer.py`). All 313 tests pass.
 
 ### Hardware-Aware Testing
 - Auto-skip based on RAM/GPU/model availability (`backend/tests/conftest.py`)
@@ -90,7 +118,7 @@ fitness_analytics → tactical_analytics → technical_analytics → coach_recom
 - **Minimum requirements:** 4GB RAM, CUDA GPU for GPU tests, model checkpoints
 
 ### Test Structure
-- 313 tests (core), 7 skipped (hardware-dependent), 0 failed
+- 350 tests (core), 7 skipped (hardware-dependent), 0 failed
 - Most tests use synthetic inputs and mocked models
 - Integration tests require real model checkpoints
 
@@ -211,9 +239,10 @@ python -m pytest -m "not gpu and not model"
 - `backend/app/models/bst.py` - Stroke classification
 
 ### Configuration
-- `backend/app/config/settings.py` - Model paths, thresholds
+- `backend/app/config/settings.py` - Model paths, thresholds (16 ownership/Viterbi fields)
 - `backend/app/config/gpu_batch.py` - GPU batch sizing
 - `backend/app/shuttle_coach/feedback/rules.yaml` - 33+ coaching rules
+- `backend/app/pipeline/shared/ownership_scorer.py` - Multi-signal ownership scoring + Viterbi HMM
 
 ## Migration Notes
 
@@ -343,7 +372,7 @@ python -m pytest -m "not gpu and not model"
 - **Fix:** Added per-shot detail showing BST output (class_id, pre-override stroke/conf), rule-based evidence (formatted key-value rows), physics override trail (bst_stroke → final). All data already in report.json via `shots_df.to_dict(orient="records")`.
 - **File:** `frontend/src/views/LabelingView.tsx`
 
-## Current Status (2025-06-29)
+## Current Status (2025-06-29 — Updated with Ownership Scoring)
 
 ### Pipeline Performance (test_match.mp4, 300s on T4)
 - **250 shots**, **32 rallies** (after scene-cut fix), 14 unique stroke types
@@ -355,7 +384,7 @@ python -m pytest -m "not gpu and not model"
 - **Evidence on all 78 rule-based shots** — contact_height, player_zone, outgoing_trajectory, landing_zone
 - **8 rule-based stroke types** — smash (27), defensive_lift (17), soft_lift_or_push (13), drive (10), net_shot (5), mid_height_unknown→drive (4), clear (1), drop (1)
 - **Pipeline time**: 833.2s (2.8× real-time), zero errors
-- **Attribution tiers**: racket_proximity 66.4%, bst_class_id 29.6%, rally_alternation 2%, fallback 2%
+- **Attribution**: OwnershipScorer (6 sub-scores) + per-rally Viterbi HMM, replaces old 4-tier cascade
 
 ### ⚠️ Known Issues (addressed in commit e9640e9)
 - **Balance flip was silently broken** — `for i in boolean_mask` iterated True/False values, not indices. Fix: always use `.index`. Re-run needed to verify ~50/50 split.
@@ -415,6 +444,8 @@ stroke_features.py:
 21. Re-run colab pipeline to verify balance flip fix (~50/50 split expected)
 22. Add shot_log formal table to report.json schema (data already in shots array)
 23. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
+24. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
+25. Re-run pipeline with new OwnershipScorer to measure attribution quality improvement
 
 ### Phone-Video Pipeline
 - ~~Temporal gap detection for scene cuts~~ (Done — `rallies.py`: NaN-streak check alongside spatial displacement)
@@ -424,9 +455,9 @@ stroke_features.py:
 - ~~UI shot log with BST/rule-based/physics trail~~ (Done — LabelingView.tsx)
 
 ### Nice-to-have
-24. Unify backend/colab pipelines
-25. ~~Replace single-frame technique score~~ (Done)
-26. Cross-session progress tracking
-27. Structured logging + data-quality score
-28. Promote grounded LLM narration
-29. License compliance audit
+26. Unify backend/colab pipelines
+27. ~~Replace single-frame technique score~~ (Done)
+28. Cross-session progress tracking
+29. Structured logging + data-quality score
+30. Promote grounded LLM narration
+31. License compliance audit

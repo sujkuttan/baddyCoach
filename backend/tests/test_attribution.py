@@ -103,3 +103,96 @@ def test_bst_alpha_attribution_respects_alpha(tmp_job_dir):
     assert shots_df.loc[2, "player_id"] == "player_1"
     # alpha=0.72 (>0.5+0.15) → far → player_2, class_id=15 (Bottom_lift) also agrees
     assert shots_df.loc[3, "player_id"] == "player_2"
+
+
+def test_attention_owner_match_alpha_far(tmp_job_dir):
+    """Alpha > 0.5, side set by Tier 1 alpha → attention_owner_match=True."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
+    shots_df = pd.DataFrame({
+        "frame": [0],
+        "stroke_type": ["clear"],
+        "stroke_confidence": [0.9],
+        "shuttleset_class_id": [0],
+        "aimplayer_alpha": [0.85],
+    })
+    store.set_parquet("shots", shots_df)
+    store.set_parquet("shuttle", pd.DataFrame({"frame": [0], "x": [200], "y": [300], "confidence": [0.95]}))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    stage = PlayerAttributionStage()
+    result = stage.run(store, config)
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert shots_df.loc[0, "player_id"] == "player_2"
+    assert shots_df.loc[0, "attention_alpha_owner"] == "far"
+    assert shots_df.loc[0, "attention_owner_match"] == True
+
+
+def test_attention_owner_match_alpha_near(tmp_job_dir):
+    """Alpha < 0.5, side set by Tier 1 alpha → attention_owner_match=True."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
+    shots_df = pd.DataFrame({
+        "frame": [0],
+        "stroke_type": ["clear"],
+        "stroke_confidence": [0.9],
+        "shuttleset_class_id": [0],
+        "aimplayer_alpha": [0.12],
+    })
+    store.set_parquet("shots", shots_df)
+    store.set_parquet("shuttle", pd.DataFrame({"frame": [0], "x": [200], "y": [300], "confidence": [0.95]}))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    stage = PlayerAttributionStage()
+    result = stage.run(store, config)
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert shots_df.loc[0, "player_id"] == "player_1"
+    assert shots_df.loc[0, "attention_alpha_owner"] == "near"
+    assert shots_df.loc[0, "attention_owner_match"] == True
+
+
+def test_attention_owner_match_alpha_ambiguous(tmp_job_dir):
+    """Alpha == 0.5 exactly → alpha_owner=None → match=None."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
+    shots_df = pd.DataFrame({
+        "frame": [0],
+        "stroke_type": ["clear"],
+        "stroke_confidence": [0.9],
+        "shuttleset_class_id": [0],
+        "aimplayer_alpha": [0.5],
+    })
+    store.set_parquet("shots", shots_df)
+    store.set_parquet("shuttle", pd.DataFrame({"frame": [0], "x": [200], "y": [300], "confidence": [0.95]}))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    stage = PlayerAttributionStage()
+    result = stage.run(store, config)
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert shots_df.loc[0, "attention_alpha_owner"] is None
+    assert shots_df.loc[0, "attention_owner_match"] is None
+
+
+def test_attention_owner_match_no_alpha(tmp_job_dir):
+    """No aimplayer_alpha column → match=None for all shots."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
+    shots_df = pd.DataFrame({
+        "frame": [0, 10],
+        "stroke_type": ["clear", "smash"],
+        "stroke_confidence": [0.9, 0.85],
+    })
+    store.set_parquet("shots", shots_df)
+    store.set_parquet("shuttle", pd.DataFrame({"frame": [0, 10], "x": [200, 400], "y": [300, 200], "confidence": [0.95, 0.92]}))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    stage = PlayerAttributionStage()
+    result = stage.run(store, config)
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert "attention_owner_match" in shots_df.columns
+    assert shots_df["attention_owner_match"].isna().all()
+    assert shots_df["attention_alpha_owner"].isna().all()

@@ -10,6 +10,65 @@ from app.pipeline.shared.physics import apply_physics_ensemble
 from app.models.bst import COACH_STROKE_CLASSES
 
 
+def _temporal_resample(arr: np.ndarray, target_len: int,
+                       zero_is_missing: bool = False) -> np.ndarray:
+    """Resample a temporal array to target_len via linear interpolation.
+
+    Supports any trailing dimensions (T, ...) → (target_len, ...).
+    When zero_is_missing=True, rows that are all-zero in the source are
+    treated as missing data — interpolation only bridges gaps up to
+    the nearest valid neighbour, and regions beyond valid data stay zero.
+
+    Args:
+        arr: Input array with shape (T, ...).
+        target_len: Desired length of the first dimension.
+        zero_is_missing: If True, treat all-zero rows as missing values.
+    """
+    if arr.shape[0] == target_len:
+        return arr
+    if arr.shape[0] == 0 or target_len == 0:
+        return np.zeros((target_len, *arr.shape[1:]), dtype=arr.dtype)
+
+    orig = np.arange(arr.shape[0], dtype=np.float64)
+    target = np.linspace(0, arr.shape[0] - 1, target_len, dtype=np.float64)
+
+    out = np.zeros((target_len, *arr.shape[1:]), dtype=arr.dtype)
+
+    if not zero_is_missing:
+        for idx in np.ndindex(arr.shape[1:]):
+            col = arr[(slice(None),) + idx]
+            out[(slice(None),) + idx] = np.interp(target, orig, col)
+        return out
+
+    # Zero-is-missing mode: interpolate only between non-zero rows.
+    # Flatten trailing dims to find per-row zero mask.
+    flat = arr.reshape(arr.shape[0], -1)
+    row_valid = np.any(flat != 0, axis=1)
+    valid_idx = np.where(row_valid)[0]
+
+    if len(valid_idx) < 2:
+        # Zero or one valid rows → nothing to interpolate
+        return out
+
+    for idx in np.ndindex(arr.shape[1:]):
+        col = arr[(slice(None),) + idx]
+        # Interpolate only between valid source points
+        interp_col = np.interp(target, valid_idx, col[valid_idx])
+        out[(slice(None),) + idx] = interp_col
+
+    # Mask out regions in the output that map to source regions OUTSIDE
+    # the valid-data hull [valid_idx.min(), valid_idx.max()] — regions
+    # before the first valid row and after the last valid row.
+    vmin, vmax = valid_idx.min(), valid_idx.max()
+    out_flat = out.reshape(target_len, -1)
+    for t in range(target_len):
+        # Map target position back to source index
+        src_pos = t * (arr.shape[0] - 1) / (target_len - 1)
+        if src_pos < vmin or src_pos > vmax:
+            out_flat[t] = 0.0
+    return out.reshape(target_len, *arr.shape[1:])
+
+
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
     """Get (17, 3) keypoints for a frame/player from pose dataframe."""
     if pose_df is None or len(pose_df) == 0:
@@ -298,67 +357,107 @@ class StrokeClassificationStage:
 
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
-
-            # Clip construction matching BST's between_2_hits convention:
-            #   - start at the current hit (position 0 = the stroke launch)
-            #   - end at the next hit (one inter-hit segment, not two)
-            #   - positional encoding expects the stroke at a fixed position
-            #   - frames beyond video_len are masked by the model
-            #   - bst_min_clip_frames: floor on real frames so short exchanges
-            #     don't fall back to unknown (14% of clips <20 frames)
             hit_pos = hit_frames_sorted.index(frame)
-            start_frame = frame
-            if hit_pos < len(hit_frames_sorted) - 1:
-                end_frame = min(
-                    frame + classifier.seq_len,
-                    max(frame + settings.bst_min_clip_frames,
-                        hit_frames_sorted[hit_pos + 1])
+            use_midpoint = settings.bst_clip_boundary == "midpoint"
+
+            if use_midpoint:
+                # Midpoint-to-midpoint convention:
+                #   - start = midpoint(prev_hit, curr_hit) → preparation phase
+                #   - end   = midpoint(curr_hit, next_hit) → next approach
+                #   - contact frame is in the middle of the clip
+                #   - temporal resample maps variable-length clips to seq_len
+                prev_hit = hit_frames_sorted[hit_pos - 1] if hit_pos > 0 else max(0, frame - 20)
+                next_hit = hit_frames_sorted[hit_pos + 1] if hit_pos + 1 < len(hit_frames_sorted) else frame + 20
+                start_frame = (prev_hit + frame) // 2
+                end_frame = (frame + next_hit) // 2
+
+                # Enforce minimum clip length so short exchanges don't collapse
+                if end_frame - start_frame < settings.bst_min_clip_frames:
+                    half_floor = settings.bst_min_clip_frames // 2
+                    start_frame = max(0, frame - half_floor)
+                    end_frame = frame + (settings.bst_min_clip_frames - half_floor)
+
+                clip_frames = list(range(start_frame, end_frame))
+                original_n_frames = len(clip_frames)
+
+                # Build clip with actual (non-padded) frame range
+                clip = _build_clip(
+                    clip_frames, shuttle_df, pose_df,
+                    vid_w, vid_h, court_length, court_width,
+                    seq_len=original_n_frames,
+                    player_sides=player_sides, player_detections=player_list,
+                    homography=homography,
+                    original_len=original_n_frames,
+                    player_ids=player_ids,
                 )
+
+                # Temporal resample to match model's expected seq_len
+                if original_n_frames != classifier.seq_len:
+                    clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
+                    clip['shuttle'] = _temporal_resample(clip['shuttle'], classifier.seq_len,
+                                                        zero_is_missing=True)
+                    clip['pos'] = _temporal_resample(clip['pos'], classifier.seq_len)
+                clip['video_len'] = min(original_n_frames, classifier.seq_len)
+
             else:
-                end_frame = frame + classifier.seq_len
+                # Hit-start convention (default):
+                #   - start at the current hit (position 0 = the stroke launch)
+                #   - end at the next hit (one inter-hit segment, not two)
+                #   - positional encoding expects the stroke at a fixed position
+                #   - frames beyond video_len are masked by the model
+                #   - bst_min_clip_frames: floor on real frames so short exchanges
+                #     don't fall back to unknown (14% of clips <20 frames)
+                start_frame = frame
+                if hit_pos < len(hit_frames_sorted) - 1:
+                    end_frame = min(
+                        frame + classifier.seq_len,
+                        max(frame + settings.bst_min_clip_frames,
+                            hit_frames_sorted[hit_pos + 1])
+                    )
+                else:
+                    end_frame = frame + classifier.seq_len
 
-            # Truncate clip at shuttle landing: if the shuttle stops moving
-            # (speed near zero for several frames) before end_frame, end the
-            # clip there to avoid dead air padding in BST's between-2-hits input.
-            if shuttle_df is not None:
-                seg = shuttle_df[
-                    (shuttle_df["frame"] >= start_frame) &
-                    (shuttle_df["frame"] <= end_frame)
-                ].copy().sort_values("frame")
-                if len(seg) > 10:
-                    sx = seg["x"].values.astype(np.float64)
-                    sy = seg["y"].values.astype(np.float64)
-                    frame_gaps = np.diff(seg["frame"].values, prepend=seg["frame"].values[0])
-                    spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2) / np.maximum(frame_gaps, 1)
-                    land_frames = settings.rally_dead_frames  # reuse: 25 consecutive low-speed frames
-                    streak = 0
-                    for i, s in enumerate(spd):
-                        if s < settings.rally_dead_speed_px:  # 4.0 px/frame
-                            streak += 1
-                            if streak >= land_frames:
-                                land_frame = int(seg.iloc[i - land_frames + 1]["frame"])
-                                # Only truncate if landing is significantly before end_frame
-                                if end_frame - land_frame > land_frames * 2:
-                                    end_frame = land_frame + 5  # small buffer
-                                break
-                        else:
-                            streak = 0
+                # Truncate clip at shuttle landing: if the shuttle stops moving
+                # (speed near zero for several frames) before end_frame, end the
+                # clip there to avoid dead air padding.
+                if shuttle_df is not None:
+                    seg = shuttle_df[
+                        (shuttle_df["frame"] >= start_frame) &
+                        (shuttle_df["frame"] <= end_frame)
+                    ].copy().sort_values("frame")
+                    if len(seg) > 10:
+                        sx = seg["x"].values.astype(np.float64)
+                        sy = seg["y"].values.astype(np.float64)
+                        frame_gaps = np.diff(seg["frame"].values, prepend=seg["frame"].values[0])
+                        spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2) / np.maximum(frame_gaps, 1)
+                        land_frames = settings.rally_dead_frames
+                        streak = 0
+                        for i, s in enumerate(spd):
+                            if s < settings.rally_dead_speed_px:
+                                streak += 1
+                                if streak >= land_frames:
+                                    land_frame = int(seg.iloc[i - land_frames + 1]["frame"])
+                                    if end_frame - land_frame > land_frames * 2:
+                                        end_frame = land_frame + 5
+                                    break
+                            else:
+                                streak = 0
 
-            clip_frames = list(range(start_frame, end_frame))
-            original_n_frames = len(clip_frames)
-            while len(clip_frames) < classifier.seq_len:
-                clip_frames.append(clip_frames[-1] if clip_frames else frame)
-            clip_frames = clip_frames[:classifier.seq_len]
+                clip_frames = list(range(start_frame, end_frame))
+                original_n_frames = len(clip_frames)
+                while len(clip_frames) < classifier.seq_len:
+                    clip_frames.append(clip_frames[-1] if clip_frames else frame)
+                clip_frames = clip_frames[:classifier.seq_len]
 
-            clip = _build_clip(
-                clip_frames, shuttle_df, pose_df,
-                vid_w, vid_h, court_length, court_width,
-                seq_len=classifier.seq_len,
-                player_sides=player_sides, player_detections=player_list,
-                homography=homography,
-                original_len=original_n_frames,
-                player_ids=player_ids,
-            )
+                clip = _build_clip(
+                    clip_frames, shuttle_df, pose_df,
+                    vid_w, vid_h, court_length, court_width,
+                    seq_len=classifier.seq_len,
+                    player_sides=player_sides, player_detections=player_list,
+                    homography=homography,
+                    original_len=original_n_frames,
+                    player_ids=player_ids,
+                )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
             all_clips.append(clip)
@@ -381,7 +480,7 @@ class StrokeClassificationStage:
             artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
 
         # Phase 3: build shot records from results
-        for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha)) in enumerate(zip(clip_hit_pairs, all_results)):
+        for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha, aim_attention_p0, aim_attention_p1)) in enumerate(zip(clip_hit_pairs, all_results)):
             # Track if this specific shot fell back to rule-based prediction
             # raw_class_id == 0 catches three paths:
             #   1. Model never loaded (all clips fallback)
@@ -396,6 +495,8 @@ class StrokeClassificationStage:
                 "stroke_confidence": confidence,
                 "shuttleset_class_id": raw_class_id,
                 "aimplayer_alpha": alpha,
+                "aim_attention_p0": aim_attention_p0,
+                "aim_attention_p1": aim_attention_p1,
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
