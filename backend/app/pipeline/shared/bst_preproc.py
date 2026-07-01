@@ -17,7 +17,8 @@ BONE_PAIRS = [
 
 
 def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
-                     bbox_margin: float = 0.0) -> np.ndarray:
+                     bbox_margin: float = 0.0,
+                     conf: np.ndarray | None = None) -> np.ndarray:
     """Normalize joints using bbox diagonal with center_align.
 
     Matches the official BST preprocessing:
@@ -27,11 +28,15 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
 
     Args:
         coords: (17, 2) keypoints in pixel coords
-        det_bbox: optional (x1, y1, x2, y2) detection bbox for stable normalization.
-                  If None, falls back to keypoint bbox (coords min/max).
+        det_bbox: optional (x1, y1, x2, y2) detection bbox.
+                  If None, uses keypoint bbox (coords min/max of valid keypoints).
         bbox_margin: fraction to expand bbox on all sides (e.g., 0.15 = 15%).
                      Applied after deriving bbox_min/bbox_max from either source.
                      Compensates for keypoint bboxes being tighter than detection bboxes.
+        conf: optional (17,) keypoint confidence scores (0-1). Used only when
+              det_bbox is None to mask low-confidence and zero-coordinate keypoints
+              from the keypoint-bbox computation, preventing spurious outliers from
+              compressing the real skeleton.
 
     Returns:
         (17, 2) normalized joints, range roughly [-0.X, 0.X]
@@ -40,8 +45,16 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
         bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
         bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
     else:
-        bbox_min = coords.min(axis=0)
-        bbox_max = coords.max(axis=0)
+        mask = np.ones(len(coords), dtype=bool)
+        if conf is not None:
+            mask &= conf > 0.1
+        mask &= ~np.all(coords == 0.0, axis=1)
+        if mask.any():
+            bbox_min = coords[mask].min(axis=0)
+            bbox_max = coords[mask].max(axis=0)
+        else:
+            bbox_min = coords.min(axis=0)
+            bbox_max = coords.max(axis=0)
 
     if bbox_margin > 0:
         margin = (bbox_max - bbox_min) * bbox_margin

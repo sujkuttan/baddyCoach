@@ -45,7 +45,7 @@ _SRC = {
 
     # Joint order
     "pose_read": "backend/app/pipeline/strokes.py:13-24  _get_keypoints_for_frame reads pose_df",
-    "pose_apply": "backend/app/pipeline/strokes.py:178-189  joints[t, p_idx] = normalize_joints(...)",
+    "pose_apply": "backend/app/pipeline/strokes.py:245-251  normalize_joints(coords, det_bbox=None, bbox_margin=..., conf=...)",
 
     # Bone edges
     "bone_pairs_def": "backend/app/pipeline/shared/bst_preproc.py:10-16  BONE_PAIRS list",
@@ -58,13 +58,13 @@ _SRC = {
 
     # Joint normalization
     "joint_norm_bbox": "backend/app/pipeline/strokes.py:249  normalize_joints(coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin)",
-    "joint_norm_court": "backend/app/pipeline/strokes.py:187  normalize_joints_court(coords, homography)",
+    "joint_norm_court": "backend/app/pipeline/strokes.py:246  normalize_joints_court(coords, homography)",
     "joint_norm_setting": "backend/app/config/settings.py:118  bst_joint_norm = 'bbox'|'court'",
-    "normalize_joints_fn": "backend/app/pipeline/shared/bst_preproc.py:19-49  normalize_joints() bbox diag + center_align",
+    "normalize_joints_fn": "backend/app/pipeline/shared/bst_preproc.py:19-71  normalize_joints() bbox diag + center_align + conf mask",
     "normalize_joints_batched_fn": "backend/app/pipeline/shared/bst_preproc.py:52-81  normalize_joints_batched()",
 
     # Center align
-    "center_align_code": "backend/app/pipeline/shared/bst_preproc.py:75-79  center_align subtraction",
+    "center_align_code": "backend/app/pipeline/shared/bst_preproc.py:97-101  center_align subtraction (batched)",
 
     # Player positions
     "pos_court": "backend/app/pipeline/strokes.py:193-198  pos[t] = image_to_court(feet) / court_dims",
@@ -72,7 +72,7 @@ _SRC = {
 
     # Missing joints
     "missing_pose": "backend/app/pipeline/strokes.py:202-203  kps None → debug_clip_stats n_missing_pose += 1",
-    "missing_bbox": "backend/app/pipeline/strokes.py:183-185  det_bbox None → fallback keypoint bbox",
+    "missing_bbox": "backend/app/pipeline/strokes.py:243-244  interpolated_bbox coverage (diagnostic; no longer affects normalization)",
     "interp_bbox": "backend/app/pipeline/strokes.py:83-109  _interpolate_bboxes() linear fill",
 
     # Hit frame alignment

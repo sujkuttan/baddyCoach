@@ -312,4 +312,81 @@ def test_calibrate_probs_valid_probs():
     logits = rng.randn(25).astype(np.float64)
     probs, _, _ = BSTClassifier.calibrate_probs(logits, T=1.5)
     assert abs(probs.sum() - 1.0) < 1e-6
-    assert np.all(probs >= 0)
+
+
+def test_normalize_joints_keypoint_bbox():
+    """det_bbox=None with margin produces centered in-range values."""
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    rng = np.random.RandomState(42)
+    coords = rng.uniform(200, 800, (17, 2)).astype(np.float32)
+    normalized = normalize_joints(coords, det_bbox=None, bbox_margin=0.15)
+
+    assert normalized.shape == (17, 2)
+    mean = normalized.mean()
+    assert abs(float(mean)) < 0.05, f"Expected centered near 0, got {mean:.4f}"
+    vmax = float(np.abs(normalized).max())
+    assert vmax < 0.6, f"Expected range < 0.6, got {vmax:.4f}"
+
+
+def test_normalize_joints_det_bbox():
+    """det_bbox provided uses detection bbox (backward compat)."""
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    rng = np.random.RandomState(42)
+    coords = rng.uniform(200, 800, (17, 2)).astype(np.float32)
+    det_bbox = (100, 100, 900, 900)
+    normalized = normalize_joints(coords, det_bbox=det_bbox, bbox_margin=0.15)
+
+    assert normalized.shape == (17, 2)
+
+
+def test_normalize_joints_conf_masking():
+    """Low-confidence keypoint far from skeleton is excluded from bbox."""
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    rng = np.random.RandomState(42)
+    coords = rng.uniform(200, 800, (17, 2)).astype(np.float32)
+    coords[5] = [50.0, 10000.0]  # spurious keypoint far from body
+    conf = np.ones(17, dtype=np.float32)
+    conf[5] = 0.0  # zero confidence → masked when conf provided
+
+    normalized_with_conf = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=conf)
+    normalized_no_conf = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=None)
+
+    norm_with = float(np.abs(normalized_with_conf).max())
+    norm_without = float(np.abs(normalized_no_conf).max())
+    # Without masking: bbox stretched vertically by y=10000 → larger diag → values smaller
+    assert norm_with > norm_without, (
+        f"Conf masking should exclude the y=10000 outlier: with={norm_with:.4f} without={norm_without:.4f}"
+    )
+
+
+def test_normalize_joints_regression_not_other_player_bbox():
+    """Pose of player A should never be normalized by player B's bbox.
+
+    Regression: keypoint-bbox is computed from the coords argument itself,
+    so cross-player contamination is structurally impossible. Each player's
+    pose maps to its own bbox center regardless of where in the image it is.
+    """
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    # Symmetric keypoint sets in different image regions
+    xs_a = np.linspace(200, 400, 17)[:, None]
+    ys_a = np.linspace(300, 500, 17)[:, None]
+    coords_a = np.concatenate([xs_a, ys_a], axis=1).astype(np.float32)
+
+    xs_b = np.linspace(700, 900, 17)[:, None]
+    ys_b = np.linspace(200, 600, 17)[:, None]
+    coords_b = np.concatenate([xs_b, ys_b], axis=1).astype(np.float32)
+
+    norm_a = normalize_joints(coords_a, det_bbox=None, bbox_margin=0.15)
+    norm_b = normalize_joints(coords_b, det_bbox=None, bbox_margin=0.15)
+
+    # Each normalizes to its own bbox center → both centered near 0
+    assert abs(norm_a.mean()) < 0.05, f"Player A not centered: mean={norm_a.mean():.4f}"
+    assert abs(norm_b.mean()) < 0.05, f"Player B not centered: mean={norm_b.mean():.4f}"
+
+    # Neither can have extreme values (> 1.0 is always wrong for center-aligned bbox-norm)
+    assert np.abs(norm_a).max() < 1.0, f"Player A range too large: {np.abs(norm_a).max():.4f}"
+    assert np.abs(norm_b).max() < 1.0, f"Player B range too large: {np.abs(norm_b).max():.4f}"

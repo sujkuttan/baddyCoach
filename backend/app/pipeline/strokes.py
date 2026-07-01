@@ -238,16 +238,16 @@ def _build_clip(
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
             if kps is not None:
                 coords = kps[:, :2]
-                # Use keypoint-derived bbox with margin (structurally eliminates
-                # pose/bbox mismatch from track-churn or identity-resolution drift).
-                det_bbox = interpolated_bboxes.get(pid, {}).get(frame)
-                if det_bbox is None:
+                # Coords are (17, 2); pass confidence for keypoint-bbox masking.
+                # Keypoint-derived bbox structurally eliminates pose/bbox mismatch.
+                if interpolated_bboxes.get(pid, {}).get(frame) is None:
                     debug_clip_stats["n_missing_bbox"] += 1
                 if settings.bst_joint_norm == "court" and homography is not None:
                     joints[t, p_idx] = normalize_joints_court(coords, homography)
                 else:
                     joints[t, p_idx] = normalize_joints(
                         coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin,
+                        conf=kps[:, 2],
                     )
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
