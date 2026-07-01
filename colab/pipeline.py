@@ -10,7 +10,7 @@ Usage:
     python pipeline.py video.mp4 --output report.json --device cuda
 
 Requirements:
-    pip install torch torchvision ultralytics onnxruntime-gpu opencv-python-headless scipy numpy pyyaml gdown tqdm
+    pip install torch torchvision ultralytics onnxruntime-gpu opencv-python-headless scipy numpy pyyaml gdown tqdm pydantic-settings
 """
 
 import argparse
