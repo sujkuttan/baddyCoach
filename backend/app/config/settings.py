@@ -122,7 +122,7 @@ class Settings(BaseSettings):
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 15  # minimum real frames per clip; prevents zero-padded dominance
-    bst_prior_correction_enabled: bool = False  # disabled while stale bias from broken-court-norm era is present; re-enable after first clean-run calibration
+    bst_prior_correction_enabled: bool = True  # enabled with bias from 327 clips (2025-07-01 run, bbox-norm fix, keypoint-bbox norm)
     bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
