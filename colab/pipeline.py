@@ -1234,6 +1234,13 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         FitnessAnalyticsStage().run(store, config)
         TacticalAnalyticsStage().run(store, config)
         TechnicalAnalyticsStage().run(store, config)
+
+        # DataQualityStage needs video_metadata for pose_coverage calculation
+        store.set("video_metadata", {
+            "total_frames": total_frames,
+            "source_fps": video_fps,
+            "fps": target_fps,
+        })
         DataQualityStage().run(store, config)
 
         court_analytics = store.get("court_analytics") or {}
