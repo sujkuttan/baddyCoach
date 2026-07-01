@@ -44,6 +44,7 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
     if det_bbox is not None:
         bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
         bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
+        zero_mask = None
     else:
         mask = np.ones(len(coords), dtype=bool)
         if conf is not None:
@@ -52,9 +53,11 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
         if mask.any():
             bbox_min = coords[mask].min(axis=0)
             bbox_max = coords[mask].max(axis=0)
+            zero_mask = ~mask
         else:
             bbox_min = coords.min(axis=0)
             bbox_max = coords.max(axis=0)
+            zero_mask = None
 
     if bbox_margin > 0:
         margin = (bbox_max - bbox_min) * bbox_margin
@@ -68,6 +71,10 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
     normalized = (coords - bbox_min) / diag
     center = (bbox_min + bbox_max) / 2.0
     normalized -= (center - bbox_min) / diag
+
+    if zero_mask is not None:
+        normalized[zero_mask] = 0.0
+
     return normalized.astype(np.float32)
 
 

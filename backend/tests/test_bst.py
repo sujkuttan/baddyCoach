@@ -342,24 +342,48 @@ def test_normalize_joints_det_bbox():
 
 
 def test_normalize_joints_conf_masking():
-    """Low-confidence keypoint far from skeleton is excluded from bbox."""
+    """Low-confidence keypoint at origin is zeroed after normalization."""
     from app.pipeline.shared.bst_preproc import normalize_joints
 
     rng = np.random.RandomState(42)
     coords = rng.uniform(200, 800, (17, 2)).astype(np.float32)
-    coords[5] = [50.0, 10000.0]  # spurious keypoint far from body
+    coords[5] = [0.0, 0.0]  # spurious undetected joint at origin
     conf = np.ones(17, dtype=np.float32)
-    conf[5] = 0.0  # zero confidence → masked when conf provided
+    conf[5] = 0.0  # zero confidence → masked
 
-    normalized_with_conf = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=conf)
-    normalized_no_conf = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=None)
+    norm_with = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=conf)
+    norm_without = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=None)
 
-    norm_with = float(np.abs(normalized_with_conf).max())
-    norm_without = float(np.abs(normalized_no_conf).max())
-    # Without masking: bbox stretched vertically by y=10000 → larger diag → values smaller
-    assert norm_with > norm_without, (
-        f"Conf masking should exclude the y=10000 outlier: with={norm_with:.4f} without={norm_without:.4f}"
+    # Masked keypoint must be zeroed after normalization
+    assert np.all(norm_with[5] == 0.0), f"Masked keypoint should be zeroed, got {norm_with[5]}"
+
+    # Without conf: the all-zero coord is excluded by the zero-coord check,
+    # but WITH conf also excludes it. The difference is that conf provides
+    # an additional mask for non-zero spurious keypoints.
+    # Verify the always-on zero-coord guard works too:
+    assert np.all(norm_without[5] == 0.0), (
+        "Zero-coord keypoint should be zeroed even without conf"
     )
+
+
+def test_normalize_joints_conf_masks_nonzero():
+    """Low-confidence keypoint at non-zero position is zeroed when conf provided."""
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    rng = np.random.RandomState(42)
+    coords = rng.uniform(200, 800, (17, 2)).astype(np.float32)
+    coords[5] = [9999.0, 9999.0]  # spurious keypoint far from body, but non-zero
+    conf = np.ones(17, dtype=np.float32)
+    conf[5] = 0.0  # zero confidence → masked
+
+    norm_with = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=conf)
+    norm_without = normalize_joints(coords, det_bbox=None, bbox_margin=0.15, conf=None)
+
+    # With conf: keypoint 5 zeroed (masked by low confidence)
+    assert np.all(norm_with[5] == 0.0), f"Low-conf keypoint should be zeroed, got {norm_with[5]}"
+
+    # Without conf: keypoint 5 NOT zeroed (included since coords are non-zero)
+    assert not np.all(norm_without[5] == 0.0), "Non-zero keypoint without conf should NOT be zeroed"
 
 
 def test_normalize_joints_regression_not_other_player_bbox():
