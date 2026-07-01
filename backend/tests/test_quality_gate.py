@@ -20,7 +20,7 @@ def test_quality_high_tier():
     n = settings.quality_min_shots_tactical + 5
     store = FakeStore()
     store._data["court"] = {"valid": True}
-    store._data["video_info"] = {"duration_frames": 200}
+    store._data["video_metadata"] = {"total_frames": 200, "source_fps": 30, "fps": 10}
     store._data["shots_df"] = pd.DataFrame({
         "frame": list(range(n)),
         "stroke_confidence": [0.9]*n,
@@ -40,7 +40,7 @@ def test_quality_high_tier():
 def test_quality_low_tier_invalid_court():
     store = FakeStore()
     store._data["court"] = {"valid": False}
-    store._data["video_info"] = {"duration_frames": 0}
+    store._data["video_metadata"] = {"total_frames": 0, "source_fps": 0, "fps": 0}
     store._data["shots_df"] = pd.DataFrame({
         "frame": [], "stroke_confidence": [],
     })
@@ -58,7 +58,7 @@ def test_quality_capability_trust_all_true():
     n = settings.quality_min_shots_tactical + 5
     store = FakeStore()
     store._data["court"] = {"valid": True}
-    store._data["video_info"] = {"duration_frames": 200}
+    store._data["video_metadata"] = {"total_frames": 200, "source_fps": 30, "fps": 10}
     store._data["shots_df"] = pd.DataFrame({
         "frame": list(range(n)),
         "stroke_confidence": [0.8]*n,

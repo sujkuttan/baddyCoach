@@ -39,10 +39,11 @@ def _make_good_clip(seq_len=100):
         shuttle[t, 0] = 0.5
         shuttle[t, 1] = y_vals[t]
 
-    # Player positions: p0 (far) has larger y than p1 (near)
+    # Player positions: p0 (far) has smaller court-x (depth) than p1 (near).
+    # Court-x = pos[..., 0], where x=0 is far end, x=1 is near end.
     pos = np.zeros((T, 2, 2), dtype=np.float32)
-    pos[:, 0, 1] = 0.7  # far player deeper in court
-    pos[:, 1, 1] = 0.3  # near player
+    pos[:, 0, 0] = 0.2  # far player depth (close to x=0 / far end)
+    pos[:, 1, 0] = 0.8  # near player depth (close to x=1 / near end)
 
     return {
         'JnB': joints,
@@ -79,9 +80,9 @@ def test_validator_good_clip_passes():
 def test_validator_player_order_reversed():
     v = BSTInputValidator(seq_len=100)
     clip = _make_good_clip()
-    # Swap player order: p0 becomes near, p1 becomes far
-    clip['pos'][:, 0, 1] = 0.3
-    clip['pos'][:, 1, 1] = 0.7
+    # Swap player order on the depth axis: p0 becomes near (larger x), p1 becomes far (smaller x)
+    clip['pos'][:, 0, 0] = 0.8  # p0 has larger x → near player (should be far)
+    clip['pos'][:, 1, 0] = 0.2  # p1 has smaller x → far player (should be near)
     result = v.validate_clip(clip)
     assert not result.passed
     assert any("REVERSED" in w for w in result.warnings)
@@ -270,7 +271,7 @@ def test_validator_serialized_has_all_src_locations():
     v = BSTInputValidator(seq_len=100)
     clip = _make_good_clip()
     # Break everything simultaneously
-    clip['pos'][:, 0, 1] = 0.1  # player order reversed
+    clip['pos'][:, 0, 0] = 0.9  # player order reversed on depth axis
     clip['JnB'] = np.zeros((50, 2, 72), dtype=np.float32)  # wrong seq_len
     clip['shuttle'][:] = 5.0  # way out of range
     clip['pos'][:] = -1.0  # out of range

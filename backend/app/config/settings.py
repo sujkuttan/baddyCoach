@@ -126,7 +126,7 @@ class Settings(BaseSettings):
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
     bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
-    bst_validation_level: str = "warn"  # "off" | "warn" | "error" — BST input tensor validation
+    bst_validation_level: str = "error"  # "off" | "warn" | "error" — BST input tensor validation; set to "error" during debugging for loud failures
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5

@@ -1189,7 +1189,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         hits_df = store.get_parquet("hits")
         # Propagate colab's GPU-detected BST batch size to backend stage
         config.extra["bst_batch"] = gpu_cfg.get("bst_batch", 32)
-        settings.bst_joint_norm = "court"
+        # bst_joint_norm defaults to "bbox" (settings.py) — matches training normalization
         settings.joint_velocity_amplification = 0.0
         settings.bst_adapt_batchnorm = True
         shots_result = StrokeClassificationStage().run(store, config)

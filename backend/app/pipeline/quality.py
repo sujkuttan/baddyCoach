@@ -79,12 +79,17 @@ def compute_quality(artifacts: ArtifactStore) -> dict:
     if rallies_df is not None:
         n_rallies = len(rallies_df)
 
-    # Estimate expected frames from video resolution metadata
-    res = artifacts.get("video_resolution") or {}
-    fps = settings.fps or 30.0
-    vid_info = artifacts.get("video_info") or {}
-    duration_f = vid_info.get("duration_frames", 0)
-    n_frames_expected = int(duration_f) if duration_f > 0 else 0
+    # Estimate processed frame count from video metadata.
+    # video_metadata is set in routes.py with total_frames, source_fps, fps (effective).
+    vid_meta = artifacts.get("video_metadata") or {}
+    total_frames = vid_meta.get("total_frames", 0)
+    source_fps = vid_meta.get("source_fps", 0)
+    eff_fps = vid_meta.get("fps", 0)
+    if total_frames > 0 and source_fps > 0 and eff_fps > 0:
+        sample_interval = max(1, int(round(source_fps / max(eff_fps, 0.01))))
+        n_frames_expected = max(1, total_frames // sample_interval)
+    else:
+        n_frames_expected = 0
 
     shuttle_rate = _shuttle_detection_rate(shuttle_df, settings.quality_shuttle_conf_thr)
     bst_fb = _bst_fallback_rate(shots_df)

@@ -239,27 +239,29 @@ class BSTInputValidator:
             r.n_warnings += 1
             return r
 
-        # In court coordinates, far player has larger y (deeper in court).
-        # Check a few middle frames for robustness.
+        # Use court-x (depth axis) to determine far/near order.
+        # In the court model (court.py), x=0 is the far end (top of image)
+        # and x=COURT_LENGTH (13.4) is the near end (bottom of image).
+        # After normalization: far player has smaller x, near player has larger x.
         mid = min(pos.shape[0] // 2, 10)
-        far_y = pos[:mid, 0, 1].mean()
-        near_y = pos[:mid, 1, 1].mean()
+        far_x = pos[:mid, 0, 0].mean()
+        near_x = pos[:mid, 1, 0].mean()
 
-        if abs(far_y - near_y) < 0.05:
+        if abs(far_x - near_x) < 0.05:
             r.warnings.append(
-                f"Player order: far-player mean y ({far_y:.3f}) ≈ "
-                f"near-player mean y ({near_y:.3f}). Players may be "
-                "stacked vertically or one side is missing."
+                f"Player order: far-player mean x ({far_x:.3f}) ≈ "
+                f"near-player mean x ({near_x:.3f}). Players may be "
+                "stacked along the depth axis or one side is missing."
                 + _loc("player_order_side_resolve")
             )
             r.n_warnings += 1
             return r
 
-        if far_y < near_y:
+        if far_x > near_x:
             r.warnings.append(
-                f"Player order may be REVERSED: p0 (far) mean y={far_y:.3f} "
-                f"< p1 (near) mean y={near_y:.3f}. "
-                "Expected far_y > near_y in court coordinates."
+                f"Player order may be REVERSED: p0 (far) mean x={far_x:.3f} "
+                f"> p1 (near) mean x={near_x:.3f}. "
+                "Expected far_x < near_x (far player closer to x=0 / far end)."
                 + _loc("player_order_set")
             )
             r.n_warnings += 1
