@@ -1191,7 +1191,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         config.extra["bst_batch"] = gpu_cfg.get("bst_batch", 32)
         # bst_joint_norm defaults to "bbox" (settings.py) — matches training normalization
         settings.joint_velocity_amplification = 0.0
-        settings.bst_adapt_batchnorm = True
         shots_result = StrokeClassificationStage().run(store, config)
         shots_df = store.get_parquet("shots")
         shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []
