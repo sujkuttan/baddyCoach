@@ -57,7 +57,7 @@ _SRC = {
     "shuttle_norm_setting": "backend/app/config/settings.py:117  bst_shuttle_norm = 'resolution'|'court'",
 
     # Joint normalization
-    "joint_norm_bbox": "backend/app/pipeline/strokes.py:189  normalize_joints(coords, det_bbox=det_bbox)",
+    "joint_norm_bbox": "backend/app/pipeline/strokes.py:249  normalize_joints(coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin)",
     "joint_norm_court": "backend/app/pipeline/strokes.py:187  normalize_joints_court(coords, homography)",
     "joint_norm_setting": "backend/app/config/settings.py:118  bst_joint_norm = 'bbox'|'court'",
     "normalize_joints_fn": "backend/app/pipeline/shared/bst_preproc.py:19-49  normalize_joints() bbox diag + center_align",

@@ -118,6 +118,7 @@ class Settings(BaseSettings):
     bst_temperature_near: float = 1.0  # softmax temperature for near-player strokes; >1 = softer
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
+    bst_bbox_margin: float = 0.15  # expand keypoint bbox by this fraction per side; compensates for keypoint bboxes being ~30% tighter than detection bboxes
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 15  # minimum real frames per clip; prevents zero-padded dominance

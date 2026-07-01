@@ -16,7 +16,8 @@ BONE_PAIRS = [
 ]
 
 
-def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None) -> np.ndarray:
+def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
+                     bbox_margin: float = 0.0) -> np.ndarray:
     """Normalize joints using bbox diagonal with center_align.
 
     Matches the official BST preprocessing:
@@ -27,7 +28,10 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None) -> np.nd
     Args:
         coords: (17, 2) keypoints in pixel coords
         det_bbox: optional (x1, y1, x2, y2) detection bbox for stable normalization.
-                  If None, falls back to keypoint bbox (less stable).
+                  If None, falls back to keypoint bbox (coords min/max).
+        bbox_margin: fraction to expand bbox on all sides (e.g., 0.15 = 15%).
+                     Applied after deriving bbox_min/bbox_max from either source.
+                     Compensates for keypoint bboxes being tighter than detection bboxes.
 
     Returns:
         (17, 2) normalized joints, range roughly [-0.X, 0.X]
@@ -38,6 +42,11 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None) -> np.nd
     else:
         bbox_min = coords.min(axis=0)
         bbox_max = coords.max(axis=0)
+
+    if bbox_margin > 0:
+        margin = (bbox_max - bbox_min) * bbox_margin
+        bbox_min -= margin
+        bbox_max += margin
 
     diag = np.linalg.norm(bbox_max - bbox_min)
     if diag < 1e-6:
