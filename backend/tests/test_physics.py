@@ -11,6 +11,8 @@ from app.pipeline.shared.physics import (
     apply_physics_ensemble,
     combine_agree,
     summarize_physics_sources,
+    _find_contact_frame,
+    contact_height,
     Features,
     CLASS_VETO,
 )
@@ -55,17 +57,21 @@ def _make_pose_df(frames, player_id, wrist_y, shoulder_y, hip_y=None):
     rows = []
     for f in frames:
         kps = np.zeros((17, 3))
-        # set wrist (9,10), shoulder (5,6), hip (11,12)
-        kps[9, 1] = wrist_y
-        kps[10, 1] = wrist_y
-        kps[5, 1] = shoulder_y
-        kps[6, 1] = shoulder_y
+        # set wrist (9,10), shoulder (5,6), hip (11,12) with confidence 0.9
+        for idx in (9, 10):
+            kps[idx, 1] = wrist_y
+            kps[idx, 2] = 0.9
+        for idx in (5, 6):
+            kps[idx, 1] = shoulder_y
+            kps[idx, 2] = 0.9
         if hip_y:
-            kps[11, 1] = hip_y
-            kps[12, 1] = hip_y
+            for idx in (11, 12):
+                kps[idx, 1] = hip_y
+                kps[idx, 2] = 0.9
         else:
-            kps[11, 1] = shoulder_y + 150
-            kps[12, 1] = shoulder_y + 150
+            for idx in (11, 12):
+                kps[idx, 1] = shoulder_y + 150
+                kps[idx, 2] = 0.9
         rows.append({"frame": f, "player_id": player_id, "keypoints": kps.tolist()})
     return pd.DataFrame(rows)
 
@@ -562,3 +568,166 @@ def test_all_veto_conditions_exist():
         for cond in conds:
             stem = cond.lstrip("|")
             assert stem in handled, f"CLASS_VETO for {stroke} has unhandled condition: {cond}"
+
+
+# ── _find_contact_frame (Change A) ───────────────────────────────
+
+
+def test_find_contact_frame_picks_nearest_wrist():
+    """_find_contact_frame picks frame where wrist is closest to shuttle, not f."""
+    shuttle = pd.DataFrame({
+        "frame": [0, 1, 2, 3, 4, 5, 6],
+        "x": [500, 505, 510, 515, 520, 525, 530],
+        "y": [400, 405, 410, 415, 420, 425, 430],
+        "confidence": [0.95] * 7,
+    })
+    # At frame 3 (f), wrist is far from shuttle (wrist_y=200, shuttle_y=415 → dist ~215)
+    # At frame 5, wrist is close to shuttle (wrist_y=420, shuttle_y=425 → dist ~5)
+    pose_rows = []
+    for c in range(7):
+        kps = np.zeros((17, 3))
+        # Set both wrists
+        kps[9, 0], kps[9, 1], kps[9, 2] = 520, 420 if c == 5 else 200, 0.9
+        kps[10, 0], kps[10, 1], kps[10, 2] = 520, 420 if c == 5 else 200, 0.9
+        # Set shoulders
+        kps[5, 1], kps[5, 2] = 300, 0.9
+        kps[6, 1], kps[6, 2] = 300, 0.9
+        pose_rows.append({"frame": c, "player_id": "p1", "keypoints": kps.tolist()})
+    pose_df = pd.DataFrame(pose_rows)
+
+    result = _find_contact_frame(pose_df, shuttle, "p1", 3, window=3)
+    # Frame 5 has wrist closest to shuttle → should be selected
+    assert result == 5, f"Expected frame 5, got {result}"
+
+
+def test_find_contact_frame_fallback_f():
+    """_find_contact_frame falls back to f when no candidate has both pose and shuttle."""
+    shuttle = pd.DataFrame({"frame": [0], "x": [500], "y": [400], "confidence": [0.95]})
+    result = _find_contact_frame(None, shuttle, "p1", 3, window=3)
+    assert result == 3
+
+
+def test_find_contact_frame_missing_pose_skips_frame():
+    """Skip candidate frames with missing pose, fall to next best."""
+    shuttle = pd.DataFrame({
+        "frame": [0, 1, 2, 3],
+        "x": [500, 510, 520, 530],
+        "y": [400, 410, 420, 430],
+        "confidence": [0.95] * 4,
+    })
+    # Only frame 0 has pose (wrist at (505, 405) near shuttle at (500, 400))
+    kps = np.zeros((17, 3))
+    kps[9, 0], kps[9, 1], kps[9, 2] = 508, 405, 0.9
+    kps[10, 0], kps[10, 1], kps[10, 2] = 508, 405, 0.9
+    kps[5, 1], kps[5, 2] = 350, 0.9
+    kps[6, 1], kps[6, 2] = 350, 0.9
+    pose_df = pd.DataFrame([{"frame": 0, "player_id": "p1", "keypoints": kps.tolist()}])
+
+    # f=3, window=3 → range [0,6]. Only frame 0 has pose → should pick 0.
+    result = _find_contact_frame(pose_df, shuttle, "p1", 3, window=3)
+    assert result == 0
+
+
+# ── contact_height size-invariance (Change B) ────────────────────
+
+
+def _make_pose_with_torso(wrist_y, shoulder_y, hip_y, conf=0.9):
+    """Helper: build a single-row pose DataFrame with given joint y coords."""
+    kps = np.zeros((17, 3))
+    for idx in (9, 10):
+        kps[idx, 0] = 500
+        kps[idx, 1] = wrist_y
+        kps[idx, 2] = conf
+    for idx in (5, 6):
+        kps[idx, 0] = 500
+        kps[idx, 1] = shoulder_y
+        kps[idx, 2] = conf
+    for idx in (11, 12):
+        kps[idx, 0] = 500
+        kps[idx, 1] = hip_y
+        kps[idx, 2] = conf
+    return pd.DataFrame([{"frame": 0, "player_id": "p1", "keypoints": kps.tolist()}])
+
+
+def test_contact_height_size_invariant_overhead():
+    """Same relative joint positions at two scales → same 'overhead' classification."""
+    # Near player (large): shoulder=400, hip=550, wrist=250 → torso=150
+    # wrist relative to shoulder = (400-250)/150 = 1.0 × torso above → overhead
+    near = _make_pose_with_torso(wrist_y=250, shoulder_y=400, hip_y=550)
+    # Far player (small): shoulder=200, hip=275, wrist=125 → torso=75
+    # wrist relative to shoulder = (200-125)/75 = 1.0 × torso above → overhead
+    far = _make_pose_with_torso(wrist_y=125, shoulder_y=200, hip_y=275)
+
+    assert contact_height(near, 0, "p1") == "overhead"
+    assert contact_height(far, 0, "p1") == "overhead"
+
+
+def test_contact_height_size_invariant_side():
+    """Same relative joint positions at two scales → same 'side' classification."""
+    # Near: shoulder=400, hip=550, torso=150, wrist=430 → |430-400|/150=0.20 < 0.30 → side
+    near = _make_pose_with_torso(wrist_y=430, shoulder_y=400, hip_y=550)
+    # Far: shoulder=200, hip=275, torso=75, wrist=215 → |215-200|/75=0.20 < 0.30 → side
+    far = _make_pose_with_torso(wrist_y=215, shoulder_y=200, hip_y=275)
+
+    assert contact_height(near, 0, "p1") == "side"
+    assert contact_height(far, 0, "p1") == "side"
+
+
+def test_contact_height_size_invariant_underarm():
+    """Same relative joint positions at two scales → same 'underarm' classification."""
+    near = _make_pose_with_torso(wrist_y=480, shoulder_y=400, hip_y=550)
+    far = _make_pose_with_torso(wrist_y=240, shoulder_y=200, hip_y=275)
+    # wrist_y (480) < hip_y (550) → underarm (near)
+    # wrist_y (240) < hip_y (275) → underarm (far)
+
+    assert contact_height(near, 0, "p1") == "underarm"
+    assert contact_height(far, 0, "p1") == "underarm"
+
+
+def test_contact_height_low():
+    """Wrist below hip → 'low'."""
+    pose = _make_pose_with_torso(wrist_y=600, shoulder_y=400, hip_y=550)
+    assert contact_height(pose, 0, "p1") == "low"
+
+
+def test_contact_height_none_on_low_confidence():
+    """Low-confidence keypoints → None (no false veto)."""
+    pose = _make_pose_with_torso(wrist_y=250, shoulder_y=400, hip_y=550, conf=0.1)
+    assert contact_height(pose, 0, "p1") is None
+
+
+def test_contact_height_none_on_missing_pose():
+    assert contact_height(None, 0, "p1") is None
+
+
+# ── Regression: overhead-smash and underarm-lift ─────────────────
+
+
+def test_regression_overhead_smash():
+    """Overhead smash synthetic clip → contact='overhead' via extract_physics_features."""
+    frames = list(range(0, 12))
+    shuttle = pd.DataFrame({
+        "frame": frames,
+        "x": [500 + i * 20 for i in frames],
+        "y": [200 + i * 30 for i in frames],
+        "confidence": [0.95] * 12,
+    })
+    # Wrist well above shoulder → overhead
+    pose = _make_pose_with_torso(wrist_y=100, shoulder_y=300, hip_y=450)
+    feats = extract_physics_features(0, shuttle, pose, "p1", COURT, 30, 1920, 1080)
+    assert feats.contact == "overhead"
+
+
+def test_regression_underarm_lift():
+    """Underarm lift synthetic clip → contact='underarm' via extract_physics_features."""
+    frames = list(range(0, 12))
+    shuttle = pd.DataFrame({
+        "frame": frames,
+        "x": [500 for _ in frames],
+        "y": [800 - i * 30 for i in frames],
+        "confidence": [0.95] * 12,
+    })
+    # Wrist between shoulder and hip → underarm
+    pose = _make_pose_with_torso(wrist_y=350, shoulder_y=300, hip_y=450)
+    feats = extract_physics_features(0, shuttle, pose, "p1", COURT, 30, 1920, 1080)
+    assert feats.contact == "underarm"

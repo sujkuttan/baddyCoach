@@ -144,10 +144,55 @@ def classify_arc(y_vals) -> str:
     return "flat"
 
 
-def contact_height(pose_df, frame, hitter_id, net_y) -> Optional[str]:
+def _find_contact_frame(pose_df, shuttle_cleaned, hitter_id, f, window=3) -> int:
+    """Frame in [f-window, f+window] where the hitter's wrist is closest to the shuttle.
+
+    Uses 2D Euclidean distance between the higher wrist (min y) and the shuttle
+    position. Falls back to *f* when no candidate frame has both pose and shuttle data.
+    """
+    if pose_df is None or shuttle_cleaned is None or len(pose_df) == 0 or len(shuttle_cleaned) == 0:
+        return f
+
+    min_conf = getattr(settings, "shuttle_min_conf", 0.30)
+    best_frame = f
+    best_dist = None
+
+    for c in range(f - window, f + window + 1):
+        sh_rows = shuttle_cleaned[
+            (shuttle_cleaned["frame"] == c) & (shuttle_cleaned["confidence"] >= min_conf)
+        ]
+        if len(sh_rows) == 0:
+            continue
+        sx, sy = float(sh_rows.iloc[0]["x"]), float(sh_rows.iloc[0]["y"])
+
+        pose_rows = pose_df[(pose_df["frame"] == c) & (pose_df["player_id"] == hitter_id)]
+        if len(pose_rows) == 0:
+            continue
+        raw = pose_rows.iloc[0]["keypoints"]
+        kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
+        if kps.ndim != 2 or kps.shape[0] < 11 or kps.shape[1] < 2:
+            continue
+        l_wrist_xy = kps[9, :2] if len(kps) > 9 else None
+        r_wrist_xy = kps[10, :2] if len(kps) > 10 else None
+        if l_wrist_xy is None or r_wrist_xy is None:
+            continue
+        # Pick the higher wrist (smaller y in image coordinates)
+        wx, wy = (l_wrist_xy[0], l_wrist_xy[1]) if l_wrist_xy[1] <= r_wrist_xy[1] else (r_wrist_xy[0], r_wrist_xy[1])
+        dist = float(np.sqrt((wx - sx) ** 2 + (wy - sy) ** 2))
+        if best_dist is None or dist < best_dist:
+            best_dist = dist
+            best_frame = c
+
+    return best_frame
+
+
+def contact_height(pose_df, frame, hitter_id, net_y=None) -> Optional[str]:
     """Determine contact height from wrist vs shoulder position.
 
-    Returns "overhead", "side", "underarm", "low", or None if pose missing.
+    Uses size-normalised thresholds (fractions of torso length = hip_y - shoulder_y)
+    so that near and far players classify consistently.
+
+    Returns "overhead", "side", "underarm", "low", or None if pose missing / low confidence.
     """
     if pose_df is None or len(pose_df) == 0:
         return None
@@ -158,24 +203,48 @@ def contact_height(pose_df, frame, hitter_id, net_y) -> Optional[str]:
     kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
     if kps.ndim != 2 or kps.shape[0] < 13 or kps.shape[1] < 2:
         return None
-    # Keypoint indices: 5=left shoulder, 6=right shoulder, 9=left wrist, 10=right wrist
-    l_wrist = kps[9, 1] if len(kps) > 9 else None
-    r_wrist = kps[10, 1] if len(kps) > 10 else None
-    l_shoulder = kps[5, 1] if len(kps) > 5 else None
-    r_shoulder = kps[6, 1] if len(kps) > 6 else None
-    if l_wrist is None or r_wrist is None or l_shoulder is None or r_shoulder is None:
+    # COCO indices: 5/6 = shoulders, 9/10 = wrists, 11/12 = hips
+    l_wrist = kps[9] if len(kps) > 9 else None
+    r_wrist = kps[10] if len(kps) > 10 else None
+    l_shoulder = kps[5] if len(kps) > 5 else None
+    r_shoulder = kps[6] if len(kps) > 6 else None
+    l_hip = kps[11] if len(kps) > 11 else None
+    r_hip = kps[12] if len(kps) > 12 else None
+    if any(x is None for x in (l_wrist, r_wrist, l_shoulder, r_shoulder)):
         return None
-    # Image y: smaller = higher. Wrist above shoulder → overhead
-    wrist_y = min(l_wrist, r_wrist)
-    shoulder_y = min(l_shoulder, r_shoulder)
-    if wrist_y < shoulder_y - 20:  # wrist significantly higher than shoulder
+    # Confidence guard: skip if any keypoint has low confidence (handle both 2-col and 3-col formats)
+    min_conf = getattr(settings, "physics_min_pose_conf", 0.35)
+    for kp in (l_wrist, r_wrist, l_shoulder, r_shoulder):
+        if len(kp) > 2 and kp[2] < min_conf:
+            return None
+    if l_hip is not None and len(l_hip) > 2 and l_hip[2] < min_conf:
+        l_hip = None
+    if r_hip is not None and len(r_hip) > 2 and r_hip[2] < min_conf:
+        r_hip = None
+    # Accept 2-column (x,y) or 3-column (x,y,conf) keypoint arrays
+    wrist_y = float(min(l_wrist[1], r_wrist[1]))
+    shoulder_y = float(min(l_shoulder[1], r_shoulder[1]))
+
+    # Torso length: hip_y - shoulder_y; fall back to 150px when hips missing
+    if l_hip is not None and r_hip is not None:
+        hip_y = min(l_hip[1], r_hip[1])
+    elif l_hip is not None:
+        hip_y = l_hip[1]
+    elif r_hip is not None:
+        hip_y = r_hip[1]
+    else:
+        hip_y = shoulder_y + 150
+    torso = abs(hip_y - shoulder_y)
+    if torso < 1.0:
+        return None  # degenerate pose
+
+    overhead_frac = getattr(settings, "physics_contact_overhead_frac", 0.15)
+    side_frac = getattr(settings, "physics_contact_side_frac", 0.30)
+
+    if wrist_y < shoulder_y - overhead_frac * torso:
         return "overhead"
-    # Wrist near shoulder level
-    if abs(wrist_y - shoulder_y) < 40:
+    if abs(wrist_y - shoulder_y) < side_frac * torso:
         return "side"
-    # Wrist below shoulder but above hip (hip is kps[11] or kps[12])
-    hip_y = min(kps[11, 1] if len(kps) > 11 else shoulder_y + 100,
-                kps[12, 1] if len(kps) > 12 else shoulder_y + 100)
     if wrist_y < hip_y:
         return "underarm"
     return "low"
@@ -282,14 +351,18 @@ def extract_physics_features(
     # Lateral travel
     dx_total = float(abs(seg_x[-1] - seg_x[0]) / (vid_w if vid_w > 0 else 1920.0))
 
-    # Contact height from pose
+    # Contact height from pose (localised to true contact frame)
     net_y = None
     if court and court.get("corners_pixel"):
         corners = court["corners_pixel"]
         bl_y = corners[0][1]
         tl_y = corners[2][1]
         net_y = (tl_y + bl_y) / 2.0
-    contact = contact_height(pose_df, f, hitter_id, net_y)
+    contact_f = _find_contact_frame(
+        pose_df, shuttle_cleaned, hitter_id, f,
+        window=settings.physics_contact_search_window,
+    )
+    contact = contact_height(pose_df, contact_f, hitter_id, net_y)
 
     # Hitter zone from court position (via homography)
     zone = None
