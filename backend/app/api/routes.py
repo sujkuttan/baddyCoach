@@ -91,9 +91,20 @@ def run_pipeline(job_id: str):
         if not ret:
             court_frame = None
 
-    # Use manual corners if available, otherwise fall back to auto-detection
+    # Use manual corners if available, otherwise fall back to auto-detection.
+    # When manual corners are provided, pass is_manual=True so the court stage
+    # does NOT overwrite user input with proportional fallback on homography failure.
     manual_corners = job.get("manual_corners")
-    court_kwargs = {"frame": court_frame} if manual_corners is None else {"corners": manual_corners}
+    if manual_corners is None:
+        manual_corners_path = settings.job_dir(job_id) / "manual_corners.json"
+        if manual_corners_path.exists():
+            import json
+            manual_corners = json.loads(manual_corners_path.read_text()).get("corners")
+
+    if manual_corners is not None:
+        court_kwargs = {"corners": manual_corners, "is_manual": True}
+    else:
+        court_kwargs = {"frame": court_frame}
 
     def _run_rally_finalization(store, config):
         rallies_df = store.get("rallies")
@@ -477,6 +488,7 @@ async def get_first_frame(job_id: str):
 @router.put("/jobs/{job_id}/court-corners")
 async def set_court_corners(job_id: str, corners: list[list[int]]):
     """Store manual court corners for a job. Expected: [[bl_x,bl_y], [br_x,br_y], [tl_x,tl_y], [tr_x,tr_y]]."""
+    import json
     job = job_manager.get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
@@ -484,7 +496,32 @@ async def set_court_corners(job_id: str, corners: list[list[int]]):
         raise HTTPException(400, "Exactly 4 corner points required: [bl, br, tl, tr]")
 
     job_manager.update_job(job_id, manual_corners=corners)
+
+    # Persist to disk so corners survive server restarts and are available to colab
+    manual_corners_path = settings.job_dir(job_id) / "manual_corners.json"
+    manual_corners_path.write_text(json.dumps({"corners": corners, "job_id": job_id}))
     return {"job_id": job_id, "corners": corners}
+
+
+@router.get("/jobs/{job_id}/court-corners")
+async def get_court_corners(job_id: str):
+    """Retrieve stored manual court corners, if any."""
+    import json
+    job = job_manager.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "Job not found")
+
+    # Try in-memory first, then fall back to disk
+    corners = job.get("manual_corners")
+    if corners is not None:
+        return {"job_id": job_id, "corners": corners, "source": "memory"}
+
+    manual_corners_path = settings.job_dir(job_id) / "manual_corners.json"
+    if manual_corners_path.exists():
+        data = json.loads(manual_corners_path.read_text())
+        return {"job_id": job_id, "corners": data.get("corners"), "source": "disk"}
+
+    return {"job_id": job_id, "corners": None, "source": "none"}
 
 
 @router.get("/shuttle-coach/analyze/{job_id}")

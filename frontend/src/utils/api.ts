@@ -52,3 +52,9 @@ export async function setCourtCorners(jobId: string, corners: number[][]): Promi
   });
   if (!res.ok) throw new Error(await res.text());
 }
+
+export async function getCourtCorners(jobId: string): Promise<{ corners: number[][] | null; source: string }> {
+  const res = await fetch(`${API_BASE}/jobs/${jobId}/court-corners`);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}

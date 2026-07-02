@@ -123,10 +123,11 @@ class CourtDetectionStage:
 
     def run(self, artifacts: ArtifactStore, config: StageConfig,
             corners: list[tuple[int, int]] | None = None,
-            frame: np.ndarray | None = None) -> StageResult:
-        # Auto-detect from frame if corners not provided
+            frame: np.ndarray | None = None,
+            is_manual: bool = False) -> StageResult:
         H, valid = None, False
         corrected = None
+        detection_method = "auto"
 
         if corners is None and frame is not None:
             detector = CourtKeypointDetector(settings.court_kpRCNN_model_path, device=settings.device)
@@ -136,23 +137,24 @@ class CourtDetectionStage:
             corrected = _correct_court_points(corners)
             H, valid = compute_homography(corrected)
 
-        # If geometric validation failed or no corners found, fallback to fixed params
-        if not valid and frame is not None:
+        # Fallback to proportional corners only when NOT manually set.
+        # User-provided manual corners are preserved even if homography fails,
+        # so the caller can still use them for downstream validation/override.
+        if not valid and frame is not None and not is_manual:
             h, w = frame.shape[:2]
             mx = int(w * settings.court_corner_margin_x)
             corners = [
-                (mx, int(h * settings.court_corner_bottom_y)), (w - mx, int(h * settings.court_corner_bottom_y)),  # bl, br
-                (mx, int(h * settings.court_corner_top_y)), (w - mx, int(h * settings.court_corner_top_y)),  # tl, tr
+                (mx, int(h * settings.court_corner_bottom_y)), (w - mx, int(h * settings.court_corner_bottom_y)),
+                (mx, int(h * settings.court_corner_top_y)), (w - mx, int(h * settings.court_corner_top_y)),
             ]
             corrected = _correct_court_points(corners)
             H, valid = compute_homography(corrected)
-            # Mark valid as False since this is a fallback, not a true detection
             valid = False
 
         if corrected is None or len(corrected) != 4:
             return StageResult.from_error("Court corners are required (4 points). Provide frame or manual corners.")
 
-        # Temporal smoothing (mostly irrelevant since run() is only called once, but kept for API)
+        # Temporal smoothing
         smoother = HomographySmoother(alpha=0.6, win=5)
         H_smooth, valid_smooth = smoother.update(corrected, H, valid)
 
@@ -163,13 +165,15 @@ class CourtDetectionStage:
             "court_width": COURT_WIDTH,
             "net_height": NET_HEIGHT,
             "valid": valid_smooth,
+            "detection_method": "manual" if is_manual else detection_method,
+            "has_manual_corners": is_manual,
         }
 
         artifacts.set("court", court_data)
 
         return StageResult.success(
             artifacts={"court": artifacts.path("court")},
-            metadata={"homography_computed": True, "valid": valid_smooth}
+            metadata={"homography_computed": True, "valid": valid_smooth, "manual": is_manual}
         )
 
 

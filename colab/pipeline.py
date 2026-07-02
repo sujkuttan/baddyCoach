@@ -794,8 +794,13 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     Keeps the GPU ML batch loop for memory efficiency (YOLO/TrackNet/RTMPose),
     then delegates CPU analytics stages to backend pipeline via ArtifactStore.
+
+    If court_corners is None, checks for a manual_corners.json file alongside
+    output_path.  This allows the backend-stored manual corners to propagate
+    to the colab runtime automatically.
     """
     import tempfile
+    import json
     from app.pipeline.base import StageConfig
     from app.pipeline.players import stitch_tracks
     from app.pipeline.hits import HitFrameLocalizationStage
@@ -810,6 +815,20 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     from app.pipeline.quality import DataQualityStage
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
+
+    # Auto-load manual_corners.json from the output directory if no CLI corners given.
+    # This bridges the backend's persisted corners to the colab runtime.
+    if court_corners is None:
+        corners_path = Path(output_path).parent / "manual_corners.json"
+        if corners_path.exists():
+            try:
+                stored = json.loads(corners_path.read_text())
+                raw = stored.get("corners")
+                if raw and len(raw) == 4:
+                    court_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
+                    print(f"  Loaded manual corners from {corners_path}: {court_corners}")
+            except Exception as e:
+                print(f"  Warning: failed to load manual_corners.json: {e}")
 
     start_time = time.time()
     video_name = Path(video_path).name

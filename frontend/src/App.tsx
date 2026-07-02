@@ -21,6 +21,7 @@ function App() {
   const [restoring, setRestoring] = useState(true);
   const [progressPlayerKey, setProgressPlayerKey] = useState<string>('player_1');
   const [labelingReport, setLabelingReport] = useState<any>(null);
+  const [redoCourt, setRedoCourt] = useState(false);
 
   useEffect(() => {
     const saved = localStorage.getItem(STORAGE_KEY);
@@ -79,6 +80,16 @@ function App() {
     setState('labeling');
   };
 
+  const handleRedoCourt = (jobId: string) => {
+    setRedoCourt(true);
+    setState('setup_court');
+  };
+
+  const handleRedoCourtComplete = () => {
+    setRedoCourt(false);
+    setState('report');
+  };
+
   if (restoring) {
     return (
       <div className="min-h-screen court-pattern flex items-center justify-center">
@@ -93,13 +104,20 @@ function App() {
         <UploadView onJobCreated={handleJobCreated} onLoadReport={handleLoadReport} />
       )}
       {state === 'setup_court' && jobId && (
-        <CourtCornerSetup jobId={jobId} poseModel={poseModel} sampleRate={sampleRate} onComplete={handleCourtComplete} onBack={handleBack} />
+        <CourtCornerSetup
+          jobId={jobId}
+          poseModel={poseModel}
+          sampleRate={sampleRate}
+          onComplete={redoCourt ? handleRedoCourtComplete : handleCourtComplete}
+          onBack={redoCourt ? () => { setRedoCourt(false); setState('report'); } : handleBack}
+          redoMode={redoCourt}
+        />
       )}
       {state === 'processing' && jobId && (
         <ProcessingView jobId={jobId} onComplete={() => setState('report')} />
       )}
       {state === 'report' && (
-        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} onLabeling={(report: any) => { setLabelingReport(report); setState('labeling'); }} />
+        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} onLabeling={(report: any) => { setLabelingReport(report); setState('labeling'); }} onRedoCourt={handleRedoCourt} />
       )}
       {state === 'labeling' && labelingReport && (
         <LabelingView shots={labelingReport.shots || []} videoUrl={!jobId ? getVideoObjectURL() : null} jobId={jobId} onBack={() => setState('report')} />

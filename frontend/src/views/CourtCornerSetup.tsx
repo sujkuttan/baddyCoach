@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { getFrame, setCourtCorners, processVideo } from '../utils/api';
+import { getFrame, setCourtCorners, getCourtCorners, processVideo } from '../utils/api';
 
 interface Props {
   jobId: string;
@@ -7,31 +7,61 @@ interface Props {
   sampleRate: number;
   onComplete: () => void;
   onBack: () => void;
+  existingCorners?: number[][] | null;
+  redoMode?: boolean;
 }
 
 const CORNER_LABELS = ['Bottom-Left (BL)', 'Bottom-Right (BR)', 'Top-Left (TL)', 'Top-Right (TR)'];
 
-export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onBack }: Props) {
+export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onBack, existingCorners, redoMode }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [img, setImg] = useState<HTMLImageElement | null>(null);
-  const [corners, setCorners] = useState<{ x: number; y: number }[]>([]);
-  const [step, setStep] = useState(0);
+  const [corners, setCorners] = useState<{ x: number; y: number }[]>(() => {
+    if (existingCorners && existingCorners.length === 4) {
+      return existingCorners.map(c => ({ x: c[0], y: c[1] }));
+    }
+    return [];
+  });
+  const [step, setStep] = useState(() => {
+    if (existingCorners && existingCorners.length === 4) return 4;
+    return 0;
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    getFrame(jobId).then(blob => {
-      const url = URL.createObjectURL(blob);
-      const image = new Image();
-      image.onload = () => {
-        setImg(image);
-        setLoading(false);
-      };
-      image.src = url;
-    }).catch(() => {
-      setLoading(false);
-    });
-  }, [jobId]);
+    // If existingCorners were passed, load them; otherwise try fetching from API
+    if (existingCorners && existingCorners.length === 4) {
+      getFrame(jobId).then(blob => {
+        const url = URL.createObjectURL(blob);
+        const image = new Image();
+        image.onload = () => {
+          setImg(image);
+          setLoading(false);
+        };
+        image.src = url;
+      }).catch(() => setLoading(false));
+    } else {
+      // Try fetching saved corners from API, then load frame
+      getCourtCorners(jobId).then(data => {
+        if (data.corners && data.corners.length === 4 && corners.length === 0) {
+          const saved = data.corners.map(c => ({ x: c[0], y: c[1] }));
+          setCorners(saved);
+          setStep(4);
+        }
+      }).catch(() => {});
+
+      getFrame(jobId).then(blob => {
+        const url = URL.createObjectURL(blob);
+        const image = new Image();
+        image.onload = () => {
+          setImg(image);
+          setLoading(false);
+        };
+        image.src = url;
+      }).catch(() => setLoading(false));
+    }
+  }, [jobId, existingCorners]);
 
   const getCanvasCoords = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
@@ -108,6 +138,10 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
   useEffect(() => { draw(); }, [draw]);
 
   const handleSkip = async () => {
+    if (redoMode) {
+      onBack();
+      return;
+    }
     setSaving(true);
     try {
       await processVideo(jobId, poseModel, sampleRate);
@@ -122,8 +156,12 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
     setSaving(true);
     try {
       await setCourtCorners(jobId, corners.map(c => [c.x, c.y]));
-      await processVideo(jobId, poseModel, sampleRate);
-      onComplete();
+      if (redoMode) {
+        onComplete();
+      } else {
+        await processVideo(jobId, poseModel, sampleRate);
+        onComplete();
+      }
     } catch (e) {
       setSaving(false);
     }
@@ -133,9 +171,13 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
     <div className="min-h-screen court-pattern flex items-center justify-center p-6">
       <div className="w-full max-w-4xl animate-entrance">
         <div className="text-center mb-6">
-          <h1 className="font-display text-4xl text-shuttle-lime tracking-wider mb-2">SET UP COURT CORNERS</h1>
+          <h1 className="font-display text-4xl text-shuttle-lime tracking-wider mb-2">
+            {redoMode ? 'REDO' : 'SET UP'} COURT CORNERS
+          </h1>
           <p className="text-text-secondary text-sm">
-            For phone footage, click the 4 court corners in order: Bottom-Left → Bottom-Right → Top-Left → Top-Right
+            {redoMode
+              ? 'Adjust the court corners below to fix auto-detection. Your existing corners are pre-loaded.'
+              : 'For phone footage, click the 4 court corners in order: Bottom-Left → Bottom-Right → Top-Left → Top-Right'}
           </p>
         </div>
 
@@ -180,7 +222,7 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
                 className="flex-1 py-3 rounded-xl border border-court-line/40 text-text-secondary
                            hover:bg-court-surface/50 transition-all font-body text-sm disabled:opacity-50"
               >
-                {saving ? 'Starting Pipeline...' : 'Skip / Use Auto-Detection'}
+                {redoMode ? 'Cancel' : saving ? 'Starting Pipeline...' : 'Skip / Use Auto-Detection'}
               </button>
               <button
                 onClick={handleConfirm}
@@ -189,7 +231,7 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
                            hover:bg-shuttle-lime-dim transition-all font-body text-sm
                            disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                {saving ? 'Starting Pipeline...' : 'Confirm Corners & Process'}
+                {saving ? 'Saving...' : redoMode ? 'Save Corners' : 'Confirm Corners & Process'}
               </button>
             </div>
           </>
