@@ -340,6 +340,58 @@ def initial_turn_prior_score(prev_owner: str | None,
         return alternate_score, same_player_score
 
 
+def bst_attribution_score(shot: dict | None,
+                          alpha_threshold: float = 0.15,
+                          conf_min: float = 0.3,
+                          unknown_score: float = 0.50) -> tuple[float, float]:
+    """Score based on BST AimPlayer attention and class_id prefix.
+
+    Uses aimplayer_alpha (>0.5 → far, <0.5 → near) as a continuous
+    signal and shuttleset_class_id prefix (Top_ → far, Bottom_ → near)
+    as a discrete override.
+
+    Returns (near_score, far_score).
+    """
+    if shot is None:
+        return unknown_score, unknown_score
+
+    alpha = shot.get("aimplayer_alpha", 0.5)
+    class_id = shot.get("shuttleset_class_id", 0)
+    conf = shot.get("stroke_confidence", 0)
+
+    # Signal A: continuous AimPlayer alpha
+    if abs(alpha - 0.5) <= alpha_threshold:
+        alpha_near, alpha_far = unknown_score, unknown_score
+    else:
+        scale = (abs(alpha - 0.5) - alpha_threshold) / max(0.5 - alpha_threshold, 1e-6)
+        raw_near = 1.0 - alpha
+        raw_far = alpha
+        alpha_near = unknown_score + scale * (raw_near - unknown_score)
+        alpha_far = unknown_score + scale * (raw_far - unknown_score)
+
+    near_score, far_score = alpha_near, alpha_far
+
+    # Signal B: discrete class_id prefix (overrides alpha when available)
+    if class_id > 0 and conf >= conf_min:
+        try:
+            from app.models.bst import get_shuttleset_class_info, SHUTTLESET_CLASSES
+            if class_id <= len(SHUTTLESET_CLASSES) - 1:
+                _, side = get_shuttleset_class_info(class_id)
+                if side == "top":
+                    near_score, far_score = 0.2, 0.8
+                elif side == "bottom":
+                    near_score, far_score = 0.8, 0.2
+        except Exception:
+            pass
+
+    total = near_score + far_score
+    if total > 0:
+        near_score /= total
+        far_score /= total
+
+    return float(near_score), float(far_score)
+
+
 # ── Viterbi rally-level assignment (spec §17) ────────────────────
 
 class ViterbiConfig:
@@ -448,6 +500,9 @@ class OwnershipScorer:
                  motion_weight: float = 0.15,
                  pose_feasibility_weight: float = 0.10,
                  turn_prior_weight: float = 0.05,
+                 bst_weight: float = 0.06,
+                 bst_alpha_threshold: float = 0.15,
+                 bst_conf_min: float = 0.3,
                  window_frames: int = 3,
                  net_margin: float = 0.75,
                  prox_sigma_norm: float = 0.15,
@@ -478,6 +533,9 @@ class OwnershipScorer:
         self.motion_weight = motion_weight
         self.pose_feasibility_weight = pose_feasibility_weight
         self.turn_prior_weight = turn_prior_weight
+        self.bst_weight = bst_weight
+        self.bst_alpha_threshold = bst_alpha_threshold
+        self.bst_conf_min = bst_conf_min
 
         self.window_frames = window_frames
         self.net_margin = net_margin
@@ -514,6 +572,9 @@ class OwnershipScorer:
             motion_weight=getattr(settings, 'ownership_motion_weight', 0.15),
             pose_feasibility_weight=getattr(settings, 'ownership_pose_feasibility_weight', 0.10),
             turn_prior_weight=getattr(settings, 'ownership_turn_prior_weight', 0.05),
+            bst_weight=getattr(settings, 'ownership_bst_weight', 0.06),
+            bst_alpha_threshold=getattr(settings, 'ownership_bst_alpha_threshold', 0.15),
+            bst_conf_min=getattr(settings, 'ownership_bst_conf_min', 0.3),
             window_frames=getattr(settings, 'ownership_window_frames', 3),
             net_margin=getattr(settings, 'ownership_net_margin', 0.75),
             prox_sigma_norm=getattr(settings, 'ownership_prox_sigma_norm', 0.15),
@@ -549,6 +610,7 @@ class OwnershipScorer:
               near_id: str = "player_1",
               far_id: str = "player_2",
               prev_owner: str | None = None,
+              shot: dict | None = None,
               ) -> dict:
         """Compute near/far ownership scores for a single candidate hit frame.
 
@@ -771,22 +833,50 @@ class OwnershipScorer:
             first_hit_score=self.first_hit_score,
         )
 
-        # ── Weighted combination ───────────────────────────────
+        bst_n, bst_f = bst_attribution_score(
+            shot,
+            alpha_threshold=self.bst_alpha_threshold,
+            conf_min=self.bst_conf_min,
+            unknown_score=self.unknown_score,
+        )
+
+        # ── Weighted combination (normalised to sum 1.0) ───────
+        w_traj = self.trajectory_weight
+        w_court = self.court_side_weight
+        w_prox = self.proximity_weight
+        w_mot = self.motion_weight
+        w_pose = self.pose_feasibility_weight
+        w_turn = self.turn_prior_weight
+        w_bst = self.bst_weight
+        total_w = w_traj + w_court + w_prox + w_mot + w_pose + w_turn + w_bst
+        if total_w > 0:
+            w_traj /= total_w
+            w_court /= total_w
+            w_prox /= total_w
+            w_mot /= total_w
+            w_pose /= total_w
+            w_turn /= total_w
+            w_bst /= total_w
+        else:
+            w_traj = w_court = w_prox = w_mot = w_pose = w_turn = w_bst = 1.0 / 7.0
+
         near_score = (
-            self.trajectory_weight * traj_n +
-            self.court_side_weight * court_n +
-            self.proximity_weight * prox_n +
-            self.motion_weight * mot_n +
-            self.pose_feasibility_weight * pose_n +
-            self.turn_prior_weight * turn_n
+            w_traj * traj_n +
+            w_court * court_n +
+            w_prox * prox_n +
+            w_mot * mot_n +
+            w_pose * pose_n +
+            w_turn * turn_n +
+            w_bst * bst_n
         )
         far_score = (
-            self.trajectory_weight * traj_f +
-            self.court_side_weight * court_f +
-            self.proximity_weight * prox_f +
-            self.motion_weight * mot_f +
-            self.pose_feasibility_weight * pose_f +
-            self.turn_prior_weight * turn_f
+            w_traj * traj_f +
+            w_court * court_f +
+            w_prox * prox_f +
+            w_mot * mot_f +
+            w_pose * pose_f +
+            w_turn * turn_f +
+            w_bst * bst_f
         )
 
         # Side-specific z-score calibration (spec §18)
@@ -814,5 +904,7 @@ class OwnershipScorer:
             "pose_far": round(pose_f, 4),
             "turn_near": round(turn_n, 4),
             "turn_far": round(turn_f, 4),
+            "bst_near": round(bst_n, 4),
+            "bst_far": round(bst_f, 4),
         })
         return result

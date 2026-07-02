@@ -49,54 +49,13 @@ class PlayerAttributionStage:
             shuttle_sorted = shuttle_df.sort_values("frame").reset_index(drop=True)
             shuttle_y_map = dict(zip(shuttle_sorted["frame"].astype(int), shuttle_sorted["y"].astype(float)))
 
-        # ── Tier 1: BST model-based attribution (AimPlayer alpha + class_id) ──
         if "player_id" not in shots_df.columns:
             shots_df["player_id"] = None
         shots_df["owner_uncertain"] = False
         if config.debug_level >= 1:
             shots_df["attribution_tier"] = "none"
 
-        from app.models.bst import get_shuttleset_class_info, SHUTTLESET_CLASSES
-        bst_side_to_playerside = {"top": "far", "bottom": "near"}
-        alpha_conf_thresh = 0.15
-        if "shuttleset_class_id" in shots_df.columns:
-            max_known_id = len(SHUTTLESET_CLASSES) - 1
-            for idx, shot in shots_df.iterrows():
-                if pd.notna(shot.get("player_id")):
-                    continue
-
-                class_id = shot.get("shuttleset_class_id", 0)
-                alpha = shot.get("aimplayer_alpha", 0.5)
-                conf = shot.get("stroke_confidence", 0)
-                used_signal = None
-
-                # Signal A: AimPlayer alpha
-                if abs(alpha - 0.5) > alpha_conf_thresh:
-                    player_side = "far" if alpha > 0.5 else "near"
-                    for p in players_data.get("players", []):
-                        if p.get("side") == player_side:
-                            shots_df.at[idx, "player_id"] = p["id"]
-                            shots_df.at[idx, "side"] = player_side
-                            used_signal = "bst_alpha"
-                            break
-
-                # Signal B: shuttleset_class_id prefix
-                if used_signal is None and class_id > 0 and class_id <= max_known_id:
-                    if conf >= settings.attribution_bst_min_conf:
-                        _, side = get_shuttleset_class_info(class_id)
-                        if side is not None:
-                            player_side = bst_side_to_playerside[side]
-                            for p in players_data.get("players", []):
-                                if p.get("side") == player_side:
-                                    shots_df.at[idx, "player_id"] = p["id"]
-                                    shots_df.at[idx, "side"] = player_side
-                                    used_signal = "bst_class_id"
-                                    break
-
-                if used_signal and config.debug_level >= 1:
-                    shots_df.at[idx, "attribution_tier"] = used_signal
-
-        # ── Tier 2: OwnershipScorer emissions + Viterbi rally-level assignment ──
+        # ── OwnershipScorer emissions + Viterbi rally-level assignment ──
         # Replaces old threshold-based + greedy-alternation + fallback cascade.
         scorer = OwnershipScorer.from_settings()
         viterbi_config = ViterbiConfig.from_settings()
@@ -117,9 +76,6 @@ class PlayerAttributionStage:
         rally_candidates: dict[int, list[tuple]] = {}
 
         for idx, shot in shots_df.iterrows():
-            if pd.notna(shot.get("player_id")):
-                continue
-
             frame = int(shot["frame"])
 
             # Determine prev_owner for turn prior
@@ -132,11 +88,12 @@ class PlayerAttributionStage:
                     prev_idx = order[pos - 1]
                     prev_owner = shots_df.at[prev_idx, "player_id"]
 
-            # Run the scorer
+            # Run the scorer (BST aimplayer_alpha/class_id is a weak 7th sub-score)
             score_result = scorer.score(
                 shuttle_df=shuttle_df, pose_df=pose_df,
                 players_data=players_data, court_data=court,
                 frame=frame, prev_owner=prev_owner,
+                shot=shot,
             )
 
             ns = score_result["near_score"]
@@ -153,7 +110,7 @@ class PlayerAttributionStage:
             for key in ("near_score", "far_score", "trajectory_near", "trajectory_far",
                         "court_side_near", "court_side_far", "proximity_near", "proximity_far",
                         "motion_near", "motion_far", "pose_near", "pose_far",
-                        "turn_near", "turn_far"):
+                        "turn_near", "turn_far", "bst_near", "bst_far"):
                 if key in score_result:
                     shots_df.at[idx, f"ownership_{key}"] = score_result[key]
 

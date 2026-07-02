@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     ownership_motion_weight: float = 0.15
     ownership_pose_feasibility_weight: float = 0.10
     ownership_turn_prior_weight: float = 0.05
+    ownership_bst_weight: float = 0.06
+    ownership_bst_alpha_threshold: float = 0.15
+    ownership_bst_conf_min: float = 0.3
     ownership_window_frames: int = 3         # ±window for trajectory vector
     ownership_net_margin: float = 0.75       # metres — ambiguous zone around net
     ownership_prox_sigma_norm: float = 0.15  # normalised proximity scaling
