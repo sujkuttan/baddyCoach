@@ -94,8 +94,8 @@ COCO_17_NAMES = [
 # Each entry: (higher_y_joint, lower_y_joint, description)
 # In image coords (y ↑ down), the first joint should be above the second.
 _ANATOMY_CHECKS = [
-    (0, 1, "nose should be above L_eye"),
-    (0, 2, "nose should be above R_eye"),
+    (1, 0, "L_eye should be above nose"),
+    (2, 0, "R_eye should be above nose"),
     (5, 7, "L_shoulder should be above L_elbow"),
     (7, 9, "L_elbow should be above L_wrist"),
     (6, 8, "R_shoulder should be above R_elbow"),

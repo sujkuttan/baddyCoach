@@ -18,9 +18,13 @@ def _make_good_clip(seq_len=100):
     joints = np.zeros((T, 2, 72), dtype=np.float32)
     for p in range(2):
         for t in range(T):
-            # Build COCO-17 y coords increasing from head to feet
-            # Values in [-0.3, 0.3] with center_align
+            # Build COCO-17 y coords increasing from head to feet.
+            # Anatomical ordering: eyes (idx 1,2) above nose (idx 0), so
+            # swap the first three linspace values to put L_eye/R_eye highest.
             kp_y = np.linspace(-0.3, 0.3, 17)
+            # Swap: nose(0) gets largest y (lowest), L_eye(1) gets smallest y (highest),
+            # R_eye(2) gets middle → both eyes above nose anatomically.
+            kp_y[0], kp_y[1], kp_y[2] = kp_y[2], kp_y[0], kp_y[1]
             kp_x = np.random.uniform(-0.1, 0.1, 17)
             kp = np.stack([kp_x, kp_y], axis=1)  # (17, 2)
             joints[t, p, :34] = kp.ravel()

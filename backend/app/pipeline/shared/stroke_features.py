@@ -153,7 +153,8 @@ def extract_clip_features(clip: dict) -> dict:
         j = jnb[0, hitter_p_idx, :34]
         if j.shape[0] == 34:
             joints = j.reshape(17, 2)
-            # Elbow angle (COCO: 5=shoulder, 6=elbow, 7=wrist)
+            # Elbow angle — COCO-17: 5=L_shoulder, 6=R_shoulder, 7=L_elbow
+            # TODO: this mixes left/right arm chains — needs arm+handedness detection
             v1 = joints[5] - joints[6]
             v2 = joints[7] - joints[6]
             n1 = np.linalg.norm(v1) + 1e-10
