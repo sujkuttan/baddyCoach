@@ -816,20 +816,6 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
 
-    # Auto-load manual_corners.json from the output directory if no CLI corners given.
-    # This bridges the backend's persisted corners to the colab runtime.
-    if court_corners is None:
-        corners_path = Path(output_path).parent / "manual_corners.json"
-        if corners_path.exists():
-            try:
-                stored = json.loads(corners_path.read_text())
-                raw = stored.get("corners")
-                if raw and len(raw) == 4:
-                    court_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
-                    print(f"  Loaded manual corners from {corners_path}: {court_corners}")
-            except Exception as e:
-                print(f"  Warning: failed to load manual_corners.json: {e}")
-
     start_time = time.time()
     video_name = Path(video_path).name
 
@@ -874,19 +860,48 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     ret, sample_frame = cap.read()
     cap.release()
 
+    # Fallback chain: CLI arg → manual_corners.json from output → default_corners.json in repo → auto-detect
     detected_corners = None
     detection_method = "none"
+
     if court_corners is not None:
         detected_corners = court_corners
-        detection_method = "manual"
-    elif ret and sample_frame is not None:
+        detection_method = "manual (CLI arg)"
+        print(f"  Using manual corners from CLI: {detected_corners}")
+
+    if detected_corners is None:
+        corners_path = Path(output_path).parent / "manual_corners.json"
+        if corners_path.exists():
+            try:
+                stored = json.loads(corners_path.read_text())
+                raw = stored.get("corners")
+                if raw and len(raw) == 4:
+                    detected_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
+                    detection_method = "manual (persisted JSON)"
+                    print(f"  Using manual corners from {corners_path}: {detected_corners}")
+            except Exception as e:
+                print(f"  Warning: failed to load {corners_path}: {e}")
+
+    if detected_corners is None:
+        default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
+        if default_corners_path.exists():
+            try:
+                raw = json.loads(default_corners_path.read_text())
+                if raw and len(raw) == 4:
+                    detected_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
+                    detection_method = "manual (default_corners.json)"
+                    print(f"  Using default corners from {default_corners_path}: {detected_corners}")
+            except Exception as e:
+                print(f"  Warning: failed to load default_corners.json: {e}")
+
+    if detected_corners is None and ret and sample_frame is not None:
         detected_corners = court_kp_detector.detect_with_fallback(sample_frame)
         if detected_corners is not None:
             detection_method = "court_kpRCNN" if court_kp_detector.model is not None else "color+line"
+            print(f"  Auto-detected court ({detection_method}): {detected_corners}")
 
     if detected_corners:
         corners = detected_corners
-        print(f"  Detected court ({detection_method}): {corners}")
     else:
         margin_x = int(vid_w * 0.08)
         court_top = int(vid_h * 0.28)
