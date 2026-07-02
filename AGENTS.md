@@ -372,13 +372,36 @@ python -m pytest -m "not gpu and not model"
 - **Fix:** Added per-shot detail showing BST output (class_id, pre-override stroke/conf), rule-based evidence (formatted key-value rows), physics override trail (bst_stroke → final). All data already in report.json via `shots_df.to_dict(orient="records")`.
 - **File:** `frontend/src/views/LabelingView.tsx`
 
-## Current Status (2025-06-29 — Updated with Ownership Scoring)
+## 2026-07-02: Court + Physics Reliability Updates
+
+### ✅ Hough-Line Court Detector + Manual Corners (Added — commit `ae1fd4a`)
+- **What:** Added a line-based court fallback that detects court boundary lines, intersects them into a true trapezoid, and plugs into the existing court detector fallback chain without replacing the detector class.
+- **Why:** Phone footage and non-broadcast views often produce rectangular/bad kpRCNN outputs. Hough-derived trapezoids and manual clicked corners preserve homography quality for zone/contact/physics cues.
+- **Colab parity:** `colab/pipeline.py` now consumes manual court corners and shares the backend court-detection path instead of only auto-detecting.
+- **Tests:** Added/updated court, shared-module, and Colab pipeline tests for Hough/manual-corner behavior.
+
+### ✅ Invalid Court Geometry Degrades Gracefully (Fixed — commit `2d7a06e`)
+- **Was:** Rectangular/degenerate court detections could be accepted as `valid=True`, silently crippling homography-based physics and analytics.
+- **Fix:** Court geometry reliability is part of validation/homography validity, so degenerate courts trigger fallbacks instead of being accepted.
+- **Backend behavior:** Player tracking, attribution, and court-position analytics now warn/degrade gracefully on invalid court geometry instead of aborting the pipeline when only non-homography cues are needed.
+- **Orientation fix:** Trapezoid reliability accepts either narrower-at-top or narrower-at-bottom perspective by comparing `min(widths) / max(widths)`.
+
+### ✅ Physics Uses Cleaned Shuttle Kinematics with Raw-Point Quality (Fixed — commit `7f564d9`)
+- **Was:** Physics read sparse `shuttle_raw` for kinematics to avoid fake trajectories, then failed the density gate on phone footage.
+- **Fix:** `extract_physics_features()` computes speed/direction/arc/depth from cleaned/interpolated `shuttle`, while `quality`, `real_points`, and usability are derived from raw detections. `quality = real_points / K` still down-weights sparse evidence.
+- **Gate semantics:** `physics_min_valid=4` controls minimum real detections; `physics_quality_min=0.35` is no longer a hard skip once the minimum real-point gate passes.
+- **Veto redesign:** Physics consistency now weights contact/zone/depth as strong cues and speed/descent/arc as weak cues. Weak monocular shuttle cues cannot veto alone.
+- **Reporting:** `physics_summary` is written as an artifact, included in stroke-stage metadata, backend `report.json`, and Colab reports. Counts include `bst`, `bst_no_physics`, `physics_fallback`, `agree`, `physics_override`, `bst_gate_distrusted`, `usable`, `skipped`, `distrusted`, and `overrides`.
+- **Verification:** Focused tests passed: `76 passed` across physics, context fusion, confusion pairs, and report-generator tests; `compileall` and `git diff --check` passed. Full backend suite was attempted but did not complete in-session, so do not claim a full-suite pass for this change.
+
+## Current Status (2026-07-02 — Updated with Court + Physics Reliability)
 
 ### Pipeline Performance (test_match.mp4, 300s on T4)
 - **250 shots**, **32 rallies** (after scene-cut fix), 14 unique stroke types
 - **68.8% BST coverage** (172/250), **31.2% rule-based** (78/250)
 - **14/25 BST classes active** — most diverse yet (smash, block, lift, clear, rush, drive, drop, net_shot, push, short_serve, cross_court)
 - **Physics override**: 68/250 (27.2%), 167 bst_no_physics (66.8%), 12 physics_fallback (4.8%)
+- **Latest physics behavior:** cleaned/interpolated shuttle now feeds window-level kinematics, raw detections feed quality/usability, and `physics_summary` exposes gate outcomes per run. Re-run needed to measure new override/fallback rates on `test_match.mp4`.
 - **0% rule-based "unknown"** — old flat if-else replaced with hierarchical classifier
 - **Mean BST conf: 0.319** (T=1.0), mean rule-based conf: 0.390
 - **Evidence on all 78 rule-based shots** — contact_height, player_zone, outgoing_trajectory, landing_zone
@@ -438,14 +461,18 @@ stroke_features.py:
 17. Replace per-frame YOLO with proper tracking
 18. ~~Externalize config with pydantic-settings~~ (Done)
 19. Add auth + upload validation
-20. Respect `court.valid` flag
+20. ~~Respect `court.valid` flag~~ (Done — graceful invalid-court degradation, `2d7a06e`)
+21. ~~Reject degenerate court geometry before homography use~~ (Done — `2d7a06e`)
+22. ~~Add Hough/manual-corner court fallback for phone footage~~ (Done — `ae1fd4a`)
+23. ~~Use cleaned shuttle for physics kinematics while preserving raw-point quality~~ (Done — `7f564d9`)
 
 ### Medium (quality)
-21. Re-run colab pipeline to verify balance flip fix (~50/50 split expected)
-22. Add shot_log formal table to report.json schema (data already in shots array)
-23. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
-24. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
-25. Re-run pipeline with new OwnershipScorer to measure attribution quality improvement
+24. Re-run colab pipeline to verify balance flip fix (~50/50 split expected)
+25. Re-run phone-video pipeline to measure Hough/manual-corner and cleaned-shuttle physics impact
+26. Add shot_log formal table to report.json schema (data already in shots array)
+27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
+28. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
+29. Re-run pipeline with new OwnershipScorer to measure attribution quality improvement
 
 ### Phone-Video Pipeline
 - ~~Temporal gap detection for scene cuts~~ (Done — `rallies.py`: NaN-streak check alongside spatial displacement)
@@ -455,9 +482,9 @@ stroke_features.py:
 - ~~UI shot log with BST/rule-based/physics trail~~ (Done — LabelingView.tsx)
 
 ### Nice-to-have
-26. Unify backend/colab pipelines
-27. ~~Replace single-frame technique score~~ (Done)
-28. Cross-session progress tracking
-29. Structured logging + data-quality score
-30. Promote grounded LLM narration
-31. License compliance audit
+30. Unify backend/colab pipelines
+31. ~~Replace single-frame technique score~~ (Done)
+32. Cross-session progress tracking
+33. Structured logging + data-quality score
+34. Promote grounded LLM narration
+35. License compliance audit
