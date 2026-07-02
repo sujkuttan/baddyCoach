@@ -56,6 +56,26 @@ def test_court_detection_with_frame(tmp_job_dir):
     assert len(court_data["corners_pixel"]) == 4
 
 
+def test_court_detection_reaches_color_line_when_model_returns_rectangle(tmp_job_dir, monkeypatch):
+    import app.pipeline.court as court_module
+
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    model_rectangle = [(100, 500), (1180, 500), (100, 150), (1180, 150)]
+    color_trapezoid = [(100, 500), (1180, 500), (250, 150), (1030, 150)]
+
+    monkeypatch.setattr(court_module.CourtKeypointDetector, "__init__", lambda self, *args, **kwargs: None)
+    monkeypatch.setattr(court_module.CourtKeypointDetector, "detect_corners", lambda self, frame: model_rectangle)
+    monkeypatch.setattr(court_module, "_detect_court_color_line", lambda frame: color_trapezoid)
+
+    store = ArtifactStore(tmp_job_dir)
+    result = court_module.CourtDetectionStage().run(store, StageConfig(), frame=frame)
+
+    assert result.status == "success"
+    court_data = store.get("court")
+    assert court_data["valid"] is True
+    assert court_data["corners_pixel"] == [list(c) for c in color_trapezoid]
+
+
 def test_court_keypoint_detector_fallback():
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     detector = CourtKeypointDetector("/nonexistent/path.pth")

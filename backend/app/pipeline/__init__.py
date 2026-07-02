@@ -6,7 +6,7 @@ from .shared.court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT, COURT_MODEL,
     COURT_ASPECT_RATIO, _detect_court_color_line, _correct_court_points,
     _validate_court_geometry, compute_homography, image_to_court,
-    HomographySmoother, make_undistorter,
+    HomographySmoother, make_undistorter, detect_court_hough_lines,
     foot_midpoint_from_pose, foot_point_from_bbox,
 )
 from .shared.utils import (
@@ -73,6 +73,7 @@ __all__ = [
     'compute_court_homography',
     'image_to_court',
     'make_undistorter',
+    'detect_court_hough_lines',
     'foot_midpoint_from_pose',
     'foot_point_from_bbox',
     

@@ -101,11 +101,11 @@ class CourtKeypointDetector:
     def detect_with_fallback(self, frame: np.ndarray) -> list[list[int]]:
         """Detect corners with fallback chain: model → color+line → proportional."""
         corners = self.detect_corners(frame)
-        if corners is not None:
+        if _corners_are_valid(corners):
             return corners
 
         corners = _detect_court_color_line(frame)
-        if corners is not None:
+        if _corners_are_valid(corners):
             return corners
 
         h, w = frame.shape[:2]
@@ -130,8 +130,7 @@ class CourtDetectionStage:
 
         if corners is None and frame is not None:
             detector = CourtKeypointDetector(settings.court_kpRCNN_model_path, device=settings.device)
-            # Try model detection first
-            corners = detector.detect_corners(frame)
+            corners = detector.detect_with_fallback(frame)
 
         if corners is not None and len(corners) == 4:
             corrected = _correct_court_points(corners)
@@ -172,3 +171,11 @@ class CourtDetectionStage:
             artifacts={"court": artifacts.path("court")},
             metadata={"homography_computed": True, "valid": valid_smooth}
         )
+
+
+def _corners_are_valid(corners: list[list[int]] | list[tuple[int, int]] | None) -> bool:
+    if corners is None or len(corners) != 4:
+        return False
+    corrected = _correct_court_points(corners)
+    _, valid = compute_homography(corrected)
+    return bool(valid)

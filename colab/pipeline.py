@@ -35,6 +35,7 @@ from app.config.settings import settings
 from app.pipeline.shared.court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT,
     _correct_court_points, compute_homography, image_to_court, HomographySmoother,
+    detect_court_hough_lines,
 )
 from app.pipeline.shared.utils import (
     stage_rally_stats,
@@ -455,7 +456,7 @@ class CourtKeypointDetector:
         return points
     
     def detect_with_fallback(self, frame):
-        """Detect court with fallback chain: model → proportional.
+        """Detect court with fallback chain: model → color+line.
         
         Returns: list of 4 corners [bl, br, tl, tr] for homography
         """
@@ -465,10 +466,14 @@ class CourtKeypointDetector:
             # Use 4 outer corners only (KP2/KP3 ignored — unreliable):
             # KP0=far-left, KP1=far-right, KP4=near-left, KP5=near-right
             corners = [kps[4], kps[5], kps[0], kps[1]]
-            return corners
+            if _corners_are_valid(corners):
+                return corners
         
         # Fallback to color+line detection
-        return detect_court_from_frame(frame)
+        corners = detect_court_from_frame(frame)
+        if _corners_are_valid(corners):
+            return corners
+        return None
 
 
 class YOLOv8Tracker:
@@ -694,118 +699,23 @@ def frame_generator(video_path, sample_interval=3, target_fps=10):
 # ─── Pipeline Stages ─────────────────────────────────────────────────────────
 
 def detect_court_from_frame(frame):
-    """Detect badminton court from a video frame using multi-stage detection.
-    
-    Stage 1: Color segmentation + line detection (primary)
-    Stage 2: HoughLinesP edge detection (fallback 1)
-    Stage 3: Returns None to trigger proportional fallback (fallback 2)
-    
-    Returns list of 4 corner points [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
-    ordered as bottom-left, bottom-right, top-left, top-right.
-    """
-    h, w = frame.shape[:2]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # ── Stage 1: Color-based court segmentation ──
-    # Badminton courts are typically green or blue with white lines
-    # Detect court floor using HSV color ranges
-    court_mask = None
-    
-    # Green court (most common)
-    green_lower = np.array([35, 40, 40])
-    green_upper = np.array([85, 255, 255])
-    green_mask = cv2.inRange(hsv, green_lower, green_upper)
-    
-    # Blue court
-    blue_lower = np.array([100, 40, 40])
-    blue_upper = np.array([130, 255, 255])
-    blue_mask = cv2.inRange(hsv, blue_lower, blue_upper)
-    
-    # Combine court floor colors
-    floor_mask = cv2.bitwise_or(green_mask, blue_mask)
-    
-    # Clean up mask
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kernel)
-    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel)
-    
-    # Find largest contour (should be the court)
-    contours, _ = cv2.findContours(floor_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    
-    corners = None
-    if contours:
-        largest = max(contours, key=cv2.contourArea)
-        area = cv2.contourArea(largest)
-        
-        # Court should be at least 10% of frame area
-        if area > w * h * 0.10:
-            # Approximate contour to polygon
-            epsilon = 0.02 * cv2.arcLength(largest, True)
-            approx = cv2.approxPolyDP(largest, epsilon, True)
-            
-            if len(approx) == 4:
-                pts = approx.reshape(4, 2).astype(np.float64)
-                # Order: bottom-left, bottom-right, top-left, top-right (matches compute_homography)
-                s = pts.sum(axis=1)
-                d = np.diff(pts, axis=1).flatten()
-                corners = [
-                    pts[np.argmax(d)].tolist(),  # bottom-left (largest diff)
-                    pts[np.argmax(s)].tolist(),  # bottom-right (largest sum)
-                    pts[np.argmin(s)].tolist(),  # top-left (smallest sum)
-                    pts[np.argmin(d)].tolist(),  # top-right (smallest diff)
-                ]
-    
-    # ── Stage 2: HoughLinesP edge detection (fallback) ──
-    if corners is None:
-        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-        lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100,
-                                minLineLength=w * 0.2, maxLineGap=10)
-        
-        if lines is not None and len(lines) >= 4:
-            h_lines = []
-            v_lines = []
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                angle = np.degrees(np.arctan2(y2 - y1, x2 - x1))
-                length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
-                if abs(angle) < 30:
-                    h_lines.append((min(y1, y2), max(y1, y2), min(x1, x2), max(x1, x2), length))
-                elif abs(abs(angle) - 90) < 30:
-                    v_lines.append((min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2), length))
-            
-            if len(h_lines) >= 2 and len(v_lines) >= 2:
-                h_lines.sort(key=lambda l: l[4], reverse=True)
-                v_lines.sort(key=lambda l: l[4], reverse=True)
-                top_y = min(l[0] for l in h_lines[:4])
-                bot_y = max(l[1] for l in h_lines[:4])
-                left_x = min(l[0] for l in v_lines[:4])
-                right_x = max(l[1] for l in v_lines[:4])
-                
-                court_w = right_x - left_x
-                court_h = bot_y - top_y
-                if court_w > w * 0.2 and court_h > h * 0.2 and court_w < w * 0.95 and court_h < h * 0.95:
-                    corners = [[left_x, bot_y], [right_x, bot_y], [left_x, top_y], [right_x, top_y]]
-    
-    # ── Validate corners ──
-    if corners is not None:
-        # Check aspect ratio (court is ~2.59:1 length:width)
-        pts = np.array(corners, dtype=np.float64)
-        top_w = np.linalg.norm(pts[2] - pts[3])
-        bot_w = np.linalg.norm(pts[0] - pts[1])
-        left_h = np.linalg.norm(pts[0] - pts[2])
-        right_h = np.linalg.norm(pts[1] - pts[3])
-        avg_w = (top_w + bot_w) / 2
-        avg_h = (left_h + right_h) / 2
-        
-        if avg_w > 0 and avg_h > 0:
-            aspect = max(avg_w, avg_h) / min(avg_w, avg_h)
-            # Badminton court aspect ratio is ~2.20 (13.4/6.10)
-            if 1.5 < aspect < 4.0:
-                return corners
-    
-    # ── Stage 3: Return None (proportional fallback) ──
-    return None
+    """Detect court corners via the shared Hough-line trapezoid detector."""
+    return detect_court_hough_lines(frame)
+
+
+def _corners_are_valid(corners):
+    if corners is None or len(corners) != 4:
+        return False
+    corrected = _correct_court_points(corners)
+    _, valid = compute_homography(corrected)
+    return bool(valid)
+
+
+def _parse_court_corners_arg(value):
+    parts = [int(c.strip()) for c in value.split(",") if c.strip()]
+    if len(parts) != 8:
+        raise ValueError("--court-corners requires 8 comma-separated integers")
+    return [(parts[i], parts[i + 1]) for i in range(0, 8, 2)]
 
 
 # ─── PRD §2.5: Per-frame homography with geometric validation ───────────────
@@ -878,7 +788,7 @@ def _generate_report(court, players_data, shots, rallies, coach,
     }
 
 
-def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose", sample_rate: int = 0):
+def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose", sample_rate: int = 0, court_corners: list[tuple[int, int]] | None = None):
     """Run the full BMCA pipeline.
 
     Keeps the GPU ML batch loop for memory efficiency (YOLO/TrackNet/RTMPose),
@@ -946,7 +856,10 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
     detected_corners = None
     detection_method = "none"
-    if ret and sample_frame is not None:
+    if court_corners is not None:
+        detected_corners = court_corners
+        detection_method = "manual"
+    elif ret and sample_frame is not None:
         detected_corners = court_kp_detector.detect_with_fallback(sample_frame)
         if detected_corners is not None:
             detection_method = "court_kpRCNN" if court_kp_detector.model is not None else "color+line"
@@ -1501,6 +1414,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample-rate", "-s", type=int, default=0,
                         help="Frame sampling interval (0=auto for 10fps, 1=every frame, 2=every 2nd, etc.)")
     parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
+    parser.add_argument("--court-corners", default=None,
+                        help="Manual court corners as 8 ints: x1,y1,x2,y2,x3,y3,x4,y4 (order: BL,BR,TL,TR)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
@@ -1529,7 +1444,14 @@ if __name__ == "__main__":
         sys.stderr = tee
         print(f"Logging to: {args.log}")
 
-    run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model, sample_rate=args.sample_rate)
+    try:
+        court_corners = _parse_court_corners_arg(args.court_corners) if args.court_corners else None
+    except ValueError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
+    run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
+                 sample_rate=args.sample_rate, court_corners=court_corners)
 
     if log_file:
         log_file.close()

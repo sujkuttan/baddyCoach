@@ -32,49 +32,173 @@ COURT_ASPECT_RATIO = COURT_LENGTH / COURT_WIDTH  # ≈ 2.197
 
 
 def _detect_court_color_line(frame: np.ndarray):
-    """Detect court using color segmentation + HoughLinesP. Returns [bl, br, tl, tr] or None."""
-    import cv2
+    """Legacy wrapper for the Hough-line trapezoid court detector."""
+    return detect_court_hough_lines(frame)
+
+
+def detect_court_hough_lines(frame: np.ndarray, use_cuda: bool = True):
+    """Detect the outer court as a true trapezoid from Hough line intersections."""
+    if frame is None or frame.size == 0:
+        return None
+
+    line_mask = _court_line_mask(frame, use_cuda=use_cuda)
     h, w = frame.shape[:2]
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    green_mask = cv2.inRange(hsv, np.array([35, 40, 40]), np.array([85, 255, 255]))
-    blue_mask = cv2.inRange(hsv, np.array([100, 40, 40]), np.array([130, 255, 255]))
-    floor_mask = cv2.bitwise_or(green_mask, blue_mask)
-    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_CLOSE, kernel)
-    floor_mask = cv2.morphologyEx(floor_mask, cv2.MORPH_OPEN, kernel)
-    contours, _ = cv2.findContours(floor_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        largest = max(contours, key=cv2.contourArea)
-        if cv2.contourArea(largest) > w * h * 0.10:
-            epsilon = 0.02 * cv2.arcLength(largest, True)
-            approx = cv2.approxPolyDP(largest, epsilon, True)
-            if len(approx) == 4:
-                pts = approx.reshape(4, 2).astype(np.float64)
-                s = pts.sum(axis=1)
-                d = np.diff(pts, axis=1).flatten()
-                return [
-                    pts[np.argmax(d)].tolist(),
-                    pts[np.argmin(d)].tolist(),
-                    pts[np.argmin(s)].tolist(),
-                    pts[np.argmax(s)].tolist(),
-                ]
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    edges = cv2.Canny(gray, 50, 150)
-    lines = cv2.HoughLinesP(edges, 1, np.pi / 180, threshold=100, minLineLength=w * 0.2, maxLineGap=10)
-    if lines is not None and len(lines) >= 4:
-        lines_flat = lines.reshape(-1, 4)
-        s = lines_flat[:, 0] + lines_flat[:, 1]
-        d = lines_flat[:, 0] - lines_flat[:, 1]
-        sorted_by_sum = lines_flat[np.argsort(s)]
-        sorted_by_diff = lines_flat[np.argsort(d)]
-        corners = [
-            sorted_by_diff[-1][:2].tolist(),
-            sorted_by_diff[0][2:].tolist(),
-            sorted_by_sum[0][:2].tolist(),
-            sorted_by_sum[-1][2:].tolist(),
-        ]
-        return corners
-    return None
+    min_len = max(60, int(min(h, w) * 0.16))
+    lines = cv2.HoughLinesP(
+        line_mask,
+        rho=1,
+        theta=np.pi / 180,
+        threshold=45,
+        minLineLength=min_len,
+        maxLineGap=max(20, int(min(h, w) * 0.04)),
+    )
+    if lines is None:
+        return None
+
+    candidates = [_line_candidate(line[0]) for line in lines]
+    candidates = [c for c in candidates if c is not None]
+    if len(candidates) < 4:
+        return None
+
+    horizontal = [c for c in candidates if c["kind"] == "horizontal"]
+    side_left = [c for c in candidates if c["kind"] == "side_left"]
+    side_right = [c for c in candidates if c["kind"] == "side_right"]
+    if len(horizontal) < 2 or not side_left or not side_right:
+        return None
+
+    top_line = _fit_boundary_line(_select_horizontal_boundary(horizontal, top=True))
+    bottom_line = _fit_boundary_line(_select_horizontal_boundary(horizontal, top=False))
+    left_line = _fit_boundary_line(_select_side_boundary(side_left, frame.shape, left=True))
+    right_line = _fit_boundary_line(_select_side_boundary(side_right, frame.shape, left=False))
+    if any(line is None for line in [top_line, bottom_line, left_line, right_line]):
+        return None
+
+    tl = _intersect_lines(top_line, left_line)
+    tr = _intersect_lines(top_line, right_line)
+    bl = _intersect_lines(bottom_line, left_line)
+    br = _intersect_lines(bottom_line, right_line)
+    if any(pt is None for pt in [bl, br, tl, tr]):
+        return None
+
+    corners = [bl, br, tl, tr]
+    if not _corners_within_frame(corners, w, h):
+        return None
+    corners = [[int(round(x)), int(round(y))] for x, y in corners]
+    if not _validate_court_geometry(corners):
+        return None
+    H, valid = compute_homography(corners)
+    if H is None or not valid:
+        return None
+    return corners
+
+
+def _court_line_mask(frame: np.ndarray, use_cuda: bool = True) -> np.ndarray:
+    mask = None
+    if use_cuda:
+        try:
+            import torch
+            if torch.cuda.is_available():
+                rgb = torch.as_tensor(frame[:, :, ::-1].copy(), device="cuda", dtype=torch.float32) / 255.0
+                maxc, _ = rgb.max(dim=2)
+                minc, _ = rgb.min(dim=2)
+                sat = (maxc - minc) / torch.clamp(maxc, min=1e-6)
+                white = (maxc > 0.55) & (sat < 0.35)
+                mask = white.detach().cpu().numpy().astype(np.uint8) * 255
+        except Exception:
+            pass
+
+    if mask is None:
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        white = cv2.inRange(hsv, np.array([0, 0, 140]), np.array([180, 95, 255]))
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        bright = cv2.inRange(gray, 130, 255)
+        mask = cv2.bitwise_and(white, bright)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    edges = cv2.Canny(mask, 40, 120)
+    return cv2.dilate(edges, kernel, iterations=1)
+
+
+def _line_candidate(line):
+    x1, y1, x2, y2 = [float(v) for v in line]
+    dx = x2 - x1
+    dy = y2 - y1
+    length = float(np.hypot(dx, dy))
+    if length < 1.0:
+        return None
+    angle = abs(np.degrees(np.arctan2(dy, dx)))
+    if angle > 90:
+        angle = 180 - angle
+    if angle <= 18:
+        kind = "horizontal"
+    elif 35 <= angle <= 82 and abs(dx) > 8:
+        kind = "side_right" if (dy / dx) > 0 else "side_left"
+    else:
+        return None
+    return {
+        "points": np.array([[x1, y1], [x2, y2]], dtype=np.float64),
+        "mid": np.array([(x1 + x2) / 2.0, (y1 + y2) / 2.0], dtype=np.float64),
+        "length": length,
+        "kind": kind,
+    }
+
+
+def _select_horizontal_boundary(candidates, top: bool):
+    candidates = sorted(candidates, key=lambda c: c["mid"][1])
+    n = max(1, min(4, len(candidates) // 2))
+    return candidates[:n] if top else candidates[-n:]
+
+
+def _select_side_boundary(candidates, frame_shape, left: bool):
+    h, w = frame_shape[:2]
+    y_ref = h * 0.55
+
+    def x_at_ref(candidate):
+        pts = candidate["points"]
+        line = _fit_line_from_points(pts)
+        if line is None or abs(line[0]) < 1e-6:
+            return candidate["mid"][0]
+        vx, vy, x0, y0 = line
+        return x0 + (y_ref - y0) * (vx / vy) if abs(vy) > 1e-6 else candidate["mid"][0]
+
+    candidates = sorted(candidates, key=x_at_ref)
+    n = max(1, min(4, len(candidates) // 2))
+    return candidates[:n] if left else candidates[-n:]
+
+
+def _fit_boundary_line(candidates):
+    if not candidates:
+        return None
+    points = np.vstack([c["points"] for c in candidates])
+    return _fit_line_from_points(points)
+
+
+def _fit_line_from_points(points):
+    if points is None or len(points) < 2:
+        return None
+    vx, vy, x0, y0 = cv2.fitLine(points.astype(np.float32), cv2.DIST_L2, 0, 0.01, 0.01).flatten()
+    return float(vx), float(vy), float(x0), float(y0)
+
+
+def _intersect_lines(line_a, line_b):
+    vx1, vy1, x1, y1 = line_a
+    vx2, vy2, x2, y2 = line_b
+    a = np.array([[vx1, -vx2], [vy1, -vy2]], dtype=np.float64)
+    b = np.array([x2 - x1, y2 - y1], dtype=np.float64)
+    det = np.linalg.det(a)
+    if abs(det) < 1e-6:
+        return None
+    t, _ = np.linalg.solve(a, b)
+    return [x1 + t * vx1, y1 + t * vy1]
+
+
+def _corners_within_frame(corners, width: int, height: int, margin_ratio: float = 0.08) -> bool:
+    margin = max(width, height) * margin_ratio
+    for x, y in corners:
+        if x < -margin or x > width + margin or y < -margin or y > height + margin:
+            return False
+    return True
 
 
 def _correct_court_points(corners_4):
@@ -127,13 +251,14 @@ def compute_homography(image_corners):
     return H, valid
 
 
-def _validate_court_geometry(corners_px):
+def _validate_court_geometry(corners_px, max_trapezoid_ratio=None):
     """Validate detected court corners form a reasonable quadrilateral.
 
-    In broadcast views, perspective foreshortening makes the physical 2.587:1
-    ratio invisible in pixel space. We check for degenerate cases instead:
+    Checks:
     1. Minimum area (not a point or line)
     2. Convex quadrilateral (no crossing edges)
+    3. True trapezoid (top edge narrower than bottom edge), rejecting
+       rectangles which produce degenerate homographies.
     """
     pts = np.array(corners_px, dtype=np.float64)
 
@@ -152,7 +277,7 @@ def _validate_court_geometry(corners_px):
     if not all(s > 0 for s in signs) and not all(s < 0 for s in signs):
         return False
 
-    return True
+    return bool(court_geometry_reliable(corners_px, max_trapezoid_ratio))
 
 
 def court_geometry_reliable(corners_px, max_trapezoid_ratio=None):
@@ -179,7 +304,7 @@ def court_geometry_reliable(corners_px, max_trapezoid_ratio=None):
     if bottom_width < 1.0:
         return False
     ratio = top_width / bottom_width
-    return ratio <= max_trapezoid_ratio
+    return bool(ratio <= max_trapezoid_ratio)
 
 
 def image_to_court(H, uv):

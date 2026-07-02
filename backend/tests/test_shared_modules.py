@@ -10,12 +10,27 @@ settings, model loaders, etc.).
 """
 
 import sys
+import cv2
 import numpy as np
 import pandas as pd
 import pytest
 
 
 # ─── Court module ───────────────────────────────────────────────────────────
+
+def _synthetic_court_frame(corners, include_floor=True, noise_lines=False):
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    if include_floor:
+        pts = np.array(corners, dtype=np.int32)
+        cv2.fillPoly(frame, [pts[[2, 3, 1, 0]]], (0, 115, 35))
+    bl, br, tl, tr = [tuple(map(int, p)) for p in corners]
+    for a, b in [(bl, br), (tl, tr), (bl, tl), (br, tr)]:
+        cv2.line(frame, a, b, (255, 255, 255), 5, cv2.LINE_AA)
+    if noise_lines:
+        cv2.line(frame, (100, 650), (1150, 620), (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.line(frame, (200, 80), (1100, 120), (255, 255, 255), 3, cv2.LINE_AA)
+        cv2.line(frame, (640, 50), (640, 690), (255, 255, 255), 2, cv2.LINE_AA)
+    return frame
 
 class TestSharedCourtModule:
     """Tests for shared court detection and geometric processing."""
@@ -44,13 +59,58 @@ class TestSharedCourtModule:
     def test_validate_court_geometry_valid(self):
         from app.pipeline.shared.court import _validate_court_geometry
         # Input order [bl, br, tl, tr] — boundary traversal is [bl, br, tr, tl]
-        corners = np.array([[100, 400], [500, 400], [100, 100], [500, 100]], dtype=np.float64)
+        corners = np.array([[100, 400], [500, 400], [150, 100], [450, 100]], dtype=np.float64)
         assert _validate_court_geometry(corners) is True
+
+    def test_validate_court_geometry_rejects_degenerate_rectangle(self):
+        from app.pipeline.shared.court import _validate_court_geometry, compute_homography
+        corners = np.array([[100, 400], [500, 400], [100, 100], [500, 100]], dtype=np.float64)
+        assert _validate_court_geometry(corners) is False
+        H, valid = compute_homography(corners)
+        assert H is not None
+        assert valid is False
 
     def test_validate_court_geometry_too_small(self):
         from app.pipeline.shared.court import _validate_court_geometry
         corners = np.array([[100, 100], [110, 100], [110, 90], [100, 90]], dtype=np.float64)
         assert _validate_court_geometry(corners) is False
+
+    def test_hough_line_detector_finds_trapezoid_without_floor_color(self):
+        from app.pipeline.shared.court import detect_court_hough_lines, compute_homography
+
+        expected = [[160, 650], [1120, 650], [390, 170], [890, 170]]
+        frame = _synthetic_court_frame(expected, include_floor=False)
+
+        corners = detect_court_hough_lines(frame, use_cuda=False)
+
+        assert corners is not None
+        assert len(corners) == 4
+        H, valid = compute_homography(corners)
+        assert H is not None
+        assert valid is True
+
+    def test_hough_line_detector_rejects_axis_aligned_rectangle(self):
+        from app.pipeline.shared.court import detect_court_hough_lines
+
+        frame = _synthetic_court_frame(
+            [[160, 650], [1120, 650], [160, 170], [1120, 170]],
+            include_floor=False,
+        )
+
+        assert detect_court_hough_lines(frame, use_cuda=False) is None
+
+    def test_hough_line_detector_ignores_extra_noise_lines(self):
+        from app.pipeline.shared.court import detect_court_hough_lines, compute_homography
+
+        expected = [[160, 650], [1120, 650], [390, 170], [890, 170]]
+        frame = _synthetic_court_frame(expected, include_floor=True, noise_lines=True)
+
+        corners = detect_court_hough_lines(frame, use_cuda=False)
+
+        assert corners is not None
+        H, valid = compute_homography(corners)
+        assert H is not None
+        assert valid is True
 
     def test_image_to_court(self):
         from app.pipeline.shared.court import image_to_court
