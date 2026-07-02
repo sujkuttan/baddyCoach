@@ -10,6 +10,7 @@ from app.pipeline.shared.physics import (
     best_consistent_class,
     apply_physics_ensemble,
     combine_agree,
+    summarize_physics_sources,
     Features,
     CLASS_VETO,
 )
@@ -79,6 +80,45 @@ def test_extract_features_no_shuttle():
     )
     assert not feats.usable
     assert feats.quality == 0.0
+
+
+def test_extract_features_uses_cleaned_kinematics_and_raw_quality():
+    """Interpolated shuttle can drive kinematics while raw points define quality."""
+    frames = list(range(0, 12))
+    cleaned = _make_shuttle_raw(
+        frames,
+        [500 + i * 5 for i in frames],
+        [200 + i * 20 for i in frames],
+    )
+    cleaned["was_interpolated"] = [f not in {0, 3, 6, 9} for f in frames]
+    raw = _make_shuttle_raw(
+        [0, 3, 6, 9],
+        [500, 515, 530, 545],
+        [200, 260, 320, 380],
+    )
+
+    feats = extract_physics_features(0, cleaned, None, "p1", COURT, 30, 1920, 1080, raw)
+
+    assert feats.usable
+    assert feats.real_points == 4
+    assert feats.kinematic_points == 12
+    assert feats.quality == 4 / settings.physics_window_frames
+    assert feats.v_down is not None and feats.v_down > 0
+
+
+def test_extract_features_requires_minimum_raw_real_points():
+    cleaned = _make_shuttle_raw(
+        list(range(0, 12)),
+        [500 + i * 5 for i in range(12)],
+        [200 + i * 20 for i in range(12)],
+    )
+    raw = _make_shuttle_raw([0, 6, 9], [500, 530, 545], [200, 320, 380])
+
+    feats = extract_physics_features(0, cleaned, None, "p1", COURT, 30, 1920, 1080, raw)
+
+    assert not feats.usable
+    assert feats.real_points == 3
+    assert feats.kinematic_points == 12
 
 
 def test_extract_features_descending_smash():
@@ -235,16 +275,21 @@ def test_consistent_smash():
 
 def test_inconsistent_smash_ascending():
     feats = Features(v_down=-5.0, speed_mps=12.0, contact="overhead")
-    assert consistent("smash", feats) is False
+    assert consistent("smash", feats) is True
 
 
 def test_inconsistent_smash_slow():
     feats = Features(v_down=5.0, speed_mps=1.0, contact="overhead")
-    assert consistent("smash", feats) is False
+    assert consistent("smash", feats) is True
 
 
 def test_inconsistent_smash_underarm():
     feats = Features(v_down=15.0, speed_mps=12.0, contact="underarm")
+    assert consistent("smash", feats) is False
+
+
+def test_combined_weak_mismatches_can_veto():
+    feats = Features(v_down=-5.0, speed_mps=1.0, contact="overhead")
     assert consistent("smash", feats) is False
 
 
@@ -341,7 +386,7 @@ def test_ensemble_gate_disabled():
         {"frame": 0, "stroke_type": "smash", "stroke_confidence": 0.6, "is_bst_fallback": False},
         {"frame": 10, "stroke_type": "lift", "stroke_confidence": 0.5, "is_bst_fallback": False},
     ]
-    result = apply_physics_ensemble(shots, None, CLASSES_25, None, None, {}, 30, 1920, 1080)
+    result = apply_physics_ensemble(shots, None, CLASSES_25, None, None, None, {}, 30, 1920, 1080)
     assert all(s["stroke_source"] == "bst" for s in result)
     settings.physics_gate_enabled = prev
 
@@ -362,7 +407,7 @@ def test_ensemble_fallback_fill():
     ]
     probs = np.zeros((1, 25))
     result = apply_physics_ensemble(
-        shots, probs, CLASSES_25, shuttle, pose, COURT, 30, 1920, 1080,
+        shots, probs, CLASSES_25, shuttle, shuttle, pose, COURT, 30, 1920, 1080,
     )
     assert result[0]["stroke_source"] == "physics_fallback"
     # Physics should identify the descending-fast-overhead trajectory as smash
@@ -382,7 +427,7 @@ def test_ensemble_agree_boost():
     probs = np.zeros((1, 25))
     probs[0, 3] = 0.6
     result = apply_physics_ensemble(
-        shots, probs, CLASSES_25, shuttle, pose, COURT, 30, 1920, 1080,
+        shots, probs, CLASSES_25, shuttle, shuttle, pose, COURT, 30, 1920, 1080,
     )
     assert result[0]["stroke_source"] == "agree"
     assert result[0]["stroke_confidence"] > 0.4
@@ -399,12 +444,13 @@ def test_ensemble_veto_impossible():
 
     shots = [
         {"frame": 0, "stroke_type": "smash", "stroke_confidence": 0.6,
-         "is_bst_fallback": False, "shuttleset_class_id": 3, "is_rule_based": False},
+         "is_bst_fallback": False, "shuttleset_class_id": 3, "is_rule_based": False,
+         "player_id": "p1"},
     ]
     probs = np.zeros((1, 25))
     probs[0, 4] = 0.8  # lift has high prob
     result = apply_physics_ensemble(
-        shots, probs, CLASSES_25, shuttle, pose, COURT, 30, 1920, 1080,
+        shots, probs, CLASSES_25, shuttle, shuttle, pose, COURT, 30, 1920, 1080,
     )
     # Single-shot test: 1/1 = 100% override rate → override guard reverts
     assert result[0]["stroke_source"] == "bst_gate_distrusted"
@@ -416,7 +462,7 @@ def test_ensemble_no_physics_data():
     shots = [
         {"frame": 0, "stroke_type": "drive", "stroke_confidence": 0.5, "is_bst_fallback": False},
     ]
-    result = apply_physics_ensemble(shots, None, CLASSES_25, None, None, {}, 30, 1920, 1080)
+    result = apply_physics_ensemble(shots, None, CLASSES_25, None, None, None, {}, 30, 1920, 1080)
     assert result[0]["stroke_source"] == "bst_no_physics"
 
 
@@ -428,9 +474,57 @@ def test_ensemble_degraded_quality():
     ]
     # frame 10 has no shuttle data (all frames are 0-2)
     result = apply_physics_ensemble(
-        shots, np.zeros((1, 25)), CLASSES_25, shuttle, None, COURT, 30, 1920, 1080,
+        shots, np.zeros((1, 25)), CLASSES_25, shuttle, shuttle, None, COURT, 30, 1920, 1080,
     )
     assert result[0]["stroke_source"] == "bst_no_physics"
+
+
+def test_ensemble_sparse_raw_uses_cleaned_motion_for_fallback():
+    frames = list(range(0, 12))
+    cleaned = _make_shuttle_raw(
+        frames,
+        [500 + i * 20 for i in frames],
+        [200 + i * 30 for i in frames],
+    )
+    raw = _make_shuttle_raw(
+        [0, 3, 6, 9],
+        [500, 560, 620, 680],
+        [200, 290, 380, 470],
+    )
+    pose = _make_pose_df([0], "p1", wrist_y=100, shoulder_y=200)
+    shots = [
+        {"frame": 0, "stroke_type": "unknown", "stroke_confidence": 0.1,
+         "is_bst_fallback": True, "shuttleset_class_id": 0, "is_rule_based": True},
+    ]
+
+    result = apply_physics_ensemble(
+        shots, np.zeros((1, 25)), CLASSES_25, cleaned, raw, pose, COURT, 30, 1920, 1080,
+    )
+
+    assert result[0]["stroke_source"] == "physics_fallback"
+    assert result[0]["physics_real_points"] == 4
+    assert result[0]["physics_kinematic_points"] == 12
+
+
+def test_summarize_physics_sources_counts_gate_decisions():
+    shots = [
+        {"stroke_source": "bst"},
+        {"stroke_source": "bst_no_physics"},
+        {"stroke_source": "physics_override"},
+        {"stroke_source": "physics_override"},
+        {"stroke_source": "bst_gate_distrusted"},
+    ]
+
+    summary = summarize_physics_sources(shots)
+
+    assert summary["total"] == 5
+    assert summary["bst"] == 1
+    assert summary["bst_no_physics"] == 1
+    assert summary["physics_override"] == 2
+    assert summary["bst_gate_distrusted"] == 1
+    assert summary["skipped"] == 1
+    assert summary["distrusted"] == 1
+    assert summary["overrides"] == 2
 
 
 # ── combine_agree ───────────────────────────────────────────────

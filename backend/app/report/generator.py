@@ -79,6 +79,10 @@ class ReportGenerator:
         if stage_timings:
             report["stage_timings"] = stage_timings
 
+        physics_summary = artifacts.get("physics_summary")
+        if physics_summary:
+            report["physics_summary"] = physics_summary
+
         rallies_df = artifacts.get_parquet("rallies")
         if rallies_df is not None:
             report["rallies"] = rallies_df.to_dict(orient="records")

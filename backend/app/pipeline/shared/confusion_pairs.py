@@ -157,6 +157,7 @@ def _name(idx: int) -> str:
 def resolve_confusion_pairs(
     probs_matrix: np.ndarray,
     shots: list,
+    shuttle_cleaned,
     shuttle_raw,
     pose_df,
     court: dict,
@@ -174,14 +175,14 @@ def resolve_confusion_pairs(
     Args:
         probs_matrix: (N, 25) softmax probabilities.
         shots: List of shot dicts (must have 'frame').
-        shuttle_raw, pose_df, court, fps, vid_w, vid_h: physics features.
+        shuttle_cleaned, shuttle_raw, pose_df, court, fps, vid_w, vid_h: physics features.
         boost: Logit boost for the resolved class.
 
     Returns:
         Adjusted (N, 25) softmax probabilities.
     """
     n_shots = probs_matrix.shape[0]
-    if n_shots == 0 or shuttle_raw is None or len(shuttle_raw) == 0:
+    if n_shots == 0 or shuttle_cleaned is None or len(shuttle_cleaned) == 0:
         return probs_matrix
 
     logits = _logits_from_probs(probs_matrix)
@@ -190,8 +191,8 @@ def resolve_confusion_pairs(
     for i, shot in enumerate(shots):
         frame = shot["frame"]
         feats = extract_physics_features(
-            frame, shuttle_raw, pose_df, "player_1",
-            court, fps, vid_w, vid_h,
+            frame, shuttle_cleaned, pose_df, "player_1",
+            court, fps, vid_w, vid_h, shuttle_raw,
         )
         if not feats.usable:
             continue

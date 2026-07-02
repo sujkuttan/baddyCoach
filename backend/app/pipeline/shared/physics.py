@@ -7,6 +7,7 @@ and fills in when BST abstains, but defers to BST when BST is plausible.
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
+from collections import Counter
 
 from app.config.settings import settings
 from app.pipeline.shared.court import image_to_court, court_geometry_reliable
@@ -46,6 +47,26 @@ CLASS_VETO = {
     "cross_court": {"cross"},  # orthogonal — combined with other classes
 }
 
+CONDITION_WEIGHTS = {
+    "overhead": 1.0,
+    "side": 1.0,
+    "underarm": 1.0,
+    "low": 1.0,
+    "front": 1.0,
+    "back": 1.0,
+    "short": 1.0,
+    "mid": 1.0,
+    "deep": 1.0,
+    "descend": 0.5,
+    "ascend": 0.5,
+    "flat": 0.5,
+    "fast": 0.5,
+    "med": 0.5,
+    "slow": 0.5,
+    "rise_fall": 0.5,
+    "cross": 0.5,
+}
+
 
 @dataclass
 class Features:
@@ -59,6 +80,8 @@ class Features:
     contact: Optional[str] = None        # "overhead", "side", "underarm", "low"
     zone: Optional[str] = None           # "front", "mid", "back"
     depth: Optional[str] = None          # "short", "mid", "deep"
+    real_points: int = 0                 # raw model detections in the window
+    kinematic_points: int = 0            # cleaned/interpolated points used for motion
 
 
 def court_speed_mps(seg_x, seg_y, court, fps) -> Optional[float]:
@@ -185,36 +208,63 @@ def landing_depth(dx_total, zone) -> Optional[str]:
 
 def extract_physics_features(
     f: int,
-    shuttle_raw: "pd.DataFrame",
+    shuttle_cleaned: "pd.DataFrame",
     pose_df: "pd.DataFrame",
     hitter_id: str,
     court: dict,
     fps: float,
     vid_w: float,
     vid_h: float,
+    shuttle_raw: "pd.DataFrame" = None,
 ) -> Features:
-    """Extract physics features for a hit frame from shuttle_raw and pose.
+    """Extract physics features for a hit frame from shuttle and pose.
 
     Features degrade independently; missing cue → None (never veto on missing cue).
+    Kinematics come from cleaned/interpolated shuttle. Quality comes from raw
+    model detections so confidence still reflects sparse evidence.
     """
     K = settings.physics_window_frames
     min_valid = settings.physics_min_valid
     min_conf = settings.shuttle_min_conf
+    if shuttle_raw is None:
+        shuttle_raw = shuttle_cleaned
+
+    if shuttle_cleaned is None or len(shuttle_cleaned) == 0:
+        return Features(quality=0.0, usable=False)
 
     # Post-contact window
-    seg = shuttle_raw[
-        (shuttle_raw["frame"] >= f) &
-        (shuttle_raw["frame"] <= f + K) &
-        (shuttle_raw["confidence"] >= min_conf)
+    kin_seg = shuttle_cleaned[
+        (shuttle_cleaned["frame"] >= f) &
+        (shuttle_cleaned["frame"] <= f + K) &
+        (shuttle_cleaned["confidence"] >= min_conf)
     ].copy().sort_values("frame")
 
-    if len(seg) < min_valid:
-        return Features(quality=len(seg) / K if K > 0 else 0, usable=False)
+    if shuttle_raw is not None and len(shuttle_raw) > 0:
+        raw_seg = shuttle_raw[
+            (shuttle_raw["frame"] >= f) &
+            (shuttle_raw["frame"] <= f + K) &
+            (shuttle_raw["confidence"] >= min_conf)
+        ].copy().sort_values("frame")
+    else:
+        raw_seg = kin_seg.iloc[0:0]
 
-    quality = min(1.0, len(seg) / K)
+    if "was_interpolated" in raw_seg.columns:
+        raw_seg = raw_seg[~raw_seg["was_interpolated"].fillna(False).astype(bool)]
 
-    seg_x = seg["x"].values.astype(np.float64)
-    seg_y = seg["y"].values.astype(np.float64)
+    real_points = int(len(raw_seg))
+    kinematic_points = int(len(kin_seg))
+    quality = min(1.0, real_points / K) if K > 0 else 0.0
+
+    if kinematic_points < min_valid or real_points < min_valid:
+        return Features(
+            quality=quality,
+            usable=False,
+            real_points=real_points,
+            kinematic_points=kinematic_points,
+        )
+
+    seg_x = kin_seg["x"].values.astype(np.float64)
+    seg_y = kin_seg["y"].values.astype(np.float64)
 
     # Vertical direction
     dy = np.diff(seg_y)
@@ -265,6 +315,8 @@ def extract_physics_features(
         contact=contact,
         zone=zone,
         depth=depth,
+        real_points=real_points,
+        kinematic_points=kinematic_points,
     )
 
 
@@ -338,8 +390,9 @@ def _check_condition(cond: str, feats: Features) -> Optional[bool]:
 def consistent(bst_stroke: str, feats: Features) -> bool:
     """Check if a BST-predicted stroke is physically consistent.
 
-    A stroke is consistent if ALL mandatory conditions pass AND at
-    least one condition passes in each OR-group (prefixed with |).
+    A stroke is consistent unless weighted mismatches reach the veto
+    threshold. Reliable cues like contact and court zone have strong weights;
+    monocular shuttle speed/direction cues are weaker and cannot veto alone.
     Conditions with None cues are skipped — never veto on missing data.
     """
     required = CLASS_VETO.get(bst_stroke, set())
@@ -347,16 +400,18 @@ def consistent(bst_stroke: str, feats: Features) -> bool:
         return True
     mandatory = [c for c in required if not c.startswith("|")]
     or_groups = [c for c in required if c.startswith("|")]
+    mismatch_weight = 0.0
     for cond in mandatory:
         ok = _check_condition(cond, feats)
         if ok is False:
-            return False
+            mismatch_weight += CONDITION_WEIGHTS.get(cond, 0.5)
     if or_groups:
-        checks = [_check_condition(c.lstrip("|"), feats) for c in or_groups]
+        stems = [c.lstrip("|") for c in or_groups]
+        checks = [_check_condition(c, feats) for c in stems]
         usable = [c for c in checks if c is not None]
         if usable and not any(usable):
-            return False
-    return True
+            mismatch_weight += max(CONDITION_WEIGHTS.get(c, 0.5) for c in stems)
+    return mismatch_weight < 1.0
 
 
 def best_consistent_class(
@@ -445,6 +500,7 @@ def apply_physics_ensemble(
     shot_records: list,
     probs_matrix: np.ndarray,
     classes: list,
+    shuttle_cleaned: "pd.DataFrame",
     shuttle_raw: "pd.DataFrame",
     pose_df: "pd.DataFrame",
     court: dict,
@@ -462,7 +518,7 @@ def apply_physics_ensemble(
             s["stroke_source"] = "bst"
         return shot_records
 
-    if shuttle_raw is None or len(shuttle_raw) == 0:
+    if shuttle_cleaned is None or len(shuttle_cleaned) == 0:
         for s in shot_records:
             s["stroke_source"] = "bst_no_physics"
         return shot_records
@@ -479,9 +535,14 @@ def apply_physics_ensemble(
         hitter_id = shot.get("player_id", "player_1")
         is_fallback = shot.get("is_bst_fallback", False)
 
-        feats = extract_physics_features(f, shuttle_raw, pose_df, hitter_id, court, fps, vid_w, vid_h)
+        feats = extract_physics_features(
+            f, shuttle_cleaned, pose_df, hitter_id, court, fps, vid_w, vid_h, shuttle_raw,
+        )
+        shot["physics_real_points"] = feats.real_points
+        shot["physics_kinematic_points"] = feats.kinematic_points
+        shot["physics_quality"] = feats.quality
 
-        if not feats.usable or feats.quality < settings.physics_quality_min:
+        if not feats.usable:
             shot["stroke_source"] = "bst_no_physics"
             no_physics_count += 1
             continue
@@ -580,3 +641,27 @@ def apply_physics_ensemble(
     )
 
     return shot_records
+
+
+def summarize_physics_sources(shot_records: list) -> dict:
+    """Summarize physics gate outcomes from final shot records."""
+    counts = Counter(s.get("stroke_source", "unknown") for s in shot_records)
+    summary = {
+        "total": len(shot_records),
+        "bst": counts.get("bst", 0),
+        "bst_no_physics": counts.get("bst_no_physics", 0),
+        "physics_fallback": counts.get("physics_fallback", 0),
+        "agree": counts.get("agree", 0),
+        "physics_override": counts.get("physics_override", 0),
+        "bst_gate_distrusted": counts.get("bst_gate_distrusted", 0),
+    }
+    summary["usable"] = (
+        summary["bst"]
+        + summary["agree"]
+        + summary["physics_fallback"]
+        + summary["physics_override"]
+    )
+    summary["skipped"] = summary["bst_no_physics"]
+    summary["distrusted"] = summary["bst_gate_distrusted"]
+    summary["overrides"] = summary["physics_override"]
+    return summary

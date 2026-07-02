@@ -740,7 +740,7 @@ BATCH_SIZE = 300
 
 def _generate_report(court, players_data, shots, rallies, coach,
                      tactical, fitness, footwork, technical, court_analytics, fps=30,
-                     data_quality=None):
+                     data_quality=None, physics_summary=None):
     """Build the final report dict from all analytics."""
     shot_dist = {}
     for pid, data in tactical.items():
@@ -783,6 +783,7 @@ def _generate_report(court, players_data, shots, rallies, coach,
         "rally_stats": coach.get("rally_stats", {}),
         "rallies": rallies, "shot_count": len(shots),
         "shots": shots_with_ts,
+        "physics_summary": physics_summary or {},
         "data_quality": {k: v for k, v in data_quality.items()
                          if k != "court_valid" and k != "model_health"},
     }
@@ -1107,6 +1108,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         shots_result = StrokeClassificationStage().run(store, config)
         shots_df = store.get_parquet("shots")
         shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []
+        physics_summary = store.get("physics_summary") or shots_result.metadata.get("physics_summary", {})
         print(f"  Classified {len(shots)} shots")
         for shot_idx, s in enumerate(shots, 1):
             s["shot_id"] = shot_idx
@@ -1197,7 +1199,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     # ── Build and save report ──
     report = _generate_report(court, players_data, shots, rallies, coach,
                               tactical, fitness, footwork, technical, court_analytics,
-                              fps=video_fps, data_quality=data_quality)
+                              fps=video_fps, data_quality=data_quality,
+                              physics_summary=physics_summary)
 
     from app.report.generator import _clean_nan
     report = _clean_nan(report)

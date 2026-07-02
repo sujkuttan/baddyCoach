@@ -7,7 +7,7 @@ from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
 from app.pipeline.shared.bst_preproc import normalize_joints, normalize_joints_court, create_bones, BONE_PAIRS
-from app.pipeline.shared.physics import apply_physics_ensemble
+from app.pipeline.shared.physics import apply_physics_ensemble, summarize_physics_sources
 from app.models.bst import COACH_STROKE_CLASSES
 
 
@@ -565,7 +565,7 @@ class StrokeClassificationStage:
             fusion = ContextFusion.from_settings()
             probs_matrix = fusion.fuse(
                 shots, probs_matrix,
-                shuttle_raw, pose_df, court, fps, vid_w, vid_h,
+                shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
             )
 
         # Phase 3b: hierarchical family classifier — reduce cross-family noise
@@ -577,7 +577,7 @@ class StrokeClassificationStage:
         if settings.confusion_pair_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
             from app.pipeline.shared.confusion_pairs import resolve_confusion_pairs
             probs_matrix = resolve_confusion_pairs(
-                probs_matrix, shots, shuttle_raw,
+                probs_matrix, shots, shuttle_df, shuttle_raw,
                 pose_df, court, fps, vid_w, vid_h,
                 boost=settings.confusion_pair_boost,
             )
@@ -589,7 +589,7 @@ class StrokeClassificationStage:
 
         shots = apply_physics_ensemble(
             shots, probs_matrix, physics_classes,
-            shuttle_raw, pose_df, court, fps, vid_w, vid_h,
+            shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
 
         # Post-classification temporal smoothing: overwrite unknown strokes
@@ -651,12 +651,15 @@ class StrokeClassificationStage:
         shots_df = pd.DataFrame(shots)
         artifacts.set_parquet("shots", shots_df)
         artifacts.set("bst_clips", bst_clips_registry)
+        physics_summary = summarize_physics_sources(shots)
+        artifacts.set("physics_summary", physics_summary)
 
         return StageResult.success(
             artifacts={"shots": artifacts.path("shots")},
             metadata={
                 "shot_count": len(shots),
                 "stroke_distribution": self._compute_distribution(shots),
+                "physics_summary": physics_summary,
             }
         )
 

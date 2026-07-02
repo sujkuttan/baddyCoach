@@ -137,7 +137,7 @@ def test_fusion_nudges_smash_upward():
     court = _make_court_trapezoid()
     pose_df = None
 
-    adjusted = fusion.fuse(shots, probs.copy(), shuttle_raw, pose_df,
+    adjusted = fusion.fuse(shots, probs.copy(), shuttle_raw, shuttle_raw, pose_df,
                            court, 30.0, 1280, 720)
     smash_idx = 1 + COACH_STROKE_CLASSES.index("smash")
     assert adjusted[0, smash_idx] > probs[0, smash_idx]
@@ -161,7 +161,7 @@ def test_fusion_preserves_identity_on_poor_features():
               "stroke_confidence": 0.5}]
 
     # No shuttle data → features unavailable
-    adjusted = fusion.fuse(shots, probs.copy(), None, None, {}, 30, 1280, 720)
+    adjusted = fusion.fuse(shots, probs.copy(), None, None, None, {}, 30, 1280, 720)
     # Argmax should be unchanged
     assert np.argmax(adjusted[0]) == clear_idx
 

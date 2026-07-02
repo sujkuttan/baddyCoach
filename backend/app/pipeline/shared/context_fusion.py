@@ -201,13 +201,13 @@ class ContextFusion:
         )
 
     def fuse(self, shots: list, probs_matrix: np.ndarray,
-             shuttle_raw, pose_df, court, fps, vid_w, vid_h) -> np.ndarray:
+             shuttle_cleaned, shuttle_raw, pose_df, court, fps, vid_w, vid_h) -> np.ndarray:
         """Fuse BST probabilities with physics/context features.
 
         Args:
             shots: List of shot dicts (must have 'frame', 'stroke_type').
             probs_matrix: (N, 25) softmax probabilities from BST.
-            shuttle_raw, pose_df, court, fps, vid_w, vid_h: physics features.
+            shuttle_cleaned, shuttle_raw, pose_df, court, fps, vid_w, vid_h: physics features.
 
         Returns:
             Adjusted (N, 25) softmax probabilities.
@@ -229,10 +229,10 @@ class ContextFusion:
         for i, shot in enumerate(shots):
             frame = shot["frame"]
             feats = None
-            if shuttle_raw is not None and len(shuttle_raw) > 0:
+            if shuttle_cleaned is not None and len(shuttle_cleaned) > 0:
                 feats = extract_physics_features(
-                    frame, shuttle_raw, pose_df, "player_1",
-                    court, fps, vid_w, vid_h,
+                    frame, shuttle_cleaned, pose_df, "player_1",
+                    court, fps, vid_w, vid_h, shuttle_raw,
                 )
 
             # Contact height: try both players if pose available, take max per class

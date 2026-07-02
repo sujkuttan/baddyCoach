@@ -136,7 +136,7 @@ def test_resolve_increases_target_prob():
     shuttle_raw = _make_shuttle(0)
     court = _make_court()
     adjusted = resolve_confusion_pairs(
-        probs, shots, shuttle_raw, None, court, 30, 1280, 720, boost=2.0)
+        probs, shots, shuttle_raw, shuttle_raw, None, court, 30, 1280, 720, boost=2.0)
     # Clear should remain top (boosted by arc+deep features from _make_shuttle)
     assert _idx("clear") not in (0,)
     assert adjusted.shape == (1, 25)
@@ -150,7 +150,7 @@ def test_resolve_skips_non_pair():
     shuttle_raw = _make_shuttle(0)
     court = _make_court()
     adjusted = resolve_confusion_pairs(
-        probs, shots, shuttle_raw, None, court, 30, 1280, 720, boost=2.0)
+        probs, shots, shuttle_raw, shuttle_raw, None, court, 30, 1280, 720, boost=2.0)
     # Distribution should be very close to original (no correction)
     assert abs(adjusted[0, _idx("smash")] - 0.5) < 0.05
 
@@ -161,8 +161,9 @@ def test_resolve_empty_shuttle_noop():
     probs = _probs_with_top2("clear", "drop", conf1=0.4, conf2=0.3)
     shots = [{"frame": 0}]
     import pandas as pd
+    empty = pd.DataFrame()
     adjusted = resolve_confusion_pairs(
-        probs, shots, pd.DataFrame(), None, {}, 30, 1280, 720, boost=2.0)
+        probs, shots, empty, empty, None, {}, 30, 1280, 720, boost=2.0)
     assert adjusted.shape == (1, 25)
     assert np.allclose(adjusted, probs)
 
