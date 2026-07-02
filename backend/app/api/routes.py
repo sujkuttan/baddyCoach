@@ -3,6 +3,7 @@ import numpy as np
 import cv2
 from pathlib import Path
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi.responses import Response, FileResponse
 from app.storage.jobs import job_manager
 from app.config.settings import settings
 
@@ -28,7 +29,6 @@ def run_pipeline(job_id: str):
     from app.pipeline.quality import DataQualityStage
     from app.shuttle_coach.engine import analyze_from_pipeline
     from app.storage.artifacts import ArtifactStore
-    from fastapi.responses import Response
     from app.api.websocket import ws_manager
     from app.pipeline.shared.utils import get_video_info
     from app.pipeline.rallies import finalize_rally_outcomes
@@ -451,7 +451,6 @@ async def get_report(job_id: str):
 
 @router.get("/jobs/{job_id}/video")
 async def stream_video(job_id: str):
-    from fastapi.responses import FileResponse
     job = job_manager.get_job(job_id)
     if job is None:
         raise HTTPException(404, "Job not found")
