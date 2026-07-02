@@ -72,7 +72,13 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
 
   const handleResume = (job: Job) => {
     localStorage.setItem('baddycoach_job_id', job.id);
-    onJobCreated(job.id);
+    if (job.status === 'completed') {
+      window.location.reload();
+    } else if (job.status === 'uploaded') {
+      onJobCreated(job.id);
+    } else {
+      onJobCreated(job.id);
+    }
   };
 
   const statusColor = (s: string) => {
@@ -149,9 +155,30 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
               <div>
                 <p className="font-body text-text-secondary text-lg">Drop your match video here</p>
                 <p className="font-mono text-xs text-text-muted mt-2">MP4, MOV, AVI — up to 2GB</p>
-              </div>
             </div>
-          )}
+            {/* Court Corners toggle */}
+            <div className="flex items-center justify-between px-1">
+              <div className="flex items-center gap-2">
+                <svg className="w-4 h-4 text-text-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+                </svg>
+                <span className="font-mono text-xs text-text-secondary">Set court corners manually</span>
+              </div>
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="sr-only peer"
+                  checked={true}
+                  readOnly
+                />
+                <div className="w-9 h-5 bg-court-surface rounded-full peer-checked:bg-shuttle-lime/30 after:content-[''] after:absolute after:top-[2px] after:start-[2px] after:bg-shuttle-lime after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full" />
+              </label>
+            </div>
+            <p className="text-[10px] text-text-muted px-1 -mt-2">
+              You will be prompted to click 4 court corners on the first frame before processing starts.
+            </p>
+          </div>
+        )}
         </div>
 
         {/* Error */}
@@ -163,7 +190,8 @@ export function UploadView({ onJobCreated, onLoadReport }: UploadViewProps) {
 
         {/* Processing Options */}
         {file && (
-          <div className="mt-6 grid grid-cols-2 gap-4">
+          <div className="mt-6 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block font-mono text-xs text-text-muted mb-1">Pose Model</label>
               <select

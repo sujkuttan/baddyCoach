@@ -34,7 +34,10 @@ function App() {
       if (job.status === 'completed') {
         setJobId(saved);
         setState('report');
-      } else if (job.status === 'processing' || job.status === 'uploaded') {
+      } else if (job.status === 'uploaded') {
+        setJobId(saved);
+        setState('setup_court');
+      } else if (job.status === 'processing') {
         setJobId(saved);
         setState('processing');
       } else {
