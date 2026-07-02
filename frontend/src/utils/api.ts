@@ -48,7 +48,7 @@ export async function setCourtCorners(jobId: string, corners: number[][]): Promi
   const res = await fetch(`${API_BASE}/jobs/${jobId}/court-corners`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ corners }),
+    body: JSON.stringify(corners),
   });
   if (!res.ok) throw new Error(await res.text());
 }

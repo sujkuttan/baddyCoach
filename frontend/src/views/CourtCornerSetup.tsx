@@ -151,6 +151,17 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
     }
   };
 
+  const handleSaveOnly = async () => {
+    if (corners.length !== 4) return;
+    setSaving(true);
+    try {
+      await setCourtCorners(jobId, corners.map(c => [c.x, c.y]));
+      onBack();
+    } catch (e) {
+      setSaving(false);
+    }
+  };
+
   const handleConfirm = async () => {
     if (corners.length !== 4) return;
     setSaving(true);
@@ -224,6 +235,16 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
               >
                 {redoMode ? 'Cancel' : saving ? 'Starting Pipeline...' : 'Skip / Use Auto-Detection'}
               </button>
+              {corners.length === 4 && (
+                <button
+                  onClick={handleSaveOnly}
+                  disabled={saving}
+                  className="flex-1 py-3 rounded-xl border border-shuttle-lime/40 text-shuttle-lime
+                             hover:bg-shuttle-lime/10 transition-all font-body text-sm disabled:opacity-50"
+                >
+                  {saving ? 'Saving...' : 'Save Only'}
+                </button>
+              )}
               <button
                 onClick={handleConfirm}
                 disabled={corners.length !== 4 || saving}
@@ -231,7 +252,7 @@ export function CourtCornerSetup({ jobId, poseModel, sampleRate, onComplete, onB
                            hover:bg-shuttle-lime-dim transition-all font-body text-sm
                            disabled:opacity-30 disabled:cursor-not-allowed"
               >
-                {saving ? 'Saving...' : redoMode ? 'Save Corners' : 'Confirm Corners & Process'}
+                {saving ? 'Saving...' : redoMode ? 'Save & Return' : 'Confirm & Process'}
               </button>
             </div>
           </>
