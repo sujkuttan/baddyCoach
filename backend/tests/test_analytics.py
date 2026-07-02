@@ -34,6 +34,24 @@ def test_court_zones_computed(tmp_job_dir):
     assert "zone_transitions" in result.metadata
 
 
+def test_court_position_degrades_with_invalid_court_geometry(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    store.set("court", {"court_length": 13.4, "court_width": 6.10, "valid": False})
+    store.set_parquet("shots", pd.DataFrame({
+        "frame": [0, 10],
+        "player_id": ["player_1", "player_2"],
+        "court_x": [2.5, 8.0],
+        "court_y": [3.0, 4.0],
+    }))
+
+    result = CourtPositionAnalyticsStage().run(store, config)
+
+    assert result.status == "success"
+    assert "zone_transitions" in result.metadata
+
+
 from app.pipeline.analytics.footwork import FootworkAnalyticsStage
 
 

@@ -34,6 +34,26 @@ def test_player_tracking_assigns_near_far(tmp_job_dir):
     assert "far" in sides
 
 
+def test_player_tracking_continues_with_invalid_court_geometry(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {
+        "valid": False,
+        "corners_pixel": [(100, 500), (1180, 500), (100, 150), (1180, 150)],
+    })
+
+    detections = [
+        _make_detection(0, (100, 350, 200, 500)),
+        _make_detection(0, (800, 100, 900, 250)),
+    ]
+
+    result = PlayerTrackingStage().run(store, config, detections=detections)
+
+    assert result.status == "success"
+    players = store.get("players")
+    assert len(players["players"]) == 2
+
+
 def test_track_stitching_merges_fragments(tmp_job_dir):
     """8 track-ID fragments for one player should be stitched into 2 players."""
     store = ArtifactStore(tmp_job_dir)

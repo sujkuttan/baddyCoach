@@ -40,7 +40,7 @@ class CourtPositionAnalyticsStage:
             return StageResult.from_error("Court data required")
 
         if not court.get("valid", False):
-            return StageResult.from_error("Court detection is invalid, cannot compute court position analytics")
+            logger.warning("Court geometry invalid; computing court position analytics from available shot coordinates")
 
         court_length = court.get("court_length", COURT_LENGTH)
         court_width = court.get("court_width", COURT_WIDTH)
@@ -86,4 +86,3 @@ class CourtPositionAnalyticsStage:
                 "zones_used": list(set(t["zone"] for t in zone_transitions)),
             }
         )
-

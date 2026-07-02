@@ -286,9 +286,9 @@ def court_geometry_reliable(corners_px, max_trapezoid_ratio=None):
     corner detection fallback).
 
     A valid perspective view has a narrower top edge than bottom edge.
-    Ratio = top_width / bottom_width.  When ratio > max_trapezoid_ratio,
-    the quadrilateral is too close to rectangular to trust homography-based
-    court-space measurements.
+    Ratio = min(top_width, bottom_width) / max(top_width, bottom_width).
+    When ratio > max_trapezoid_ratio, the quadrilateral is too close to
+    rectangular to trust homography-based court-space measurements.
 
     Returns True if reliable (ratio <= threshold), False if degenerate.
     """
@@ -301,9 +301,11 @@ def court_geometry_reliable(corners_px, max_trapezoid_ratio=None):
     bl, br, tl, tr = pts[0], pts[1], pts[2], pts[3]
     top_width = np.linalg.norm(tr - tl)
     bottom_width = np.linalg.norm(br - bl)
-    if bottom_width < 1.0:
+    max_width = max(top_width, bottom_width)
+    min_width = min(top_width, bottom_width)
+    if max_width < 1.0:
         return False
-    ratio = top_width / bottom_width
+    ratio = min_width / max_width
     return bool(ratio <= max_trapezoid_ratio)
 
 

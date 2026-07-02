@@ -32,7 +32,7 @@ class PlayerAttributionStage:
             return StageResult.from_error("Player data required for attribution")
 
         if not court.get("valid", False):
-            return StageResult.from_error("Court detection is invalid, cannot perform attribution")
+            logger.warning("Court geometry invalid; continuing attribution with pixel/fallback cues")
 
         court_corners = court.get("corners_pixel", [])
         if court_corners and len(court_corners) >= 3:

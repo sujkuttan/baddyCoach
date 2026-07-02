@@ -70,6 +70,15 @@ class TestSharedCourtModule:
         assert H is not None
         assert valid is False
 
+    def test_validate_court_geometry_accepts_flipped_perspective(self):
+        from app.pipeline.shared.court import _validate_court_geometry
+
+        narrow_top = np.array([[100, 400], [500, 400], [150, 100], [450, 100]], dtype=np.float64)
+        wide_top = np.array([[150, 400], [450, 400], [100, 100], [500, 100]], dtype=np.float64)
+
+        assert _validate_court_geometry(narrow_top) is True
+        assert _validate_court_geometry(wide_top) is True
+
     def test_validate_court_geometry_too_small(self):
         from app.pipeline.shared.court import _validate_court_geometry
         corners = np.array([[100, 100], [110, 100], [110, 90], [100, 90]], dtype=np.float64)

@@ -875,8 +875,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                    (margin_x, court_top), (vid_w - margin_x, court_top)]
         print(f"  Using proportional corners: {corners}")
 
-    court = stage_court_detection(corners)
     corrected_corners = _correct_court_points(corners)
+    court = stage_court_detection(corrected_corners)
     H_raw, valid = compute_homography(corrected_corners)
     H_smooth, valid = smoother.update(corrected_corners, H_raw, valid)
     court["homography"] = H_smooth if H_smooth is not None else H_raw

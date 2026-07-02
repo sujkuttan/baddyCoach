@@ -48,6 +48,36 @@ def test_attribution_assigns_player_to_shots(tmp_job_dir):
     assert shots_df["player_id"].notna().all()
 
 
+def test_attribution_continues_with_invalid_court_geometry(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {
+        "valid": False,
+        "corners_pixel": [(100, 500), (1180, 500), (100, 150), (1180, 150)],
+        "court_length": 13.4,
+        "court_width": 6.10,
+    })
+    store.set_parquet("shots", pd.DataFrame({
+        "frame": [0, 10],
+        "stroke_type": ["clear", "smash"],
+        "stroke_confidence": [0.9, 0.85],
+    }))
+    store.set_parquet("shuttle", pd.DataFrame({
+        "frame": [0, 10],
+        "x": [200, 400],
+        "y": [300, 200],
+        "confidence": [0.95, 0.92],
+    }))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+
+    result = PlayerAttributionStage().run(store, config)
+
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert "player_id" in shots_df.columns
+    assert shots_df["player_id"].notna().all()
+
+
 def test_bst_alpha_attribution_respects_alpha(tmp_job_dir):
     """Verify AimPlayer alpha drives player assignment in BST Top/Bottom attribution."""
     store = ArtifactStore(tmp_job_dir)

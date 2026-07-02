@@ -133,11 +133,10 @@ class PlayerTrackingStage:
         court = artifacts.get("court")
         if court is None:
             return StageResult.from_error("Court data required")
-        
-        # Check if court is valid
-        if not court.get("valid", False):
-            return StageResult.from_error("Court detection is invalid, cannot track players")
 
+        if not court.get("valid", False):
+            logger.warning("Court geometry invalid; continuing player tracking with pixel midline fallback")
+        
         court_corners = court.get("corners_pixel", []) if court else []
         if court_corners:
             court_mid_y = (court_corners[0][1] + court_corners[2][1]) / 2
