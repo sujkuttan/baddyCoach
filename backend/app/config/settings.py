@@ -197,6 +197,14 @@ class Settings(BaseSettings):
     confusion_pair_enabled: bool = True
     confusion_pair_boost: float = 0.3
 
+    # MMAction2 adapter settings (optional ensemble with BST)
+    mmaction2_enabled: bool = False  # set True to enable MMAction2 ensemble
+    mmaction2_mode: str = "posec3d"  # "posec3d" (skeleton), "slowfast" (RGB), "pytorchvideo" (light RGB)
+    mmaction2_ensemble_weight: float = 0.3  # weight for MMAction2 in (1-w)*BST + w*MMAction ensemble
+    mmaction2_seq_len: int = 48  # PoseC3D default clip length
+    mmaction2_num_classes: int = 25  # ShuttleSet class count
+    bst_n_classes: int = 25  # ShuttleSet class count (used by adapter)
+
     # Context fusion layer (soft logit nudge before physics gate)
     fusion_enabled: bool = True
     fusion_shuttle_weight: float = 0.15

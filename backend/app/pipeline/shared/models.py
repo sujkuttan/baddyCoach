@@ -342,6 +342,36 @@ def get_hrnet():
     return _models.get("hrnet")
 
 
+def get_mmaction2():
+    """Lazy getter for MMAction2 adapter.
+
+    Returns None if MMAction2 is not installed or disabled in settings.
+    """
+    import os
+    if not os.environ.get("MMACTION_ENABLED", ""):
+        from app.config.settings import settings as s
+        if not s.mmaction2_enabled:
+            return None
+
+    if "mmaction2" not in _models:
+        try:
+            from app.models.mmaction_adapter import create_mmaction_classifier
+            from app.config.settings import settings as s
+            clf = create_mmaction_classifier(
+                mode=s.mmaction2_mode,
+                device=_get_device(),
+            )
+            if clf is not None:
+                _models["mmaction2"] = clf
+        except ImportError:
+            logger.warning("MMAction2 adapter not available")
+            return None
+        except Exception as e:
+            logger.error("Error loading MMAction2 adapter: %s", e)
+            return None
+    return _models.get("mmaction2")
+
+
 def setup_models(device: str | None = None, pose_model: str = "rtmpose") -> dict:
     """Set up all models for the pipeline.
 

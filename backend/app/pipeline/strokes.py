@@ -478,6 +478,41 @@ class StrokeClassificationStage:
         if bst_debug_collector is not None and len(bst_debug_collector) > 0:
             artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
 
+        # ── Phase 2b: MMAction2 ensemble (optional) ──────────────────────
+        if settings.mmaction2_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+            from app.pipeline.shared.models import get_mmaction2
+            mma_clf = get_mmaction2()
+            if mma_clf is not None:
+                logger.info("Running MMAction2 ensemble (%s mode, weight=%.2f)",
+                            settings.mmaction2_mode, settings.mmaction2_ensemble_weight)
+                mma_results, mma_probs = mma_clf.predict_from_clips(
+                    all_clips, batch_size=batch_size, return_probs=True,
+                )
+                if mma_probs is not None and mma_probs.shape == probs_matrix.shape:
+                    w = settings.mmaction2_ensemble_weight
+                    probs_matrix = (1.0 - w) * probs_matrix + w * mma_probs
+                    # Re-derive results from ensembled probs
+                    new_results = []
+                    for i, probs in enumerate(probs_matrix):
+                        pred_idx = int(np.argmax(probs))
+                        confidence = float(probs[pred_idx])
+                        stroke_type = "unknown"
+                        if pred_idx > 0:
+                            from app.models.bst import map_to_coach_class
+                            stroke_type = map_to_coach_class(pred_idx)
+                        # Preserve alpha/sims from BST result if available
+                        orig = all_results[i] if i < len(all_results) else None
+                        alpha = orig[3] if orig and len(orig) > 3 else 0.5
+                        p0 = orig[4] if orig and len(orig) > 4 else 0.0
+                        p1 = orig[5] if orig and len(orig) > 5 else 0.0
+                        new_results.append((stroke_type, confidence, pred_idx, alpha, p0, p1))
+                    all_results = new_results
+                    logger.info("MMAction2 ensemble applied to %d shots", len(all_results))
+                else:
+                    logger.warning("MMAction2 ensemble skipped: shape mismatch BST=%s MMA=%s",
+                                   probs_matrix.shape if probs_matrix is not None else None,
+                                   mma_probs.shape if mma_probs is not None else None)
+
         # Phase 3: build shot records from results
         for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha, aim_attention_p0, aim_attention_p1)) in enumerate(zip(clip_hit_pairs, all_results)):
             # Track if this specific shot fell back to rule-based prediction

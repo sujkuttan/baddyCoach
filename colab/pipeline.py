@@ -1453,6 +1453,13 @@ if __name__ == "__main__":
     parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
     parser.add_argument("--court-corners", default=None,
                         help="Manual court corners as 8 ints: x1,y1,x2,y2,x3,y3,x4,y4 (order: BL,BR,TL,TR)")
+    parser.add_argument("--mmaction2", action="store_true", default=False,
+                        help="Enable MMAction2 ensemble (PoseC3D or SlowFast) alongside BST")
+    parser.add_argument("--mmaction2-mode", default="posec3d",
+                        choices=["posec3d", "slowfast", "pytorchvideo"],
+                        help="MMAction2 model mode: posec3d (skeleton, default), slowfast (RGB), pytorchvideo (light RGB)")
+    parser.add_argument("--mmaction2-weight", type=float, default=0.3,
+                        help="Ensemble weight for MMAction2: (1-w)*BST + w*MMAction (default: 0.3)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
@@ -1486,6 +1493,12 @@ if __name__ == "__main__":
     except ValueError as e:
         print(f"Error: {e}")
         sys.exit(1)
+
+    if args.mmaction2:
+        settings.mmaction2_enabled = True
+        settings.mmaction2_mode = args.mmaction2_mode
+        settings.mmaction2_ensemble_weight = args.mmaction2_weight
+        print(f"MMAction2 ensemble enabled: mode={args.mmaction2_mode}, weight={args.mmaction2_weight}")
 
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
                  sample_rate=args.sample_rate, court_corners=court_corners)
