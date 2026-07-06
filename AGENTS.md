@@ -404,6 +404,8 @@ python -m pytest -m "not gpu and not model"
 - **Lazy singleton getter:** `get_mmaction2()` in `backend/app/pipeline/shared/models.py:345` — returns None gracefully when not installed
 - **Settings:** 6 new fields in `settings.py` (`mmaction2_enabled`, `mode`, `ensemble_weight`, `seq_len`, `num_classes`, `bst_n_classes`)
 - **Version constraint:** Requires `mmcv>=2.0.0rc4, <2.2.0` — critical for install
+- **Adapter re-raise fix (commit `640106e`):** `_init_mmaction2` now re-raises after logging load failure, so `get_mmaction2()` returns None instead of a broken instance. Prevents empty-ensemble runs that predict all-unknown.
+- **PipelineLogger fix (same commit):** Logger format args changed to keyword style to match PipelineLogger's interface (no printf-style positional args).
 - **Colab parity:** Form fields (`MMACTION2_ENABLED`, `MMACTION2_MODE`, `MMACTION2_WEIGHT`) in Cell 3; CLI args `--mmaction2`, `--mmaction2-mode`, `--mmaction2-weight` in `colab/pipeline.py`
 - **All 443 tests pass** (7 skipped due to hardware)
 
