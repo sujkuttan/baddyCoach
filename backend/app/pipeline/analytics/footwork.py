@@ -93,14 +93,14 @@ class FootworkAnalyticsStage:
     def _extract_com(player_poses: pd.DataFrame) -> np.ndarray:
         com_points = []
         for _, row in player_poses.iterrows():
-            kps = np.array(row["keypoints"].tolist())
+            raw = row["keypoints"]
+            kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
             if kps.shape != (17, 3):
-                kps = np.array(kps.tolist())
-            if kps.shape == (17, 3):
-                left_hip = kps[11][:2]
-                right_hip = kps[12][:2]
-                com = (left_hip + right_hip) / 2
-                com_points.append(com)
+                continue
+            left_hip = kps[11][:2]
+            right_hip = kps[12][:2]
+            com = (left_hip + right_hip) / 2
+            com_points.append(com)
         return np.array(com_points) if com_points else np.zeros((0, 2))
 
     @staticmethod
