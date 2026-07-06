@@ -18,6 +18,66 @@ tactical_analytics → technical_analytics → data_quality
 - ML models: YOLOv8, RTMPose, TrackNetV3, BST (Badminton Stroke Transformer)
 - Coaching engine: YAML rule-based system (33+ rules in `backend/app/shuttle_coach/feedback/rules.yaml`)
 
+## Quick Reference — Commands
+
+**Backend tests** (run from `backend/` — `conftest.py` inserts REPO_ROOT so `from tests.hardware import ...` resolves):
+```bash
+cd backend
+python -m pytest                      # full suite (~350 tests, 55 files)
+python -m pytest tests/test_api.py    # single file
+python -m pytest -m "not gpu and not model"   # skip hardware-dependent tests
+python -m pytest -m "gpu"             # only GPU tests
+python -m pytest -m "integration"     # end-to-end (needs real checkpoints)
+```
+
+**Hardware-aware auto-skip** is wired in `backend/tests/conftest.py::pytest_collection_modifyitems`. Markers are declared in `backend/pytest.ini`: `gpu`, `cpu_only`, `model`, `memory_intensive`, `slow`, `integration`. `model`-marked tests auto-skip unless at least one of (`ckpts/TrackNet_best.pt`, `ckpts/rtmpose/rtmpose-m_8xb64-270e_coco-256x192.onnx`, `BST/weight/bst_CG_JnB_bone_merged.pt`) exists (paths resolved relative to the current cwd).
+
+**Frontend** (React 19 + Vite 8 + Tailwind 4 + Recharts + video.js):
+```bash
+cd frontend
+npm run dev      # Vite dev server
+npm run lint     # ESLint (eslint .)
+npm run build    # tsc -b && vite build  — typecheck is part of build
+```
+
+**Model checkpoints:**
+```bash
+cd backend && python app/config/model_downloader.py
+# Required: ckpts/TrackNet_best.pt, ckpts/rtmpose/rtmpose-m_8xb64-270e_coco-256x192.onnx, BST/weight/bst_CG_JnB_bone_merged.pt
+```
+
+## Repository Layout
+
+```
+backend/app/
+  api/routes.py              FastAPI endpoints (no auth — see Security notes)
+  config/settings.py         pydantic-settings: ALL tunable thresholds/paths live here
+  config/gpu_batch.py        GPU batch-size tiering
+  config/model_downloader.py checkpoint fetcher
+  models/                    yolov8, rtmpose, tracknet, bst, bst_model, mmaction_adapter
+  pipeline/                  16-stage code lives DIRECTLY here (NOT in a stages/ subdir):
+                             court.py, players.py, shuttle.py, pose.py, hits.py,
+                             strokes.py, rallies.py, attribution.py, analytics/, quality.py
+    shared/                  cross-stage utils + model singletons
+      models.py              lazy singletons: get_yolov8/get_tracknet/get_rtmpose/get_bst/get_mmaction2
+      ownership_scorer.py    6 sub-score ownership + per-rally Viterbi HMM
+      physics.py             shuttle-kinematics feature extraction + veto logic
+      stroke_features.py     spec-aligned rule-based classifier (fallback path)
+      logging.py             PipelineLogger
+  shuttle_coach/             coaching engine: engine.py + feedback/rules.yaml (33+ rules)
+colab/pipeline.py            ~2k-line PARALLEL reimplementation — KEEP IN PARITY with backend
+frontend/src/views/          screen-level React components (Upload, Processing, Progress,
+                             Labeling, Report, CourtCornerSetup)
+```
+
+## Conventions for Edits
+
+- **Tunables:** put new thresholds/constants in `backend/app/config/settings.py` (pydantic `Settings`). The repo already documents many `Settings` fields by name — do not hardcode new magic numbers inside stage modules. The file flags ~6 files with scattered hardcoded values (FPS=30.0, court dims) as known debt.
+- **Coaching rules:** edit `backend/app/shuttle_coach/feedback/rules.yaml` (YAML), not Python.
+- **Logging:** use `PipelineLogger` from `shared/logging.py` with **keyword args**, e.g. `logger.info("Attribution tiers", tiers=str(tier_counts))`. Do NOT use printf-style positional args (`logger.info("...: %s", x)`) — `PipelineLogger.info()` takes only `message` positionally (this was a past bug). Avoid bare `print()` in model/pipeline code (past `print()` calls in `bst.py` were migrated to `logger.*`).
+- **Backend ↔ Colab parity:** when changing a stage's logic or thresholds, mirror it in `colab/pipeline.py`. The colab notebook (`colab/BMCA_Colab.ipynb`) shares form fields/CLI args with backend settings.
+- **PipelineLogger artifacts:** stages persist per-stage parquet artifacts via `artifacts.set_parquet(...)`; debug output (e.g. `debug_bst_outputs.parquet`, `debug_hit_scores.parquet`) is gated by `StageConfig.debug_level` (0–3).
+
 ## Critical Architecture Notes
 
 ### ✅ Stage Ordering: rally → attribution (Viterbi needs rally data)
@@ -46,6 +106,12 @@ tactical_analytics → technical_analytics → data_quality
 ### ⚠️ RTMPose Bug (Fixed)
 - **Was:** x/y rescale divisors swapped, hardcoded `"input"` instead of `self.input_name`
 - **Fix:** Corrected dimension order (height=256, width=192) and `self.input_name` from model metadata
+
+### ✅ Pose-Based Hit Frame Refinement (Added — 2026-07-06)
+- **Was:** `GlobalHitCandidateDetector` found hits purely from shuttle trajectory inflection points (direction change, speed delta, curvature). TrackNet's shuttle detections are unreliable at the exact contact frame (racket occlusion, high-speed blur), so the trajectory inflection point lags the true contact by 1-3 frames. The pipeline had **no refinement step** — the misaligned frame was used directly as the BST clip anchor.
+- **Fix:** Added `_find_nearest_wrist_frame()` in `hits.py` — searches ±`hit_refine_window` (default 4) frames around each candidate for the frame where any player's wrist is closest to the shuttle (checks both wrists across all players, no `hitter_id` needed at this stage). Re-runs NMS after refinement since shifted frames may collide.
+- **Changes:** `hits.py` — new function + refinement loop; `settings.py` — added `hit_refine_window: int = 4`; `HitFrameLocalizationStage.input_keys` now includes `pose`. Also fixed two `logger.info` calls to use PipelineLogger-compatible keyword args.
+- **Impact:** Hit frames now align to racket-shuttle contact rather than shuttle trajectory inflection, giving BST clips proper temporal alignment. Previously a `_find_contact_frame` existed in `physics.py:147` but ran too late (during physics ensemble, after clips built) and required a known `hitter_id`.
 
 ### ✅ Recovery Time Units (Fixed)
 - **Was:** `threshold = 0.3` in pixels, but recovery distances in meters
