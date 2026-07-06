@@ -483,8 +483,7 @@ class StrokeClassificationStage:
             from app.pipeline.shared.models import get_mmaction2
             mma_clf = get_mmaction2()
             if mma_clf is not None:
-                logger.info("Running MMAction2 ensemble (%s mode, weight=%.2f)",
-                            settings.mmaction2_mode, settings.mmaction2_ensemble_weight)
+                logger.info("Running MMAction2 ensemble", mode=settings.mmaction2_mode, weight=settings.mmaction2_ensemble_weight)
                 mma_results, mma_probs = mma_clf.predict_from_clips(
                     all_clips, batch_size=batch_size, return_probs=True,
                 )

@@ -122,6 +122,7 @@ class MMActionClassifier:
                 logger.info("MMAction2 %s model loaded", self.mode)
         except Exception as e:
             logger.warning("Failed to load MMAction2 %s model: %s", self.mode, e)
+            raise  # propagate so factory returns None instead of a broken instance
 
     def _build_posec3d(self):
         """Build a PoseC3D model with skeleton-based config."""
