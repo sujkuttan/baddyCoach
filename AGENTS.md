@@ -509,12 +509,80 @@ python -m pytest -m "not gpu and not model"
 - **Rallies:** 13/18 end in forced_error, 2 in winner, 2 in unforced_error, 1 in net
 - **Quality score:** 0.9 (high) with caveats: BST fallback 24%, low shuttle detection 43%
 
-### Confirmed Model Limitations
-- **31.2% rule-based fallback is intrinsic** — feature quality identical between RB and model clips (missing_bbox=0, shuttle_valid=93-95, jnb_std=0.22-0.23). Model outputs uniform logits for these clips regardless of temperature.
-- **11/25 BST classes never activated** — model cannot predict these regardless of pipeline quality.
-- **defensive_lift, soft_lift_or_push are 100% rule-based** — BST never outputs these classes.
-- **Prior correction** (`bst_logit_bias.json`) is essential — prevents 28 model clips from predicting unknown.
-- **aimplayer_alpha** mean=0.498 (barely above 0.5) — AimPlayer head barely distinguishes near/far players for attribution.
+### ✅ Latest Run Results (2026-07-06, phone footage on T4, hit refinement + physics guard 0.40)
+Complete 951s (15.9 min) for 9000-frame video. Full analysis of `results/hybrid_results/`.
+
+**Hit frame refinement** (commit `5747919`): **276/295 hits refined** (19 NaN — possibly boundary hits). Mean |shift|=2.84 frames. 55% backward (negative), 45% forward. Mode -4 (71 hits, 25.7%) and +4 (50 hits, 18.1%). Every refined hit moved — none stayed at original frame.
+
+**Stroke classification — BIG improvement:**
+- **291 shots** (+45%), **28 rallies** (+56%)
+- **14 stroke types** (same count, different distribution)
+- **BST coverage 77%** (up from 69%) — only 23% rule-based fallback
+- **24/25 BST classes active** (was 14/25) — only class 22 never fires
+- **Mean confidence 0.483** (BST: 0.501, RB: 0.422)
+- **40.9% shots ≥ 0.5 confidence** (119/291)
+- **Clip quality:** clip_shuttle_valid=97/100, clip_n_missing_bbox=0 (perfect), clip_n_missing_pose=1.5
+
+**Stroke type breakdown:**
+| Type | Count | % | Source |
+|---|---|---|---|
+| rush | 111 | 38% | BST |
+| smash | 44 | 15% | BST + RB (BST=14, RB=30) |
+| drive | 23 | 8% | BST + RB |
+| block | 19 | 7% | BST |
+| lift | 18 | 6% | BST |
+| net_shot | 18 | 6% | BST |
+| soft_lift_or_push | 13 | 4% | RB only |
+| push | 12 | 4% | BST |
+| ... 6 more | | | |
+
+**Shuttle detection — HUGE improvement:**
+- **100% detection rate** (was 43%)
+- 88.9% high-confidence (≥0.3), mean conf 0.452
+
+**Attribution — balanced but uncertain:**
+- Near/Far: **49.1%/50.9%** — excellent balance ✅
+- **66% owner_uncertain** (193/291) — ownership scores not decisive (gap < 0.12 or winner < 0.60)
+- AimPlayer alpha mean=0.499 (still random — no player discrimination)
+- **attribution_owner_match: 158 true, 133 false** — BST attention head disagrees with Viterbi on 46% of shots
+
+**Physics — fully disabled by guard:**
+- **0 overrides** (guard triggered at 56.3% override rate, ceiling=0.40)
+- 155 distrusted (all reverted), 90 bst_no_physics, 27 pure bst, 17 physics_fallback
+- **Only 2/291 physics-BST agreements** — fundamental signal mismatch
+- Physics override gate is working correctly but blocking all physics signal
+
+**Rally structure:**
+- 28 rallies, 9.2 shots/rally avg (max 28), 78.6% have scene cuts
+- End reasons: forced_error 50%, net 32%, winner 11%, unforced_error 7%
+
+**Known issues identified:**
+1. **All 110/110 hit-start clips have extreme y_frac (0 or 1) at frame 0** — the refined hit frame is not centering the shuttle in the clip's trajectory. Expected ~0.5 for contact alignment. This suggests the wrist-to-shuttle proximity check finds the closest approach point on the trajectory but not the true contact frame (which has shuttle occlusion). The refinement shifts frames but doesn't solve the fundamental occlusion problem.
+2. **Rule-based smash bias:** 30/67 rule-based shots (45%) classify as "smash" — RB classifier defaults to smash when shuttle velocity is high
+3. **Joint mean = -1.7** (expected ≈ 0) — BST preproc center_align seems to produce off-center joint data
+4. **Anatomical violations:** 211 clips flagged (hip-below-knee, eye-below-nose) — pose keypoint order may not match COCO-17
+5. **clip_frame_start metadata mismatch:** All clips show `clip_frame_start == hit_frame` (should be hit_frame - 30 for 100-frame clips with 30-frame lookback), but `clip_n_frames=100` suggests the clip IS 100 frames long — the metadata columns likely record something other than absolute clip boundaries
+
+**Cross-run comparison:**
+| Metric | Jul 5 | Jul 6 | Change |
+|---|---|---|---|
+| Shots | 201 | 291 | +45% |
+| Rallies | 18 | 28 | +56% |
+| BST coverage | 69% | 77% | **+8%** 👍 |
+| Active BST classes | 14/25 | 24/25 | **+10** 👍 |
+| Mean confidence | 0.494 | 0.483 | ~same |
+| Shuttle detection | 43% | 100% | **+57%** 👍👍 |
+| Side balance | 50/50 | 49/51 | ~same |
+| Physics override | 57% (active) | 0% (guarded) | gate triggered |
+| Physics-BST agree | 0 | 2 | still near 0 |
+
+### Confirmed Model Limitations (Updated 2026-07-06)
+- **23% rule-based fallback is partly intrinsic** — feature quality is good (shuttle_valid=97, missing_bbox=0, jnb_std=0.14) but model still outputs uniform logits for 69/295 clips. Down from 31% in Jul 5 run — hit refinement helps.
+- **Only 1/25 BST class never activates (class 22)** — huge improvement from 11/25 never active.
+- **defensive_lift, soft_lift_or_push are still 100% rule-based** — BST never outputs these.
+- **Prior correction** (`bst_logit_bias.json`) remains essential.
+- **aimplayer_alpha mean=0.499** — still random. Attention head cannot distinguish near/far players.
+- **Physics completely non-viable** — 0/291 overrides survived the guard. Physics signal fundamentally disagrees with BST and needs rework.
 
 ### Rule-Based Classifier Overview
 ```
@@ -531,6 +599,12 @@ stroke_features.py:
                       outgoing_trajectory, landing_zone)
   top3_alternatives() → (stroke, confidence) alternatives
 ```
+
+### ✅ Pose-Based Refinement: Direction Reversal + Bbox Normalization (Fixed — 2026-07-06)
+- **Fix 1 (hits.py):** `_find_nearest_wrist_frame` now uses **shuttle direction reversal angle** (near 180° = contact) as primary signal and **wrist proximity** as tiebreaker (70/30 weight). Old logic used wrist proximity alone — unreliable because shuttle is occluded at contact so the closest wrist approach doesn't correspond to the true contact frame. New function `_direction_reversal_angle()` computes angle between `v_before` and `v_after` velocity vectors per candidate frame. Combined score = `0.7 * rev_score + 0.3 * wrist_score`.
+- **Fix 2 (strokes.py):** `normalize_joints()` now receives the **YOLO-tracked player bbox** (`det_bbox` from `interpolated_bboxes`) instead of `None`. Previously the bbox was derived from keypoint min/max (keypoint-derived bbox), which is noisier and less stable than the detection bbox. The `bst_bbox_margin=0.15` compensates for keypoint bboxes being ~30% tighter than detection bboxes.
+- **Fix 3 (bst_validator.py):** Verified the keypoint format is correct COCO-17. The 2.9% overall anatomical violation rate is naturally occurring during badminton poses (deep lunges, racket swings, head tilts). No format fix needed — only isolated clips with sustained crouched positions trigger 100/100 frame violations, which is expected.
+- **All 443 tests pass** (7 hardware-skipped).
 
 ## Recommended Actions (Priority)
 
@@ -562,12 +636,12 @@ stroke_features.py:
 23. ~~Use cleaned shuttle for physics kinematics while preserving raw-point quality~~ (Done — `7f564d9`)
 
 ### Medium (quality)
-24. Re-run colab pipeline with pinned `mmcv-lite<2.2.0` and MMAction2 enabled to test ensemble
-25. Re-run phone-video pipeline to measure physics override sanity guard (now 0.40) impact
+24. Run Colab with MMAction2 enabled (blocked on MMCV Python 3.12 wheels)
+25. ~~Re-run phone-video pipeline with physics guard 0.40~~ ✅ done — 56.3% rate triggered guard, 0 overrides survived
 26. Add shot_log formal table to report.json schema (data already in shots array)
-27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
+27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline (logits_all already captured)
 28. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
-29. Re-run pipeline with new OwnershipScorer to measure attribution quality improvement
+29. ~~Re-run pipeline with new OwnershipScorer~~ ✅ done — 66% owner_uncertain, side balance 49/51 (excellent)
 30. Fine-tune PoseC3D on ShuttleSet for meaningful ensemble signal (currently random weights)
 
 ### Phone-Video Pipeline

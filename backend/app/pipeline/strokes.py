@@ -245,8 +245,9 @@ def _build_clip(
                 if settings.bst_joint_norm == "court" and homography is not None:
                     joints[t, p_idx] = normalize_joints_court(coords, homography)
                 else:
+                    bbox = interpolated_bboxes.get(pid, {}).get(frame)
                     joints[t, p_idx] = normalize_joints(
-                        coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin,
+                        coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
                         conf=kps[:, 2],
                     )
 

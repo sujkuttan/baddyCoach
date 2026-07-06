@@ -203,6 +203,21 @@ class GlobalHitCandidateDetector:
         return non_max_suppression(candidates, self.min_gap_frames)
 
 
+def _direction_reversal_angle(
+    pos_before: np.ndarray, pos_after: np.ndarray,
+) -> float:
+    """Angle (radians) between before and after velocity vectors.
+    Near π (180°) = strong direction reversal = likely contact frame.
+    """
+    n_before = np.linalg.norm(pos_before)
+    n_after = np.linalg.norm(pos_after)
+    if n_before < 1e-6 or n_after < 1e-6:
+        return 0.0
+    dot = float(np.dot(pos_before, pos_after))
+    cos_angle = np.clip(dot / (n_before * n_after), -1.0, 1.0)
+    return float(np.arccos(cos_angle))
+
+
 def _find_nearest_wrist_frame(
     candidate_frame: int,
     pose_df: pd.DataFrame,
@@ -210,9 +225,10 @@ def _find_nearest_wrist_frame(
     search_window: int = 4,
     min_shuttle_conf: float = 0.20,
 ) -> int:
-    """Refine a hit candidate to the frame where a player's wrist is closest
-    to the shuttle.  Checks both wrists across all detected players — the
-    wrist nearest the shuttle is likely the racket hand at contact.
+    """Refine a hit candidate using shuttle direction reversal + wrist proximity.
+
+    Primary signal: shuttle direction reversal angle (near 180° = contact).
+    Tiebreaker: wrist-to-shuttle distance across all detected players.
 
     Args:
         candidate_frame: Initial hit frame from shuttle trajectory.
@@ -224,11 +240,51 @@ def _find_nearest_wrist_frame(
     Returns:
         Refined frame, or candidate_frame if refinement fails.
     """
-    best_frame = candidate_frame
-    best_dist: float | None = None
-
+    # Pre-extract shuttle trajectory snippet and fill NaNs for velocity computation
     lo = max(0, candidate_frame - search_window)
     hi = candidate_frame + search_window + 1
+
+    traj = []
+    for f in range(lo - search_window, hi + search_window):
+        srows = shuttle_df[shuttle_df["frame"] == f]
+        if len(srows) > 0:
+            sx = float(srows.iloc[0].get("x", np.nan))
+            sy = float(srows.iloc[0].get("y", np.nan))
+            if np.isfinite(sx) and np.isfinite(sy):
+                traj.append((f, sx, sy))
+    if len(traj) < 4:
+        return candidate_frame
+    traj_frames, traj_x, traj_y = zip(*traj)
+    traj_x = np.array(traj_x, dtype=np.float64)
+    traj_y = np.array(traj_y, dtype=np.float64)
+    traj_frames = np.array(traj_frames, dtype=np.int64)
+
+    def _pos_at(f: int) -> np.ndarray | None:
+        """Interpolate shuttle position at frame f from trajectory."""
+        if f < traj_frames[0] or f > traj_frames[-1]:
+            return None
+        x = np.interp(f, traj_frames, traj_x)
+        y = np.interp(f, traj_frames, traj_y)
+        return np.array([x, y])
+
+    # Compute direction reversal score for each candidate frame
+    direction_frames: dict[int, float] = {}
+    for f in range(lo, hi):
+        pos_before = _pos_at(f - search_window)
+        pos_now = _pos_at(f)
+        pos_after = _pos_at(f + search_window)
+        if pos_before is None or pos_now is None or pos_after is None:
+            continue
+        v_in = pos_now - pos_before
+        v_out = pos_after - pos_now
+        angle = _direction_reversal_angle(v_in, v_out)
+        direction_frames[f] = angle  # near π = strong reversal
+
+    if not direction_frames:
+        return candidate_frame
+
+    best_frame = candidate_frame
+    best_score: float | None = None
 
     for f in range(lo, hi):
         # Shuttle must be detected at this frame
@@ -245,25 +301,39 @@ def _find_nearest_wrist_frame(
             continue
         sx, sy = float(srows.iloc[0]["x"]), float(srows.iloc[0]["y"])
 
-        # Check all players' wrists at this frame
         prows = pose_df[pose_df["frame"] == f]
         if len(prows) == 0:
             continue
 
+        # Compute wrist proximity score: min distance across all wrists
+        min_wrist_dist: float | None = None
         for _, prow in prows.iterrows():
             raw = prow["keypoints"]
             kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
             if kps.ndim != 2 or kps.shape[0] < 11 or kps.shape[1] < 2:
                 continue
-            for wrist_idx in (9, 10):  # left wrist, right wrist
+            for wrist_idx in (9, 10):
                 wx, wy = float(kps[wrist_idx, 0]), float(kps[wrist_idx, 1])
                 wconf = float(kps[wrist_idx, 2]) if kps.shape[1] >= 3 else 1.0
                 if wconf < 0.3:
                     continue
                 dist = float(np.sqrt((wx - sx) ** 2 + (wy - sy) ** 2))
-                if best_dist is None or dist < best_dist:
-                    best_dist = dist
-                    best_frame = f
+                if min_wrist_dist is None or dist < min_wrist_dist:
+                    min_wrist_dist = dist
+        if min_wrist_dist is None:
+            continue
+
+        # Combined score: direction reversal (weighted higher) + wrist proximity
+        rev_angle = direction_frames.get(f, 0.0)
+        # Normalize reversal angle: π → 1.0, 0 → 0.0
+        rev_score = min(rev_angle / np.pi, 1.0)
+        # Normalize wrist distance: 0px → 1.0, large → 0 (exp decay)
+        wrist_score = float(np.exp(-min_wrist_dist / 100.0))
+
+        score = 0.7 * rev_score + 0.3 * wrist_score
+        if best_score is None or score > best_score:
+            best_score = score
+            best_frame = f
 
     return best_frame
 
