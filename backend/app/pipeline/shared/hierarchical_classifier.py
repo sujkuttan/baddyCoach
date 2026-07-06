@@ -16,7 +16,7 @@ from app.models.bst import COACH_STROKE_CLASSES
 
 FAMILY_MAP = {
     "serve":       {"short_serve", "long_serve"},
-    "overhead":    {"clear", "drop", "smash", "rush"},
+    "overhead":    {"clear", "drop", "smash"},  # rush excluded — not a stroke
     "underhand":   {"lift"},
     "net":         {"net_shot", "push"},
     "drive_block": {"drive", "block"},

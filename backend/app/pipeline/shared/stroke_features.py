@@ -401,7 +401,6 @@ def _evidence_consistent(stroke: str, feats: dict, evidence: dict) -> bool:
         'push': lambda: traj in ('flat', 'ascending') and landing == 'mid court',
         'soft_lift_or_push': lambda: traj == 'ascending' and landing == 'mid court',
         'short_serve': lambda: landing == 'short (front court)',
-        'rush': lambda: traj == 'flat' and landing == 'short (front court)',
         'cross_court': lambda: 'rear' in landing or 'mid' in landing,
     }
     checker = signatures.get(stroke)

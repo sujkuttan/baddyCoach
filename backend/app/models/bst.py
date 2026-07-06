@@ -36,14 +36,20 @@ SHUTTLESET_CLASSES = [
 
 
 def map_to_coach_class(shuttleset_class_id: int) -> str:
-    """Map ShuttleSet class ID to simplified coaching class."""
+    """Map ShuttleSet class ID to simplified coaching class.
+
+    Note: classes 9 (Top_rush) and 21 (Bottom_rush) map to "unknown" —
+    rush is movement to the net, not a stroke type.  The probability is
+    zeroed out before argmax in predict_from_clips, so this is a safety net.
+    """
+    if shuttleset_class_id in (9, 21):
+        return "unknown"
     if shuttleset_class_id == 0:
         return "unknown"
-    elif 1 <= shuttleset_class_id <= 12:
+    if 1 <= shuttleset_class_id <= 12:
         return COACH_STROKE_CLASSES[shuttleset_class_id - 1]
-    elif 13 <= shuttleset_class_id <= 24:
-        base_class = COACH_STROKE_CLASSES[shuttleset_class_id - 13]
-        return base_class
+    if 13 <= shuttleset_class_id <= 24:
+        return COACH_STROKE_CLASSES[shuttleset_class_id - 13]
     return "unknown"
 
 
@@ -548,6 +554,12 @@ class BSTClassifier:
             # Raw T=1.0 probabilities (calibration is post-hoc in attribution)
             raw_probs = np.exp(logits_np)
             raw_probs = raw_probs / raw_probs.sum()
+
+            # ── Exclude rush classes — rush is movement to net, not a stroke ──
+            # Top_rush=9, Bottom_rush=21. Map probability to the next best stroke.
+            raw_probs[9] = 0.0
+            raw_probs[21] = 0.0
+            raw_probs /= raw_probs.sum()
 
             probs_list[i] = raw_probs
 

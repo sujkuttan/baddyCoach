@@ -28,12 +28,12 @@ def test_aggregate_overhead_summed_correctly():
     probs[_idx("clear")] = 0.3
     probs[_idx("drop")] = 0.2
     probs[_idx("smash")] = 0.1
-    probs[_idx("rush")] = 0.05
+    # rush excluded — not a stroke type (movement to net)
     probs[_idx("net_shot")] = 0.15
     probs[_idx("drive")] = 0.05
-    probs[0] = 0.15
+    probs[0] = 0.20
     scores = aggregate_probs_by_family(probs, _CLASS_NAMES)
-    assert abs(scores["overhead"] - 0.65) < 1e-6
+    assert abs(scores["overhead"] - 0.60) < 1e-6
 
 
 def test_aggregate_net_summed_correctly():
