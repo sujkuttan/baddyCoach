@@ -90,6 +90,7 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
   const [newLabelTime, setNewLabelTime] = useState<number>(0);
   const [newLabelPlayer, setNewLabelPlayer] = useState<"near" | "far">("near");
   const [newLabelStroke, setNewLabelStroke] = useState<string>("unknown");
+  const [editingLabelId, setEditingLabelId] = useState<string | null>(null);
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(labels));
@@ -107,19 +108,42 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
   const addManualLabel = useCallback(() => {
     if (newLabelStroke === "unknown" || newLabelStroke === "") return;
     const entry: ManualLabelEntry = {
-      id: genId(),
+      id: editingLabelId || genId(),
       timestamp: newLabelTime,
       frame: Math.round(newLabelTime * fps),
       player: newLabelPlayer,
       stroke: newLabelStroke,
       createdAt: new Date().toISOString(),
     };
-    setManualLabels(prev => [...prev, entry]);
-  }, [newLabelTime, newLabelPlayer, newLabelStroke, fps]);
+    if (editingLabelId) {
+      setManualLabels(prev => prev.map(l => l.id === editingLabelId ? entry : l));
+      setEditingLabelId(null);
+    } else {
+      setManualLabels(prev => [...prev, entry]);
+    }
+  }, [newLabelTime, newLabelPlayer, newLabelStroke, fps, editingLabelId]);
+
+  const editManualLabel = useCallback((id: string) => {
+    const entry = manualLabels.find(l => l.id === id);
+    if (!entry) return;
+    setNewLabelTime(entry.timestamp);
+    setNewLabelPlayer(entry.player);
+    setNewLabelStroke(entry.stroke);
+    setEditingLabelId(id);
+    setShowManualPanel(true);
+  }, [manualLabels]);
+
+  const cancelEdit = useCallback(() => {
+    setEditingLabelId(null);
+    setNewLabelTime(0);
+    setNewLabelPlayer("near");
+    setNewLabelStroke("unknown");
+  }, []);
 
   const deleteManualLabel = useCallback((id: string) => {
     setManualLabels(prev => prev.filter(l => l.id !== id));
-  }, []);
+    if (editingLabelId === id) cancelEdit();
+  }, [editingLabelId, cancelEdit]);
 
   const [showManualPanel, setShowManualPanel] = useState<boolean>(false);
 
@@ -506,13 +530,23 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                   </div>
                 </div>
 
-                <button
-                  onClick={addManualLabel}
-                  disabled={newLabelStroke === "unknown" || newLabelStroke === ""}
-                  className="w-full py-1.5 rounded-lg bg-shuttle-lime/20 hover:bg-shuttle-lime/30 disabled:opacity-30 disabled:cursor-not-allowed font-mono text-[10px] text-shuttle-lime transition-colors"
-                >
-                  ADD LABEL
-                </button>
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={addManualLabel}
+                    disabled={newLabelStroke === "unknown" || newLabelStroke === ""}
+                    className="flex-1 py-1.5 rounded-lg bg-shuttle-lime/20 hover:bg-shuttle-lime/30 disabled:opacity-30 disabled:cursor-not-allowed font-mono text-[10px] text-shuttle-lime transition-colors"
+                  >
+                    {editingLabelId ? "UPDATE LABEL" : "ADD LABEL"}
+                  </button>
+                  {editingLabelId && (
+                    <button
+                      onClick={cancelEdit}
+                      className="px-3 py-1.5 rounded-lg bg-court-surface/30 hover:bg-court-surface/50 font-mono text-[10px] text-text-muted transition-colors"
+                    >
+                      CANCEL
+                    </button>
+                  )}
+                </div>
 
                 {/* Existing manual labels table */}
                 {manualLabels.length > 0 && (
@@ -520,7 +554,11 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                     {[...manualLabels].reverse().map(m => (
                       <div
                         key={m.id}
-                        className="flex items-center gap-1.5 px-2 py-1 rounded bg-court-surface/20"
+                        className={`flex items-center gap-1.5 px-2 py-1 rounded transition-colors ${
+                          editingLabelId === m.id
+                            ? "bg-shuttle-lime/15 border border-shuttle-lime/30"
+                            : "bg-court-surface/20 hover:bg-court-surface/30"
+                        }`}
                       >
                         <span className="font-mono text-[8px] text-text-muted w-14 shrink-0">
                           {m.timestamp.toFixed(1)}s
@@ -531,9 +569,16 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                         <span className="font-mono text-[8px] text-text-muted w-8 shrink-0">
                           {m.player}
                         </span>
-                        <span className="font-mono text-[8px] text-text-primary flex-1">
+                        <span className="font-mono text-[8px] text-text-primary flex-1 truncate">
                           {m.stroke.replace("_", " ")}
                         </span>
+                        <button
+                          onClick={() => editManualLabel(m.id)}
+                          className="font-mono text-[9px] text-text-muted/50 hover:text-warning-yellow transition-colors shrink-0 px-1"
+                          title="Edit"
+                        >
+                          ✎
+                        </button>
                         <button
                           onClick={() => deleteManualLabel(m.id)}
                           className="font-mono text-[8px] text-error-red/60 hover:text-error-red transition-colors shrink-0"
