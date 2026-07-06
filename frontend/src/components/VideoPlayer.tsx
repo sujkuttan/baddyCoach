@@ -33,6 +33,7 @@ const RALLY_COLORS = [
 export interface VideoPlayerHandle {
   seekTo: (time: number) => void;
   playSegment: (start: number, end: number, loop?: boolean) => void;
+  getCurrentTime: () => number;
 }
 
 export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(function VideoPlayer({ jobId, videoUrl, rallies = [], strokes = [], fps = 30 }, ref) {
@@ -76,6 +77,10 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
     };
   }, [src]);
 
+  const getCurrentTime = useCallback(() => {
+    return videoElRef.current?.currentTime ?? 0;
+  }, []);
+
   useImperativeHandle(ref, () => ({
     seekTo: (time: number) => {
       const el = videoElRef.current;
@@ -98,7 +103,8 @@ export const VideoPlayer = forwardRef<VideoPlayerHandle, VideoPlayerProps>(funct
       };
       el.addEventListener('timeupdate', onTime);
     },
-  }), []);
+    getCurrentTime,
+  }), [getCurrentTime]);
 
   const seekToFrame = useCallback((frame: number) => {
     const el = videoElRef.current;

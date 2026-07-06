@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { uploadVideo, processVideo } from '../utils/api';
+import { uploadVideo } from '../utils/api';
 import { setVideoFile } from '../utils/videoStore';
 
 interface UploadViewProps {

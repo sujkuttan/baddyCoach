@@ -19,7 +19,21 @@ interface ShotLabel {
   status: LabelStatus;
 }
 
+interface ManualLabelEntry {
+  id: string;
+  timestamp: number;
+  frame: number;
+  player: "near" | "far";
+  stroke: string;
+  createdAt: string;
+}
+
+function genId(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
 const STORAGE_PREFIX = "baddycoach_labels_";
+const MANUAL_STORAGE_PREFIX = "baddycoach_manual_labels_";
 
 function hash(s: string): string {
   let h = 0;
@@ -61,12 +75,56 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
   const [showLabeled, setShowLabeled] = useState<boolean>(true);
   const [prefillPrediction, setPrefillPrediction] = useState<boolean>(true);
 
+  const manualStorageKey = useMemo(() => {
+    return MANUAL_STORAGE_PREFIX + (jobId || "import");
+  }, [jobId]);
+
+  const [manualLabels, setManualLabels] = useState<ManualLabelEntry[]>(() => {
+    try {
+      const saved = localStorage.getItem(manualStorageKey);
+      if (saved) return JSON.parse(saved);
+    } catch { /* ignore */ }
+    return [];
+  });
+
+  const [newLabelTime, setNewLabelTime] = useState<number>(0);
+  const [newLabelPlayer, setNewLabelPlayer] = useState<"near" | "far">("near");
+  const [newLabelStroke, setNewLabelStroke] = useState<string>("unknown");
+
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(labels));
   }, [labels, storageKey]);
 
+  useEffect(() => {
+    localStorage.setItem(manualStorageKey, JSON.stringify(manualLabels));
+  }, [manualLabels, manualStorageKey]);
+
+  const captureVideoTime = useCallback(() => {
+    const t = videoRef.current?.getCurrentTime() ?? 0;
+    setNewLabelTime(t);
+  }, []);
+
+  const addManualLabel = useCallback(() => {
+    if (newLabelStroke === "unknown" || newLabelStroke === "") return;
+    const entry: ManualLabelEntry = {
+      id: genId(),
+      timestamp: newLabelTime,
+      frame: Math.round(newLabelTime * fps),
+      player: newLabelPlayer,
+      stroke: newLabelStroke,
+      createdAt: new Date().toISOString(),
+    };
+    setManualLabels(prev => [...prev, entry]);
+  }, [newLabelTime, newLabelPlayer, newLabelStroke, fps]);
+
+  const deleteManualLabel = useCallback((id: string) => {
+    setManualLabels(prev => prev.filter(l => l.id !== id));
+  }, []);
+
+  const [showManualPanel, setShowManualPanel] = useState<boolean>(false);
+
   const filtered = useMemo(() => {
-    return shots.filter((s, i) => {
+    return shots.filter((s) => {
       const lbl = labels[s.shot_id];
       const isLabeled = lbl && (lbl.status === "labeled" || lbl.status === "not_a_shot");
       if (!showLabeled && isLabeled) return false;
@@ -147,8 +205,10 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
   }, [current, labelPreRoll]);
 
   const exportCsv = useCallback(() => {
-    const rows = [["shot_id", "frame", "ts_start", "ts_end", "player_id", "side",
-                   "predicted_stroke", "predicted_class_id", "true_stroke", "true_class_id", "label_status"].join(",")];
+    const headers = ["shot_id", "frame", "ts_start", "ts_end", "player_id", "side",
+                     "predicted_stroke", "predicted_class_id", "true_stroke", "true_class_id", "label_status",
+                     "source"];
+    const rows = [headers.join(",")];
     for (const s of shots) {
       const lbl = labels[s.shot_id];
       const status = lbl?.status || "skipped";
@@ -157,11 +217,20 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
         ? mapToClassId(true_stroke, s.side) : "";
       rows.push([
         s.shot_id, s.frame,
-        (Math.max(0, s.start_ts - labelPreRoll)).toFixed(3),
-        (s.ts_end || s.start_ts + 1.0).toFixed(3),
+        (s.start_ts ?? 0).toFixed(3),
+        (s.ts_end ?? s.start_ts + 1.0).toFixed(3),
         s.player_id || "", s.side || "",
         s.stroke_type, s.shuttleset_class_id || 0,
-        true_stroke, true_class_id, status,
+        true_stroke, true_class_id, status, "pipeline",
+      ].join(","));
+    }
+    for (const m of manualLabels) {
+      rows.push([
+        "", m.frame,
+        m.timestamp.toFixed(3), (m.timestamp + 0.2).toFixed(3),
+        "", m.player,
+        "", "",
+        m.stroke, mapToClassId(m.stroke, m.player), "labeled", "manual",
       ].join(","));
     }
     const blob = new Blob([rows.join("\n")], { type: "text/csv" });
@@ -171,7 +240,7 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
     a.download = `labels_${jobId || "import"}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-  }, [shots, labels, jobId]);
+  }, [shots, labels, jobId, manualLabels]);
 
   const labeledCount = Object.values(labels).filter(l => l.status === "labeled" || l.status === "not_a_shot").length;
 
@@ -327,7 +396,7 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
             )}
           </div>
 
-          {/* Shot table */}
+            {/* Shot table */}
           <div className="space-y-2">
             {/* Filters */}
             <div className="bg-court-dark/60 rounded-xl border border-court-line/15 p-3 space-y-2">
@@ -354,6 +423,129 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                 <span className="font-mono text-[9px] text-text-muted">Prefill with prediction</span>
               </label>
             </div>
+
+            {/* Manual Labels toggle */}
+            <button
+              onClick={() => setShowManualPanel(!showManualPanel)}
+              className={`w-full flex items-center justify-between px-3 py-2 rounded-xl border font-mono text-[10px] transition-colors ${
+                showManualPanel
+                  ? "bg-shuttle-lime/10 border-shuttle-lime/30 text-shuttle-lime"
+                  : "bg-court-dark/60 border-court-line/15 text-text-muted hover:bg-court-surface/20"
+              }`}
+            >
+              <span>MANUAL LABELS ({manualLabels.length})</span>
+              <span className="text-[14px]">{showManualPanel ? "▲" : "▼"}</span>
+            </button>
+
+            {showManualPanel && (
+              <div className="bg-court-dark/60 rounded-xl border border-court-line/15 p-3 space-y-2">
+                <div className="grid grid-cols-[1fr_70px_auto] gap-1.5 items-end">
+                  <div>
+                    <label className="font-mono text-[8px] text-text-muted block mb-0.5">Timestamp (s)</label>
+                    <div className="flex gap-1">
+                      <input
+                        type="number" step="0.033" min="0"
+                        value={newLabelTime}
+                        onChange={e => setNewLabelTime(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-court-surface/30 border border-court-line/20 rounded px-1.5 py-1 font-mono text-[10px] text-text-primary"
+                      />
+                      <button
+                        onClick={captureVideoTime}
+                        title="Capture current video time"
+                        className="px-2 py-1 rounded bg-shuttle-lime/20 hover:bg-shuttle-lime/30 font-mono text-[9px] text-shuttle-lime shrink-0 transition-colors"
+                      >
+                        MARK
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[8px] text-text-muted block mb-0.5">Frame</label>
+                    <div className="bg-court-surface/30 rounded px-1.5 py-1 font-mono text-[10px] text-text-primary text-center">
+                      {Math.round(newLabelTime * fps)}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="font-mono text-[8px] text-text-muted block mb-0.5">Player</label>
+                    <select
+                      value={newLabelPlayer}
+                      onChange={e => setNewLabelPlayer(e.target.value as "near" | "far")}
+                      className="w-full bg-court-surface/30 border border-court-line/20 rounded px-1.5 py-1 font-mono text-[10px] text-text-primary"
+                    >
+                      <option value="near">Near</option>
+                      <option value="far">Far</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="font-mono text-[8px] text-text-muted block mb-0.5">Stroke</label>
+                  <div className="grid grid-cols-4 gap-1">
+                    {COACH_CLASSES.map(cls => (
+                      <button
+                        key={cls}
+                        onClick={() => setNewLabelStroke(cls)}
+                        className={`px-1.5 py-1 rounded font-mono text-[8px] transition-colors ${
+                          newLabelStroke === cls
+                            ? "bg-shuttle-lime/30 text-shuttle-lime border border-shuttle-lime/40"
+                            : "bg-court-surface/20 hover:bg-court-surface/40 text-text-muted border border-transparent"
+                        }`}
+                      >
+                        {cls.replace("_", " ")}
+                      </button>
+                    ))}
+                    <button
+                      onClick={() => setNewLabelStroke("unknown")}
+                      className={`px-1.5 py-1 rounded font-mono text-[8px] transition-colors ${
+                        newLabelStroke === "unknown"
+                          ? "bg-error-red/30 text-error-red border border-error-red/40"
+                          : "bg-court-surface/20 hover:bg-court-surface/40 text-text-muted border border-transparent"
+                      }`}
+                    >
+                      unknown
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={addManualLabel}
+                  disabled={newLabelStroke === "unknown" || newLabelStroke === ""}
+                  className="w-full py-1.5 rounded-lg bg-shuttle-lime/20 hover:bg-shuttle-lime/30 disabled:opacity-30 disabled:cursor-not-allowed font-mono text-[10px] text-shuttle-lime transition-colors"
+                >
+                  ADD LABEL
+                </button>
+
+                {/* Existing manual labels table */}
+                {manualLabels.length > 0 && (
+                  <div className="max-h-[200px] overflow-y-auto space-y-0.5 mt-1">
+                    {[...manualLabels].reverse().map(m => (
+                      <div
+                        key={m.id}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded bg-court-surface/20"
+                      >
+                        <span className="font-mono text-[8px] text-text-muted w-14 shrink-0">
+                          {m.timestamp.toFixed(1)}s
+                        </span>
+                        <span className="font-mono text-[8px] text-text-muted w-10 shrink-0">
+                          #{m.frame}
+                        </span>
+                        <span className="font-mono text-[8px] text-text-muted w-8 shrink-0">
+                          {m.player}
+                        </span>
+                        <span className="font-mono text-[8px] text-text-primary flex-1">
+                          {m.stroke.replace("_", " ")}
+                        </span>
+                        <button
+                          onClick={() => deleteManualLabel(m.id)}
+                          className="font-mono text-[8px] text-error-red/60 hover:text-error-red transition-colors shrink-0"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Shot list */}
             <div ref={tableRef} className="bg-court-dark/60 rounded-xl border border-court-line/15 max-h-[60vh] overflow-y-auto">

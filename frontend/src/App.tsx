@@ -83,7 +83,7 @@ function App() {
     setState('labeling');
   };
 
-  const handleRedoCourt = (jobId: string) => {
+  const handleRedoCourt = (_jobId: string) => {
     setRedoCourt(true);
     setState('setup_court');
   };
@@ -120,7 +120,7 @@ function App() {
         <ProcessingView jobId={jobId} onComplete={() => setState('report')} />
       )}
       {state === 'report' && (
-        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} onLabeling={(report: any) => { setLabelingReport(report); setState('labeling'); }} onRedoCourt={handleRedoCourt} />
+        <ReportView jobId={jobId} reportData={loadedReport} onBack={handleBack} onViewProgress={handleViewProgress} onLabeling={handleLabeling} onRedoCourt={handleRedoCourt} />
       )}
       {state === 'labeling' && labelingReport && (
         <LabelingView shots={labelingReport.shots || []} videoUrl={!jobId ? getVideoObjectURL() : null} jobId={jobId} onBack={() => setState('report')} />
