@@ -490,14 +490,21 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                   </div>
                   <div>
                     <label className="font-mono text-[8px] text-text-muted block mb-0.5">Player</label>
-                    <select
-                      value={newLabelPlayer}
-                      onChange={e => setNewLabelPlayer(e.target.value as "near" | "far")}
-                      className="w-full bg-court-surface/30 border border-court-line/20 rounded px-1.5 py-1 font-mono text-[10px] text-text-primary"
-                    >
-                      <option value="near">Near</option>
-                      <option value="far">Far</option>
-                    </select>
+                    <div className="flex gap-1">
+                      {(["near", "far"] as const).map(p => (
+                        <button
+                          key={p}
+                          onClick={() => setNewLabelPlayer(p)}
+                          className={`flex-1 px-2 py-1 rounded font-mono text-[10px] transition-colors ${
+                            newLabelPlayer === p
+                              ? "bg-shuttle-lime/30 text-shuttle-lime border border-shuttle-lime/40"
+                              : "bg-court-surface/20 hover:bg-court-surface/40 text-text-muted border border-transparent"
+                          }`}
+                        >
+                          {p === "near" ? "NEAR" : "FAR"}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
