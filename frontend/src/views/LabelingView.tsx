@@ -481,6 +481,36 @@ export function LabelingView({ shots, videoUrl, jobId, fps = 30, labelPreRoll = 
                         MARK
                       </button>
                     </div>
+                    <div className="flex gap-1 mt-1">
+                      <button
+                        onClick={() => setNewLabelTime(t => Math.max(0, t - 1/fps))}
+                        title="Back 1 frame"
+                        className="flex-1 px-1.5 py-0.5 rounded bg-court-surface/20 hover:bg-court-surface/40 font-mono text-[8px] text-text-muted transition-colors"
+                      >
+                        -{Math.round(1/fps * 1000)}ms
+                      </button>
+                      <button
+                        onClick={() => setNewLabelTime(t => Math.max(0, t - 0.1))}
+                        title="Back 0.1s"
+                        className="flex-1 px-1.5 py-0.5 rounded bg-court-surface/20 hover:bg-court-surface/40 font-mono text-[8px] text-text-muted transition-colors"
+                      >
+                        -0.1s
+                      </button>
+                      <button
+                        onClick={() => setNewLabelTime(t => t + 0.1)}
+                        title="Forward 0.1s"
+                        className="flex-1 px-1.5 py-0.5 rounded bg-court-surface/20 hover:bg-court-surface/40 font-mono text-[8px] text-text-muted transition-colors"
+                      >
+                        +0.1s
+                      </button>
+                      <button
+                        onClick={() => setNewLabelTime(t => t + 1/fps)}
+                        title="Forward 1 frame"
+                        className="flex-1 px-1.5 py-0.5 rounded bg-court-surface/20 hover:bg-court-surface/40 font-mono text-[8px] text-text-muted transition-colors"
+                      >
+                        +{Math.round(1/fps * 1000)}ms
+                      </button>
+                    </div>
                   </div>
                   <div>
                     <label className="font-mono text-[8px] text-text-muted block mb-0.5">Frame</label>
