@@ -61,13 +61,14 @@ class Settings(BaseSettings):
     hit_refine_window: int = 4           # ±frames for pose-based contact refinement
 
     # Ownership scoring weights (Section 10)
-    ownership_trajectory_weight: float = 0.35
-    ownership_court_side_weight: float = 0.20
-    ownership_proximity_weight: float = 0.15
-    ownership_motion_weight: float = 0.15
-    ownership_pose_feasibility_weight: float = 0.10
-    ownership_turn_prior_weight: float = 0.05
-    ownership_bst_weight: float = 0.06
+    # Tuned via grid search against 100 manual labels (see tune_ownership_weights.py)
+    ownership_trajectory_weight: float = 0.20
+    ownership_court_side_weight: float = 0.22
+    ownership_proximity_weight: float = 0.18
+    ownership_motion_weight: float = 0.18
+    ownership_pose_feasibility_weight: float = 0.12
+    ownership_turn_prior_weight: float = 0.06
+    ownership_bst_weight: float = 0.07
     ownership_bst_alpha_threshold: float = 0.15
     ownership_bst_conf_min: float = 0.3
     ownership_window_frames: int = 3         # ±window for trajectory vector
