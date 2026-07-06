@@ -203,23 +203,112 @@ class GlobalHitCandidateDetector:
         return non_max_suppression(candidates, self.min_gap_frames)
 
 
+def _find_nearest_wrist_frame(
+    candidate_frame: int,
+    pose_df: pd.DataFrame,
+    shuttle_df: pd.DataFrame,
+    search_window: int = 4,
+    min_shuttle_conf: float = 0.20,
+) -> int:
+    """Refine a hit candidate to the frame where a player's wrist is closest
+    to the shuttle.  Checks both wrists across all detected players — the
+    wrist nearest the shuttle is likely the racket hand at contact.
+
+    Args:
+        candidate_frame: Initial hit frame from shuttle trajectory.
+        pose_df: DataFrame with 'frame', 'player_id', 'keypoints' columns.
+        shuttle_df: DataFrame with 'frame', 'x', 'y', 'confidence' columns.
+        search_window: ±frames to search around candidate_frame.
+        min_shuttle_conf: Minimum shuttle detection confidence.
+
+    Returns:
+        Refined frame, or candidate_frame if refinement fails.
+    """
+    best_frame = candidate_frame
+    best_dist: float | None = None
+
+    lo = max(0, candidate_frame - search_window)
+    hi = candidate_frame + search_window + 1
+
+    for f in range(lo, hi):
+        # Shuttle must be detected at this frame
+        srows = shuttle_df[
+            (shuttle_df["frame"] == f) &
+            (shuttle_df.get("confidence", pd.Series([1.0]) * len(shuttle_df)) >= min_shuttle_conf)
+        ]
+        if len(srows) == 0:
+            srows = shuttle_df[
+                (shuttle_df["frame"] == f) &
+                (shuttle_df["x"].notna()) & (shuttle_df["y"].notna())
+            ]
+        if len(srows) == 0:
+            continue
+        sx, sy = float(srows.iloc[0]["x"]), float(srows.iloc[0]["y"])
+
+        # Check all players' wrists at this frame
+        prows = pose_df[pose_df["frame"] == f]
+        if len(prows) == 0:
+            continue
+
+        for _, prow in prows.iterrows():
+            raw = prow["keypoints"]
+            kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
+            if kps.ndim != 2 or kps.shape[0] < 11 or kps.shape[1] < 2:
+                continue
+            for wrist_idx in (9, 10):  # left wrist, right wrist
+                wx, wy = float(kps[wrist_idx, 0]), float(kps[wrist_idx, 1])
+                wconf = float(kps[wrist_idx, 2]) if kps.shape[1] >= 3 else 1.0
+                if wconf < 0.3:
+                    continue
+                dist = float(np.sqrt((wx - sx) ** 2 + (wy - sy) ** 2))
+                if best_dist is None or dist < best_dist:
+                    best_dist = dist
+                    best_frame = f
+
+    return best_frame
+
+
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
-    input_keys = ["shuttle"]
+    input_keys = ["shuttle", "pose"]
     output_keys = ["hits"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
         shuttle_df = artifacts.get_parquet("shuttle")
         if shuttle_df is None or len(shuttle_df) == 0:
-            # Fallback to shuttle_raw if cleaned shuttle unavailable
             shuttle_df = artifacts.get_parquet("shuttle_raw")
             if shuttle_df is None or len(shuttle_df) == 0:
                 return StageResult.from_error("Shuttle tracking data required")
             shuttle_df["x"] = shuttle_df["x"].ffill().bfill()
             shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
 
+        pose_df = artifacts.get_parquet("pose")
+
         detector = GlobalHitCandidateDetector.from_settings()
         candidates = detector.detect(shuttle_df)
+
+        # Phase 2: pose-based contact refinement (aligns trajectory inflection
+        # to actual racket-shuttle contact using wrist proximity)
+        refine_window = getattr(settings, "hit_refine_window", 4)
+        refined_count = 0
+        if pose_df is not None and len(pose_df) > 0 and refine_window > 0:
+            for c in candidates:
+                orig_frame = c["frame"]
+                refined = _find_nearest_wrist_frame(
+                    orig_frame, pose_df, shuttle_df,
+                    search_window=refine_window,
+                    min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
+                )
+                if refined != orig_frame:
+                    c["frame"] = refined
+                    c["_refined_offset"] = refined - orig_frame
+                    refined_count += 1
+
+        if refined_count > 0:
+            # Re-run NMS after refinement (shifted frames may now collide)
+            candidates = non_max_suppression(candidates, detector.min_gap_frames)
+            logger.info("Refined hit frames via wrist-to-shuttle proximity",
+                        refined_count=refined_count, total=len(candidates), window=refine_window)
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:
@@ -236,13 +325,21 @@ class HitFrameLocalizationStage:
             debug_hit_df.loc[debug_frames, "is_peak"] = True
             artifacts.set_parquet("debug_hit_scores", debug_hit_df)
 
-        hits = [{"frame": c["frame"], "confidence": c["score"]} for c in candidates]
+        hits = [{
+            "frame": c["frame"],
+            "confidence": c["score"],
+        } | ({"_refined_offset": c["_refined_offset"]} if "_refined_offset" in c else {})
+                for c in candidates]
         hits_data = pd.DataFrame(hits)
         artifacts.set_parquet("hits", hits_data)
 
-        logger.info(f"Localized {len(hits)} hit frames via shuttle-centric detector")
+        logger.info("Localized hit frames", count=len(hits))
 
         return StageResult.success(
             artifacts={"hits": artifacts.path("hits")},
-            metadata={"hit_count": len(hits), "frames_analyzed": len(shuttle_df)}
+            metadata={
+                "hit_count": len(hits),
+                "frames_analyzed": len(shuttle_df),
+                "refined_count": refined_count,
+            }
         )

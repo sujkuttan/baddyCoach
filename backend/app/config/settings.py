@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     hit_visibility_weight: float = 0.05  # visibility-transition signal weight
     hit_candidate_threshold: float = 0.62  # minimum event score to accept a candidate
     hit_min_gap_frames: int = 6          # non-maximum suppression window
+    hit_refine_window: int = 4           # ±frames for pose-based contact refinement
 
     # Ownership scoring weights (Section 10)
     ownership_trajectory_weight: float = 0.35
