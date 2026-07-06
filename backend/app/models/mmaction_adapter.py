@@ -372,7 +372,7 @@ def create_mmaction_classifier(mode: str = "posec3d",
         if not _mmaction2_available():
             logger.warning(
                 "MMAction2 not installed — cannot create %s classifier. "
-                "Install: pip install openmim && mim install mmengine mmcv && pip install mmaction2",
+                "Install: pip install mmengine mmcv-lite mmaction2",
                 mode,
             )
             return None
