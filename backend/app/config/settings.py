@@ -184,7 +184,7 @@ class Settings(BaseSettings):
     physics_zone_back: float = 0.66
     physics_cross_court_dx: float = 0.30  # normalized lateral travel for cross_court cue
     physics_agree_boost: float = 0.5      # confidence boost weight when BST & physics agree
-    physics_max_override_frac: float = 0.70  # sanity guard: revert all if override fraction exceeds this
+    physics_max_override_frac: float = 0.40  # sanity guard: revert all if override fraction exceeds this
     physics_contact_search_window: int = 3    # ±frames to locate true contact frame
     physics_contact_overhead_frac: float = 0.15  # wrist above shoulder by this x torso → overhead
     physics_contact_side_frac: float = 0.30     # wrist within this x torso of shoulder → side
