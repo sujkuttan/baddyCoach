@@ -1119,9 +1119,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         # ── CPU stages via backend ──
         print("\n[3/5] Hit frame localization + stroke classification...")
         hits_result = HitFrameLocalizationStage().run(store, config)
-        hits = hits_result.metadata.get("hits", [])
-        print(f"  Found {len(hits)} hits")
-        pd.DataFrame(hits).to_parquet(debug_dir / "hits.parquet", index=False)
+        hit_count = hits_result.metadata.get("hit_count", 0)
+        print(f"  Found {hit_count} hit frames")
+        hits_df = store.get_parquet("hits")
+        if hits_df is not None and len(hits_df) > 0:
+            hits_df.to_parquet(debug_dir / "hits.parquet", index=False)
 
         # Use colab's BST for stroke classification (GPU-efficient, keeps BST in VRAM)
         print("\n  Stroke classification (colab BST)...")
