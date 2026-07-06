@@ -236,10 +236,11 @@ python -m pytest -m "not gpu and not model"
 - `backend/app/models/yolov8.py` - Person detection/tracking
 - `backend/app/models/rtmpose.py` - Pose estimation
 - `backend/app/models/tracknet.py` - Shuttle tracking
-- `backend/app/models/bst.py` - Stroke classification
+- `backend/app/models/bst.py` - Stroke classification (BST)
+- `backend/app/models/mmaction_adapter.py` - MMAction2 adapter (PoseC3D/SlowFast ensemble)
 
 ### Configuration
-- `backend/app/config/settings.py` - Model paths, thresholds (16 ownership/Viterbi fields)
+- `backend/app/config/settings.py` - Model paths, thresholds (16 ownership/Viterbi fields, 6 MMAction2 fields)
 - `backend/app/config/gpu_batch.py` - GPU batch sizing
 - `backend/app/shuttle_coach/feedback/rules.yaml` - 33+ coaching rules
 - `backend/app/pipeline/shared/ownership_scorer.py` - Multi-signal ownership scoring + Viterbi HMM
@@ -394,32 +395,58 @@ python -m pytest -m "not gpu and not model"
 - **Reporting:** `physics_summary` is written as an artifact, included in stroke-stage metadata, backend `report.json`, and Colab reports. Counts include `bst`, `bst_no_physics`, `physics_fallback`, `agree`, `physics_override`, `bst_gate_distrusted`, `usable`, `skipped`, `distrusted`, and `overrides`.
 - **Verification:** Focused tests passed: `76 passed` across physics, context fusion, confusion pairs, and report-generator tests; `compileall` and `git diff --check` passed. Full backend suite was attempted but did not complete in-session, so do not claim a full-suite pass for this change.
 
-## Current Status (2026-07-02 — Updated with Court + Physics Reliability)
+## 2026-07-06: MMAction2 Ensemble Integration + Colab Setup Fixes
 
-### Pipeline Performance (test_match.mp4, 300s on T4)
-- **250 shots**, **32 rallies** (after scene-cut fix), 14 unique stroke types
-- **68.8% BST coverage** (172/250), **31.2% rule-based** (78/250)
-- **14/25 BST classes active** — most diverse yet (smash, block, lift, clear, rush, drive, drop, net_shot, push, short_serve, cross_court)
-- **Physics override**: 68/250 (27.2%), 167 bst_no_physics (66.8%), 12 physics_fallback (4.8%)
-- **Latest physics behavior:** cleaned/interpolated shuttle now feeds window-level kinematics, raw detections feed quality/usability, and `physics_summary` exposes gate outcomes per run. Re-run needed to measure new override/fallback rates on `test_match.mp4`.
-- **0% rule-based "unknown"** — old flat if-else replaced with hierarchical classifier
-- **Mean BST conf: 0.319** (T=1.0), mean rule-based conf: 0.390
-- **Evidence on all 78 rule-based shots** — contact_height, player_zone, outgoing_trajectory, landing_zone
-- **8 rule-based stroke types** — smash (27), defensive_lift (17), soft_lift_or_push (13), drive (10), net_shot (5), mid_height_unknown→drive (4), clear (1), drop (1)
-- **Pipeline time**: 833.2s (2.8× real-time), zero errors
-- **Attribution**: OwnershipScorer (6 sub-scores) + per-rally Viterbi HMM, replaces old 4-tier cascade
+### ✅ MMAction2 Adapter (Added — commits `007555c`+)
+- **What:** Added `backend/app/models/mmaction_adapter.py` — `MMActionClassifier` with `predict_from_clips()` matching BST interface
+- **Modes:** `posec3d` (skeleton-based, reuses existing JnB pose keypoints), `slowfast` (RGB-based, requires video clips saved to disk), `pytorchvideo` (lighter alternative)
+- **Ensemble strategy:** Probability-matrix level ensemble at Phase 2b in `strokes.py:481-515`: `probs = (1-w)*BST + w*MMAction` where `w=0.3` default
+- **Lazy singleton getter:** `get_mmaction2()` in `backend/app/pipeline/shared/models.py:345` — returns None gracefully when not installed
+- **Settings:** 6 new fields in `settings.py` (`mmaction2_enabled`, `mode`, `ensemble_weight`, `seq_len`, `num_classes`, `bst_n_classes`)
+- **Version constraint:** Requires `mmcv>=2.0.0rc4, <2.2.0` — critical for install
+- **Colab parity:** Form fields (`MMACTION2_ENABLED`, `MMACTION2_MODE`, `MMACTION2_WEIGHT`) in Cell 3; CLI args `--mmaction2`, `--mmaction2-mode`, `--mmaction2-weight` in `colab/pipeline.py`
+- **All 443 tests pass** (7 skipped due to hardware)
 
-### ⚠️ Known Issues (addressed in commit e9640e9)
-- **Balance flip was silently broken** — `for i in boolean_mask` iterated True/False values, not indices. Fix: always use `.index`. Re-run needed to verify ~50/50 split.
-- **NaN side on 43% of shots** — Tiers 2-4 never set `side`; fillna guard prevented fix. Fix: unconditional fillna.
-- **4 `mid_height_unknown` leaks** — internal family labels reached final output. Fix: remap to `drive`.
-- **10 shots with 0.99 conf despite contradictory evidence** — evidence consistency check added with -0.20 penalty. Max rule-based cap lowered to 0.85.
+### ✅ Colab Notebook Setup Overhaul (Fixed — multiple commits)
+- **Problem:** `mim` crashes on Python 3.12+ (`pkgutil.ImpImporter` removed), `pip install mmcv` builds from source (10+ min), `numpy<2` conflicts with Colab's numpy 2.x
+- **Fixes applied:**
+  1. Remove `mim` — use `pip` directly (`mim` relies on old `setuptools/pkg_resources` incompatible with Python 3.12)
+  2. Skip `pip install torch` — Colab has GPU torch pre-installed; redundant 223 MB download risks replacing with CPU version
+  3. Remove `numpy<2` constraint — causes 10+ dependency conflicts on Colab
+  4. Split install into 4 stages with progress prints (`[1/4]` through `[4/4]`)
+  5. Replace `mmcv` (no pre-built cp312 wheels, builds from source) with `mmcv-lite` (universal `py2.py3-none-any` wheel, ~5s install)
+  6. Pin `mmcv-lite>=2.0.0rc4,<2.2.0` — mmaction2 rejects v2.2.0 with version mismatch error (`MMCV==2.2.0 is used but incompatible`)
+- **Result:** Cell 1 setup completes in ~2-3 min (down from 10+ min)
+
+### ✅ Physics Override Sanity Guard Tuned (Fixed — commit `49c7aed`)
+- **Was:** `physics_max_override_frac=0.70` — sanity guard never triggered (57% override rate in dry run)
+- **Changed to:** `0.40` — triggers at 40% override rate; reverts all physics overrides to BST when exceeded
+- **Rationale:** 57% override rate means physics dominates BST; guard forces physics to prove its value before overriding
+
+### ✅ Colab Dry Run Results (2026-07-05, phone footage on T4)
+- **201 shots**, **18 rallies**, 14 unique stroke types
+- **Stroke source breakdown:**
+  - `physics_override`: 115 (57.2%) — physics dominates
+  - `bst_no_physics`: 58 (28.9%) — BST too low-confidence (<0.30), skipped
+  - `physics_fallback`: 15 (7.5%) — both uncertain, rule-based fallback
+  - `bst`: 13 (6.5%) — pure BST prediction
+  - `agree`: 0 — physics and BST never agreed on a stroke
+- **Attribution:** 100% Viterbi (6 sub-score OwnershipScorer), side split 102/99 (balanced)
+- **Mean confidence:** 0.494; BST raw mean: 0.393
+- **Shuttle detection rate:** 43% ⚠️ — affects physics quality
+- **Pose coverage:** 100% ✅; **Court coverage:** 99.5% ✅
+- **MMA2 status:** skipped — `mmcv-lite==2.2.0` failed mmaction2 version check (pinned to `<2.2.0` in fix)
+- **Dominant strokes:** rush (30.4%), cross_court (12.7%), drive (11.8%), smash (8.8%)
+- **Rare strokes:** net_shot (1.0%), drop (1.0%) — flagged as weaknesses
+- **Rallies:** 13/18 end in forced_error, 2 in winner, 2 in unforced_error, 1 in net
+- **Quality score:** 0.9 (high) with caveats: BST fallback 24%, low shuttle detection 43%
 
 ### Confirmed Model Limitations
 - **31.2% rule-based fallback is intrinsic** — feature quality identical between RB and model clips (missing_bbox=0, shuttle_valid=93-95, jnb_std=0.22-0.23). Model outputs uniform logits for these clips regardless of temperature.
 - **11/25 BST classes never activated** — model cannot predict these regardless of pipeline quality.
 - **defensive_lift, soft_lift_or_push are 100% rule-based** — BST never outputs these classes.
 - **Prior correction** (`bst_logit_bias.json`) is essential — prevents 28 model clips from predicting unknown.
+- **aimplayer_alpha** mean=0.498 (barely above 0.5) — AimPlayer head barely distinguishes near/far players for attribution.
 
 ### Rule-Based Classifier Overview
 ```
@@ -467,12 +494,13 @@ stroke_features.py:
 23. ~~Use cleaned shuttle for physics kinematics while preserving raw-point quality~~ (Done — `7f564d9`)
 
 ### Medium (quality)
-24. Re-run colab pipeline to verify balance flip fix (~50/50 split expected)
-25. Re-run phone-video pipeline to measure Hough/manual-corner and cleaned-shuttle physics impact
+24. Re-run colab pipeline with pinned `mmcv-lite<2.2.0` and MMAction2 enabled to test ensemble
+25. Re-run phone-video pipeline to measure physics override sanity guard (now 0.40) impact
 26. Add shot_log formal table to report.json schema (data already in shots array)
 27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline
 28. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
 29. Re-run pipeline with new OwnershipScorer to measure attribution quality improvement
+30. Fine-tune PoseC3D on ShuttleSet for meaningful ensemble signal (currently random weights)
 
 ### Phone-Video Pipeline
 - ~~Temporal gap detection for scene cuts~~ (Done — `rallies.py`: NaN-streak check alongside spatial displacement)
