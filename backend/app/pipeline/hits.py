@@ -5,6 +5,12 @@ from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
+# COCO-17 keypoint indices
+_R_WRIST = 10
+_L_WRIST = 9
+_R_ELBOW = 8
+_L_ELBOW = 7
+
 
 # ── Global-hit-candidate detector (shuttle-centric, no player dependency) ──
 
@@ -338,6 +344,102 @@ def _find_nearest_wrist_frame(
     return best_frame
 
 
+# ── Wrist-speed hit detector (pose-only fallback) ──────────────────────
+# Adapted from Haimantika/badminton-coach: detect strikes from racket-wrist
+# speed peaks.  Runs when shuttle-based detection finds too few candidates.
+
+def _wrist_speed_series(wrist_xy: np.ndarray, window: int = 3) -> np.ndarray:
+    """Compute smoothed wrist speed (normalized px/frame)."""
+    if len(wrist_xy) < window + 2:
+        return np.zeros(len(wrist_xy))
+    cum = np.cumsum(np.insert(wrist_xy, 0, 0, axis=0), axis=0)
+    smoothed = (cum[window:] - cum[:-window]) / window
+    # Pad to original length
+    pad = np.full((window // 2, 2), np.nan)
+    smoothed = np.vstack([pad, smoothed, pad[:max(0, len(wrist_xy) - len(smoothed) - len(pad))]]) if len(smoothed) < len(wrist_xy) else smoothed
+    smoothed = smoothed[:len(wrist_xy)]
+    diffs = np.diff(smoothed, axis=0)
+    speed = np.sqrt(np.sum(diffs ** 2, axis=1))
+    speed = np.nan_to_num(speed, nan=0.0)
+    return np.concatenate([[0.0], speed])
+
+
+def _detect_peaks_1d(values: np.ndarray, min_height: float, min_distance: int) -> list[int]:
+    """Simple 1D peak detection. Returns indices of peaks."""
+    if len(values) < 3:
+        return []
+    peaks = []
+    for i in range(1, len(values) - 1):
+        if values[i] > values[i - 1] and values[i] > values[i + 1] and values[i] >= min_height:
+            peaks.append(i)
+    # Enforce min_distance
+    if not peaks:
+        return []
+    filtered = [peaks[0]]
+    for p in peaks[1:]:
+        if p - filtered[-1] >= min_distance:
+            filtered.append(p)
+    return filtered
+
+
+def _detect_wrist_peaks(pose_df: pd.DataFrame, fps: float,
+                         min_speed: float, min_interval_s: float,
+                         min_kp_conf: float = 0.30) -> list[dict]:
+    """Detect hit candidates from wrist-speed peaks in pose data.
+
+    Returns list of dicts with 'frame' and 'score' keys, sorted by frame.
+    Adapted from Haimantika/badminton-coach's detect_strike_frames.
+    """
+    if pose_df is None or len(pose_df) < 5:
+        return []
+
+    candidates = []
+    min_dist = max(1, int(round(min_interval_s * fps)))
+
+    for player_id in pose_df["player_id"].unique():
+        player = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
+        frames = player["frame"].values
+        if len(frames) < 3:
+            continue
+
+        # Extract both wrists — check which has higher peak speed (racket hand)
+        r_wrist = np.full((len(player), 2), np.nan)
+        l_wrist = np.full((len(player), 2), np.nan)
+        for i, (_, row) in enumerate(player.iterrows()):
+            raw = row["keypoints"]
+            kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
+            if kps.shape != (17, 3):
+                continue
+            if kps[_R_WRIST, 2] >= min_kp_conf:
+                r_wrist[i] = kps[_R_WRIST, :2]
+            if kps[_L_WRIST, 2] >= min_kp_conf:
+                l_wrist[i] = kps[_L_WRIST, :2]
+
+        # Use the wrist with higher max speed (racket hand detection)
+        r_speed = _wrist_speed_series(r_wrist)
+        l_speed = _wrist_speed_series(l_wrist)
+        r_max = float(np.max(r_speed))
+        l_max = float(np.max(l_speed))
+
+        if max(r_max, l_max) < min_speed:
+            continue
+
+        wrist_speed = r_speed if r_max >= l_max else l_speed
+        peaks = _detect_peaks_1d(wrist_speed, min_height=min_speed, min_distance=min_dist)
+
+        for p in peaks:
+            if p < len(frames):
+                candidates.append({
+                    "frame": int(frames[p]),
+                    "score": float(wrist_speed[p]),
+                    "source": "wrist_peak",
+                })
+
+    # Sort by frame, merge close duplicates (NMS)
+    candidates.sort(key=lambda c: c["frame"])
+    return candidates
+
+
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
     input_keys = ["shuttle", "pose"]
@@ -379,6 +481,31 @@ class HitFrameLocalizationStage:
             candidates = non_max_suppression(candidates, detector.min_gap_frames)
             logger.info("Refined hit frames via wrist-to-shuttle proximity",
                         refined_count=refined_count, total=len(candidates), window=refine_window)
+
+        # Phase 3: wrist-speed fallback — catch hits missed by shuttle detector
+        # Adapted from Haimantika/badminton-coach: purely kinematic strike detection
+        wrist_hits = []
+        if getattr(settings, "wrist_hit_enabled", True) and pose_df is not None and len(pose_df) > 0:
+            fps = float(config.processing_fps or getattr(settings, "fps", 30.0))
+            wrist_hits = _detect_wrist_peaks(
+                pose_df, fps,
+                min_speed=getattr(settings, "wrist_hit_min_speed", 0.15),
+                min_interval_s=getattr(settings, "wrist_hit_min_interval_s", 0.3),
+                min_kp_conf=getattr(settings, "wrist_hit_min_conf", 0.30),
+            )
+
+        if wrist_hits:
+            # Merge wrist peaks with shuttle candidates
+            wrist_weight = getattr(settings, "wrist_hit_score_weight", 0.40)
+            candidate_frames = {c["frame"] for c in candidates}
+            for w in wrist_hits:
+                w["score"] *= wrist_weight
+                if w["frame"] not in candidate_frames:
+                    candidates.append(w)
+            # Re-run NMS on merged list
+            candidates = non_max_suppression(candidates, detector.min_gap_frames)
+            logger.info("Wrist-speed fallback added hits",
+                        wrist_count=len(wrist_hits), merged_total=len(candidates))
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:

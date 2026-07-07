@@ -9,6 +9,7 @@ import { CourtHeatmap } from '../components/CourtHeatmap';
 import { FatigueTrendChart } from '../components/FatigueTrendChart';
 import { FitnessStats } from '../components/FitnessStats';
 import { StrokeListPanel } from '../components/StrokeListPanel';
+import { PerformanceRadar } from '../components/PerformanceRadar';
 
 interface ReportViewProps {
   jobId: string | null;
@@ -293,6 +294,17 @@ export function ReportView({ jobId, reportData, onBack, onViewProgress, onLabeli
                   <ShotChart distribution={shotDistribution} />
                 </div>
               </div>
+            </div>
+
+            {/* Performance Radar - full width (Flagami/BadmintonCoach adaptation) */}
+            <div className="lg:col-span-12">
+              <PerformanceRadar
+                technical={technicalAssessments}
+                footwork={report.footwork?.[selectedPlayer] || null}
+                fitness={report.fitness?.[selectedPlayer] || null}
+                symmetryScore={report.technical?.symmetry_score ?? 50}
+                playerLabel={playerLabel(selectedPlayer)}
+              />
             </div>
 
             {/* Coach Recommendations - full width */}

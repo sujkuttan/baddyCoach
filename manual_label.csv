@@ -1,0 +1,23 @@
+Time,Player,Stroke,Rally
+0,Far,Lift,1
+0.02,Near,Drop,1
+0.03,Far,Drive,Rally End
+0.05,Near,Serve,2
+0.06,Far,Clear,2
+0.07,Near,Drop,2
+0.08,Far ,Net Shot,2
+0.09,Near,Net Shot,Rally End
+0.11,Far,Serve,3
+0.13,Near,Drop,3
+0.14,Far,Net Shot,3
+0.15,Near,Lift,3
+0.16,Far,Drop,3
+0.17,Near,Net Shot,3
+0.18,Far,Lift,3
+0.19,Near,Clear,3
+0.21,Far,Clear,3
+0.22,Near,Clear,3
+0.24,Far,Clear,3
+0.25,Near,Clear,3
+0.26,Far,Drop,3
+0.27,Near,Net Shot,Rally End

@@ -71,10 +71,13 @@ class FootworkAnalyticsStage:
             fps = float(config.processing_fps or settings.fps)
             recovery_times = self._compute_recovery_times(player_poses, shots_df, base_position, fps, homography, px_per_m) if shots_df is not None else []
 
+            split_steps = self._count_split_steps(player_poses, fps, shots_df, player_id)
+
             metrics[player_id] = {
                 "distance_covered": float(distance_m),
                 "recovery_times": recovery_times,
                 "avg_recovery": float(np.mean(recovery_times)) if recovery_times else 0,
+                "split_steps": split_steps,
             }
 
         logger.info(f"Computed footwork analytics for {len(metrics)} players")
@@ -88,6 +91,86 @@ class FootworkAnalyticsStage:
                 "recovery_times": {k: v["avg_recovery"] for k, v in metrics.items()},
             }
         )
+
+    @staticmethod
+    def _count_split_steps(player_poses: pd.DataFrame, fps: float,
+                            shots_df: pd.DataFrame | None = None,
+                            player_id: int | None = None) -> dict:
+        """Detect split steps from hip-y oscillation.
+
+        A split step is a quick dip in hip-y (centre-of-mass drops) followed
+        by a rapid rise — the player crouches then springs up, typically
+        right before or during the opponent's hit.  Adapted from
+        Haimantika/badminton-coach's jump detection logic.
+
+        Returns
+        -------
+        dict with 'count', 'timings' (list of frame indices), 'total_seconds'.
+        """
+        enabled = getattr(settings, "footwork_split_step_enabled", True)
+        if not enabled or player_poses is None or len(player_poses) < 5:
+            return {"count": 0, "timings": [], "total_seconds": 0.0}
+
+        frames = player_poses["frame"].values
+        hip_y = np.full(len(player_poses), np.nan)
+        for i, (_, row) in enumerate(player_poses.iterrows()):
+            raw = row["keypoints"]
+            kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
+            if kps.shape != (17, 3):
+                continue
+            left_hip = kps[11, 1]  # y-coord
+            right_hip = kps[12, 1]
+            # Use mean, but require at least one hip to be confident
+            if kps[11, 2] >= 0.3 or kps[12, 2] >= 0.3:
+                hip_y[i] = (left_hip + right_hip) / 2.0
+
+        valid = ~np.isnan(hip_y)
+        if np.sum(valid) < 5:
+            return {"count": 0, "timings": [], "total_seconds": 0.0}
+
+        y_vals = hip_y[valid]
+        f_idx = np.where(valid)[0]
+        y_smooth = np.convolve(y_vals, np.ones(3) / 3, mode="same")
+
+        # Normalize by median height for amplitude comparison
+        med_y = float(np.median(y_smooth))
+        drop_frac = getattr(settings, "footwork_split_step_drop_frac", 0.02)
+
+        # Find local minima (dips) that are drop_frac below the local max
+        step_frames = []
+        lookahead = int(round(0.25 * fps))  # 250ms window
+        min_gap = int(round(0.5 * fps))     # min 500ms between steps
+
+        for i in range(1, len(y_smooth) - 1):
+            if not (y_smooth[i] < y_smooth[i - 1] and y_smooth[i] < y_smooth[i + 1]):
+                continue
+            # Check that this is a genuine dip (not just noise)
+            local_max = max(y_smooth[max(0, i - lookahead): min(len(y_smooth), i + lookahead)])
+            if med_y > 0 and (local_max - y_smooth[i]) / med_y < drop_frac:
+                continue
+            # Check for quick recovery after the dip
+            after = y_smooth[i: min(len(y_smooth), i + lookahead)]
+            recovery_idx = np.argmax(after)
+            if recovery_idx < 2 or recovery_idx > lookahead // 2:
+                continue
+            recovery_val = after[recovery_idx]
+            if recovery_val <= y_smooth[i]:
+                continue
+            step_frames.append(int(frames[f_idx[i]]))
+
+        # Enforce min_gap between steps
+        if len(step_frames) > 1:
+            kept = [step_frames[0]]
+            for s in step_frames[1:]:
+                if s - kept[-1] >= min_gap:
+                    kept.append(s)
+            step_frames = kept
+
+        return {
+            "count": len(step_frames),
+            "timings": step_frames,
+            "total_seconds": len(step_frames) / max(fps, 1),
+        }
 
     @staticmethod
     def _extract_com(player_poses: pd.DataFrame) -> np.ndarray:
