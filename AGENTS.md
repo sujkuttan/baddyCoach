@@ -576,13 +576,45 @@ Complete 951s (15.9 min) for 9000-frame video. Full analysis of `results/hybrid_
 | Physics override | 57% (active) | 0% (guarded) | gate triggered |
 | Physics-BST agree | 0 | 2 | still near 0 |
 
-### Confirmed Model Limitations (Updated 2026-07-06)
-- **23% rule-based fallback is partly intrinsic** — feature quality is good (shuttle_valid=97, missing_bbox=0, jnb_std=0.14) but model still outputs uniform logits for 69/295 clips. Down from 31% in Jul 5 run — hit refinement helps.
+### ❌ hit_refine_window=16 FAILED (2026-07-07, phone footage on T4, calib reverted + win=16 + physics off)
+Complete 1016s (16.9 min) for 9000-frame video. Comparison: hit_refine_window=4 (Jul 6) vs hit_refine_window=16 (Jul 7).
+
+**Refinement behavior:**
+- 234/249 (94%) hits refined (same fraction as Jul 6)
+- Mean offset: -1.10, Median: -2, Range: [-16, +16]
+- Offsets fully use the widened window — but mean is near zero (no systematic correction)
+
+**Pipeline output:**
+- **249 shots** (-18% from 303), **26 rallies**, 14 stroke types
+- Side balance: 122 near / 127 far (49/51 — good)
+- Owner uncertain: 143/249 (57%)
+- Mean conf: 0.432, BST raw mean: 0.319
+- Clip quality still good: shuttle_valid=96.9, missing_bbox=0, missing_pose=1.0
+
+**Stroke source:**
+- BST (any): 149/249 (60%)
+- Rule-based: 20/249 (8%)
+- Distrusted: 79/249 (32%)
+
+**Label evaluation (fresh match vs 100 manual labels):**
+| Metric | Jul 6 (win=4) | Jul 7 (win=16) | Change |
+|---|---|---|---|
+| Frame error mean | 15.6 | **18.2** | +2.6 WORSE |
+| Frame error median | 8 | **11** | +3 WORSE |
+| Stroke exact match | 11% | **9%** | -2pp WORSE |
+| Attribution (side) | 58% | **48%** | -10pp WORSE |
+| Shots detected | 303 | **249** | -18% |
+
+**Key takeaway:** hit_refine_window=16 actively harms all metrics. Direction reversal at ±16 frame separation spans multiple shots/player movements, producing noise, not signal. The velocity vectors `v_before` and `v_after` cover 32 frames total — enough to include 2+ shots in a rally. Wrist proximity degrades too (matches wrong player's wrist across the net). **Reverted to ±4.** The root cause of 8-frame median label error is Phase 1 hit detection (shuttle trajectory inflection lags true contact), not refinement window size.
+
+### Confirmed Model Limitations (Updated 2026-07-07)
+- **Hit frame refinement window = 4 is optimal** — ±16 was tested and made all metrics worse. The 8-frame median label error is a Phase 1 hit detection problem (shuttle trajectory inflection lags true contact), not solvable by widening the refinement window.
+- **23% rule-based fallback is partly intrinsic** — feature quality is good (shuttle_valid=97, missing_bbox=0, jnb_std=0.14) but model still outputs uniform logits for 69/295 clips. Hit refinement helped reduce from 31% (Jul 5) but further gains require model retraining.
 - **Only 1/25 BST class never activates (class 22)** — huge improvement from 11/25 never active.
 - **defensive_lift, soft_lift_or_push are still 100% rule-based** — BST never outputs these.
-- **Prior correction** (`bst_logit_bias.json`) remains essential.
+- **Prior correction** (`bst_logit_bias.json`) remains essential (suppresses class 0, keeping BST coverage at ~60%).
 - **aimplayer_alpha mean=0.499** — still random. Attention head cannot distinguish near/far players.
-- **Physics completely non-viable** — 0/291 overrides survived the guard. Physics signal fundamentally disagrees with BST and needs rework.
+- **Physics completely non-viable** — 0% override survival rate even without guard (guard disabled at max_override_frac=0.0). Physics and BST fundamentally disagree on every shot.
 
 ### Rule-Based Classifier Overview
 ```
@@ -639,7 +671,8 @@ stroke_features.py:
 24. Run Colab with MMAction2 enabled (blocked on MMCV Python 3.12 wheels)
 25. ~~Re-run phone-video pipeline with physics guard 0.40~~ ✅ done — 56.3% rate triggered guard, 0 overrides survived
 26. Add shot_log formal table to report.json schema (data already in shots array)
-27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline (logits_all already captured)
+27. Temperature recalibration: use `debug_bst_outputs.parquet` logits with fixed pipeline (logits_all already captured) — note: T=0.618+bias hack boosts coverage to 60% but reduces raw BST confidence to 0.32. Honest calibration T=1.62 gave 40% coverage.
+31. **Fix Phase 1 hit detection (shuttle trajectory inflection lags true contact by 8-16 frames)** — currently the bottleneck for all downstream accuracy. Options: learnable offset prediction, multi-frame peak fusion, TrackNet output reinterpretation. See `hits.py` `GlobalHitCandidateDetector.detect()`. The ±4 refinement window is too small to correct the 8-frame median error; widening to ±16 made things worse. Root cause must be fixed.
 28. ~~Add multi-signal ownership + Viterbi HMM~~ (Done — 8b8f701, 2025-06-29)
 29. ~~Re-run pipeline with new OwnershipScorer~~ ✅ done — 66% owner_uncertain, side balance 49/51 (excellent)
 30. Fine-tune PoseC3D on ShuttleSet for meaningful ensemble signal (currently random weights)
@@ -652,9 +685,9 @@ stroke_features.py:
 - ~~UI shot log with BST/rule-based/physics trail~~ (Done — LabelingView.tsx)
 
 ### Nice-to-have
-30. Unify backend/colab pipelines
-31. ~~Replace single-frame technique score~~ (Done)
-32. Cross-session progress tracking
-33. Structured logging + data-quality score
-34. Promote grounded LLM narration
-35. License compliance audit
+32. Unify backend/colab pipelines
+33. ~~Replace single-frame technique score~~ (Done)
+34. Cross-session progress tracking
+35. Structured logging + data-quality score
+36. Promote grounded LLM narration
+37. License compliance audit

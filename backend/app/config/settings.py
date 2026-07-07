@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     hit_visibility_weight: float = 0.05  # visibility-transition signal weight
     hit_candidate_threshold: float = 0.62  # minimum event score to accept a candidate
     hit_min_gap_frames: int = 6          # non-maximum suppression window
-    hit_refine_window: int = 16          # ±frames for pose-based contact refinement. Median frame error to labels is 8 frames, so window must exceed that.
+    hit_refine_window: int = 4          # ±frames for pose-based contact refinement. Wider windows (16) were tested and made frame alignment worse (mean 15.6→18.2). The root cause is Phase 1 hit detection accuracy, not refinement window size.
 
     # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
     wrist_hit_enabled: bool = True
