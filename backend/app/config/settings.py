@@ -58,7 +58,7 @@ class Settings(BaseSettings):
     hit_visibility_weight: float = 0.05  # visibility-transition signal weight
     hit_candidate_threshold: float = 0.62  # minimum event score to accept a candidate
     hit_min_gap_frames: int = 6          # non-maximum suppression window
-    hit_refine_window: int = 4           # ±frames for pose-based contact refinement
+    hit_refine_window: int = 16          # ±frames for pose-based contact refinement. Median frame error to labels is 8 frames, so window must exceed that.
 
     # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
     wrist_hit_enabled: bool = True
@@ -135,7 +135,7 @@ class Settings(BaseSettings):
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 15  # minimum real frames per clip; prevents zero-padded dominance
     bst_prior_correction_enabled: bool = True  # enabled with bias from 327 clips (2025-07-01 run, bbox-norm fix, keypoint-bbox norm)
-    bst_prior_correction_strength: float = 1.0  # α; 0 = off. Fitted bias is the full correction (calibrated 2026-07-08, 48 clean labels, T=1.62)
+    bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
     bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
