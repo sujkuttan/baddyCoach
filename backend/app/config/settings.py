@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     hit_min_gap_frames: int = 6          # non-maximum suppression window
     hit_refine_window: int = 4           # ±frames for pose-based contact refinement
 
+    # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
+    wrist_hit_enabled: bool = True
+    wrist_hit_min_speed: float = 0.15    # min normalised speed (px/frame at 30fps)
+    wrist_hit_min_interval_s: float = 0.3  # min seconds between hits
+    wrist_hit_min_conf: float = 0.30     # min keypoint confidence to use wrist
+    wrist_hit_score_weight: float = 0.40 # score weight when merging with shuttle candidates
+
     # Ownership scoring weights (Section 10)
     # Tuned via grid search against 100 manual labels (see tune_ownership_weights.py)
     ownership_trajectory_weight: float = 0.20
@@ -128,7 +135,7 @@ class Settings(BaseSettings):
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
     bst_min_clip_frames: int = 15  # minimum real frames per clip; prevents zero-padded dominance
     bst_prior_correction_enabled: bool = True  # enabled with bias from 327 clips (2025-07-01 run, bbox-norm fix, keypoint-bbox norm)
-    bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
+    bst_prior_correction_strength: float = 1.0  # α; 0 = off. Fitted bias is the full correction (calibrated 2026-07-08, 48 clean labels, T=1.62)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
     bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
@@ -160,6 +167,8 @@ class Settings(BaseSettings):
     footwork_jump_filter_pixels: int = 500
     footwork_recovery_threshold_meters: float = 0.3
     footwork_recovery_lookahead_frames: int = 30
+    footwork_split_step_enabled: bool = True
+    footwork_split_step_drop_frac: float = 0.02  # hip-y drop fraction for split-step detection
 
     # Trust / Data quality
     quality_shuttle_conf_thr: float = 0.5
@@ -186,7 +195,7 @@ class Settings(BaseSettings):
     physics_zone_back: float = 0.66
     physics_cross_court_dx: float = 0.30  # normalized lateral travel for cross_court cue
     physics_agree_boost: float = 0.5      # confidence boost weight when BST & physics agree
-    physics_max_override_frac: float = 0.40  # sanity guard: revert all if override fraction exceeds this
+    physics_max_override_frac: float = 0.0  # disabled — physics agrees with BST < 3% of the time, actively harmful
     physics_contact_search_window: int = 3    # ±frames to locate true contact frame
     physics_contact_overhead_frac: float = 0.15  # wrist above shoulder by this x torso → overhead
     physics_contact_side_frac: float = 0.30     # wrist within this x torso of shoulder → side

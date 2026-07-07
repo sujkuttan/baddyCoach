@@ -1,11 +1,9 @@
 {
-  "temperature": 0.6176059597488486,
-  "temperature_far": 0.6232714494490105,
-  "temperature_near": 0.6116593231013105,
-  "mean_conf_t1": 0.2956787603352763,
-  "mean_conf_cal": 0.5000001195565076,
-  "n_model": 163,
-  "n_far": 87,
-  "n_near": 75,
-  "method": "mean_conf_target_0.50_colab_2025-06-30"
+  "temperature": 1.6155904531478882,
+  "temperature_far": 1.6155904531478882,
+  "temperature_near": 1.6155904531478882,
+  "mean_conf_t1": 0.37099779328095783,
+  "mean_conf_cal": 0.15659932722468048,
+  "n_model": 48,
+  "method": "nll_minimization_from_labels_enriched.csv_framediff<=10"
 }
