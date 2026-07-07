@@ -547,23 +547,37 @@ def _fuse_audio_wrist(audio_candidates: list[dict],
     fused: list[dict] = []
     audio_frames: set[int] = set()
 
+    # Build a lookup for wrist candidates with extra metadata
+    wrist_by_frame: dict[int, dict] = {w["frame"]: w for w in wrist_candidates}
+
     for ac in audio_candidates:
         af = ac["frame"]
         audio_frames.add(af)
-        match = any(abs(af - wf) <= tolerance for wf in wrist_frames)
-        if match:
-            fused.append({"frame": af, "score": 1.0, "source": "audio_visual_fusion"})
+        matching_wf = None
+        for wf in wrist_frames:
+            if abs(af - wf) <= tolerance:
+                matching_wf = wf
+                break
+        if matching_wf is not None:
+            entry: dict = {"frame": af, "score": 1.0, "source": "audio_visual_fusion"}
+            wc = wrist_by_frame.get(matching_wf, {})
+            if "dominant_hand" in wc:
+                entry["dominant_hand"] = wc["dominant_hand"]
+            fused.append(entry)
         else:
             fused.append({"frame": af, "score": 0.8, "source": "audio_only"})
 
     for wc in wrist_candidates:
         wf = wc["frame"]
         if not any(abs(wf - af) <= tolerance for af in audio_frames):
-            fused.append({
+            entry: dict = {
                 "frame": wf,
                 "score": 0.5 * wc["score"],
                 "source": "wrist_only",
-            })
+            }
+            if "dominant_hand" in wc:
+                entry["dominant_hand"] = wc["dominant_hand"]
+            fused.append(entry)
 
     # Remove remaining collisions via min-gap (prefer higher score)
     fused.sort(key=lambda c: (-c["score"], c["frame"]))
