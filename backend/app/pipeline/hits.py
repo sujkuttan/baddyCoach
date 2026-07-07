@@ -61,25 +61,20 @@ def non_max_suppression(candidates: list[dict], min_gap: int) -> list[dict]:
 class GlobalHitCandidateDetector:
     """Detect hit candidates from shuttle trajectory alone.
 
-    Five-signal fusion: direction change, speed delta, curvature,
-    visibility transition, TrackNet confidence dip.  The dip signal
-    pinpoints shuttle occlusion (racket covering shuttle at contact),
-    which the trajectory-based signals miss by 1-8 frames.
-
-    No player-dependent signals (no proximity gate, no swing acceleration).
-    Candidate scoring is purely shuttle-centric.
+    Four-signal fusion: direction change, speed delta, curvature,
+    visibility transition.  No player-dependent signals (no proximity gate,
+    no swing acceleration).  Candidate scoring is purely shuttle-centric.
     """
 
-    def __init__(self, window: int = 3, direction_weight: float = 0.30,
+    def __init__(self, window: int = 3, direction_weight: float = 0.45,
                  speed_weight: float = 0.30, curvature_weight: float = 0.20,
-                 visibility_weight: float = 0.05, dip_weight: float = 0.15,
-                 threshold: float = 0.62, min_gap_frames: int = 6):
+                 visibility_weight: float = 0.05, threshold: float = 0.62,
+                 min_gap_frames: int = 6):
         self.window = window
         self.direction_weight = direction_weight
         self.speed_weight = speed_weight
         self.curvature_weight = curvature_weight
         self.visibility_weight = visibility_weight
-        self.dip_weight = dip_weight
         self.threshold = threshold
         self.min_gap_frames = min_gap_frames
 
@@ -87,11 +82,10 @@ class GlobalHitCandidateDetector:
     def from_settings(cls) -> "GlobalHitCandidateDetector":
         return cls(
             window=getattr(settings, 'hit_window_frames', 3),
-            direction_weight=getattr(settings, 'hit_direction_weight', 0.30),
+            direction_weight=getattr(settings, 'hit_direction_weight', 0.45),
             speed_weight=getattr(settings, 'hit_speed_weight', 0.30),
             curvature_weight=getattr(settings, 'hit_curvature_weight', 0.20),
             visibility_weight=getattr(settings, 'hit_visibility_weight', 0.05),
-            dip_weight=getattr(settings, 'hit_dip_weight', 0.15),
             threshold=getattr(settings, 'hit_candidate_threshold', 0.62),
             min_gap_frames=getattr(settings, 'hit_min_gap_frames', 6),
         )
@@ -167,21 +161,11 @@ class GlobalHitCandidateDetector:
         change_frames = np.where(np.abs(vis_changes) > 0)[0] + 1
         visibility_signal[change_frames] = 1.0
 
-        # 5. TrackNet confidence dip: short-lived occlusion at contact frame.
-        #    When the racket covers the shuttle, TrackNet confidence drops
-        #    for 1-3 frames before recovering.  This dip precedes the
-        #    trajectory inflection point (which lags by 1-8 frames).
-        dip_signal = np.zeros(n, dtype=np.float64)
-        if "confidence" in shuttle_track.columns:
-            confidence = shuttle_track["confidence"].values.astype(np.float64)
-            conf_norm = confidence / (np.nanmax(confidence) + 1e-6)
-            for t in range(2, n - 2):
-                has_real_data = np.sum(~orig_nan[t - 2:t + 3]) >= 4
-                is_dip = conf_norm[t] < 0.3 and \
-                         np.nanmean(conf_norm[t - 2:t]) > 0.4 and \
-                         np.nanmean(conf_norm[t + 1:t + 3]) > 0.4
-                if has_real_data and is_dip:
-                    dip_signal[t] = 1.0
+        # 4. Visibility transition: shuttle appears/disappears (occlusion)
+        visibility_signal = np.zeros(n, dtype=np.float64)
+        vis_changes = np.diff((~orig_nan).astype(int))
+        change_frames = np.where(np.abs(vis_changes) > 0)[0] + 1
+        visibility_signal[change_frames] = 1.0
 
         # Normalize each signal
         direction_norm = _normalize_by_p95(direction_signal)
@@ -193,8 +177,7 @@ class GlobalHitCandidateDetector:
             self.direction_weight * direction_norm +
             self.speed_weight * speed_delta_norm +
             self.curvature_weight * curvature_norm +
-            self.visibility_weight * visibility_signal +
-            self.dip_weight * dip_signal
+            self.visibility_weight * visibility_signal
         )
 
         # Build candidates
@@ -210,7 +193,6 @@ class GlobalHitCandidateDetector:
                     "speed_delta": float(speed_delta_signal[t]),
                     "curvature": float(curvature_signal[t]),
                     "visibility_transition": int(visibility_signal[t]),
-                    "dip_score": float(dip_signal[t]),
                 })
 
         # Suppress scene-cut induced teleport false positives:
@@ -252,14 +234,10 @@ def _find_nearest_wrist_frame(
     candidate_frame: int,
     pose_df: pd.DataFrame,
     shuttle_df: pd.DataFrame,
-    search_window: int = 8,
+    search_window: int = 4,
     min_shuttle_conf: float = 0.20,
 ) -> int:
     """Refine a hit candidate using shuttle direction reversal + wrist proximity.
-
-    **Backward-only search** — the pipeline systematically lags the true
-    contact frame (95/99 enriched labels have pipeline-after-label).  The
-    refinement only searches frames [candidate - search_window, candidate].
 
     Primary signal: shuttle direction reversal angle (near 180° = contact).
     Tiebreaker: wrist-to-shuttle distance across all detected players.
@@ -268,7 +246,7 @@ def _find_nearest_wrist_frame(
         candidate_frame: Initial hit frame from shuttle trajectory.
         pose_df: DataFrame with 'frame', 'player_id', 'keypoints' columns.
         shuttle_df: DataFrame with 'frame', 'x', 'y', 'confidence' columns.
-        search_window: frames to search BACKWARD from candidate_frame.
+        search_window: ±frames to search around candidate_frame.
         min_shuttle_conf: Minimum shuttle detection confidence.
 
     Returns:
@@ -277,7 +255,7 @@ def _find_nearest_wrist_frame(
     # Backward-only search range.  Pre-extract extra trajectory ahead for
     # v_after computation at the search boundary.
     lo = max(0, candidate_frame - search_window)
-    hi = candidate_frame + 1  # backward-only — never search forward
+    hi = candidate_frame + search_window + 1
 
     traj = []
     for f in range(lo - search_window, hi + search_window):
@@ -488,10 +466,9 @@ class HitFrameLocalizationStage:
         detector = GlobalHitCandidateDetector.from_settings()
         candidates = detector.detect(shuttle_df)
 
-        # Phase 2: pose-based contact refinement — backward-only search.
-        # Pipeline lags the true contact frame (95/99 enriched labels are
-        # pipeline-after-label), so we only search backward from each candidate.
-        refine_window = getattr(settings, "hit_refine_window", 8)
+        # Phase 2: pose-based contact refinement (aligns trajectory inflection
+        # to actual racket-shuttle contact using wrist proximity)
+        refine_window = getattr(settings, "hit_refine_window", 4)
         refined_count = 0
         if pose_df is not None and len(pose_df) > 0 and refine_window > 0:
             for c in candidates:
