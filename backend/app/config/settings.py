@@ -52,13 +52,14 @@ class Settings(BaseSettings):
 
     # Hit detection — shuttle-centric GlobalHitCandidateDetector (Section 7)
     hit_window_frames: int = 3           # ±window for velocity vectors
-    hit_direction_weight: float = 0.45   # direction-change signal weight
+    hit_direction_weight: float = 0.30   # direction-change signal weight (reduced from 0.45 for dip signal)
     hit_speed_weight: float = 0.30       # speed-delta signal weight
     hit_curvature_weight: float = 0.20   # curvature signal weight
     hit_visibility_weight: float = 0.05  # visibility-transition signal weight
+    hit_dip_weight: float = 0.15         # TrackNet confidence-dip signal weight (occlusion = contact)
     hit_candidate_threshold: float = 0.62  # minimum event score to accept a candidate
     hit_min_gap_frames: int = 6          # non-maximum suppression window
-    hit_refine_window: int = 4          # ±frames for pose-based contact refinement. Wider windows (16) were tested and made frame alignment worse (mean 15.6→18.2). The root cause is Phase 1 hit detection accuracy, not refinement window size.
+    hit_refine_window: int = 8           # frames to search BACKWARD only from candidate. Refinement is asymmetric (candidate-N to candidate) because 95/99 pipeline frames lag behind label frames. 8 ≈ median offset to labels.
 
     # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
     wrist_hit_enabled: bool = True
