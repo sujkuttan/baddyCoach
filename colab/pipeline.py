@@ -1451,7 +1451,13 @@ if __name__ == "__main__":
     parser.add_argument("--pose-model", default="rtmpose", choices=["rtmpose", "mmpose", "hybrid"],
                         help="Pose model: rtmpose (fast), mmpose/hrnet (accurate), or hybrid (MMPose strokes + RTMPose hits)")
     parser.add_argument("--sample-rate", "-s", type=int, default=0,
-                        help="Frame sampling interval (0=auto for 10fps, 1=every frame, 2=every 2nd, etc.)")
+                        help="Frame sample rate: 0=auto (10fps), 1=every frame, 2=every 2nd, etc.")
+    parser.add_argument("--kinetic-chain", action="store_true", default=True,
+                        help="Verify proximal-to-distal joint velocity cascade per hit")
+    parser.add_argument("--no-kinetic-chain", action="store_false", dest="kinetic_chain",
+                        help="Disable kinetic chain verification")
+    parser.add_argument("--joint-norm", default="bbox", choices=["bbox", "hip_centered"],
+                        help="Joint normalization mode: bbox (BST default) or hip_centered (experimental)")
     parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
     parser.add_argument("--court-corners", default=None,
                         help="Manual court corners as 8 ints: x1,y1,x2,y2,x3,y3,x4,y4 (order: BL,BR,TL,TR)")
@@ -1501,6 +1507,16 @@ if __name__ == "__main__":
         settings.mmaction2_mode = args.mmaction2_mode
         settings.mmaction2_ensemble_weight = args.mmaction2_weight
         print(f"MMAction2 ensemble enabled: mode={args.mmaction2_mode}, weight={args.mmaction2_weight}")
+
+    # Hit detection refinements (from Ryan-z-Feng-ccsf/badminton-coach)
+    settings.kinetic_chain_enabled = args.kinetic_chain
+    settings.bst_joint_norm = args.joint_norm
+    # Audio is too noisy in Colab (other courts) — disable audio-visual fusion
+    settings.audio_hit_enabled = False
+    if args.kinetic_chain:
+        print(f"Kinetic chain verification enabled (window={settings.kinetic_chain_window})")
+    if args.joint_norm != "bbox":
+        print(f"Joint normalization mode: {args.joint_norm}")
 
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
                  sample_rate=args.sample_rate, court_corners=court_corners)
