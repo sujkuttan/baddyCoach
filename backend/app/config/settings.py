@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     wrist_hit_min_conf: float = 0.30     # min keypoint confidence to use wrist
     wrist_hit_score_weight: float = 0.40 # score weight when merging with shuttle candidates
 
+    # Audio-visual fusion hit detection (from Ryan-z-Feng-ccsf/badminton-coach)
+    audio_hit_enabled: bool = True       # use audio onset detection when video has audio track
+    audio_onset_delta: float = 0.5       # onset peak-picking delta threshold (higher = fewer peaks)
+    audio_onset_wait: int = 6            # minimum frames between onset peaks (librosa peak_pick wait)
+    audio_fusion_tolerance: int = 2      # ±frames for audio–wrist cross-validation
+
     # Ownership scoring weights (Section 10)
     # Tuned via grid search against 100 manual labels (see tune_ownership_weights.py)
     ownership_trajectory_weight: float = 0.20

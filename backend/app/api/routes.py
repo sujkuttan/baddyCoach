@@ -80,7 +80,11 @@ def run_pipeline(job_id: str):
         frames = []
         effective_fps = 30.0
 
-    config = StageConfig(gpu_enabled=settings.gpu_enabled, processing_fps=max(1, int(effective_fps)))
+    config = StageConfig(
+        gpu_enabled=settings.gpu_enabled,
+        processing_fps=max(1, int(effective_fps)),
+        extra={"video_path": video_path} if video_path else {},
+    )
 
     # Extract a sample frame for court detection
     court_frame = None

@@ -447,6 +447,221 @@ def _detect_wrist_peaks(pose_df: pd.DataFrame, fps: float,
     return candidates
 
 
+# ── Audio-visual fusion hit detector ────────────────────────────────
+# Adapted from Ryan-z-Feng-ccsf/badminton-coach: audio onset detection
+# cross-validated with wrist velocity peaks.  Audio provides high precision
+# (shuttle-hit "pop" sounds are distinctive); wrist velocity provides high
+# recall (95% of hits within ±4 frames).  Fusion gives both.
+
+def _extract_audio_ffmpeg(video_path: str, sr: int = 22050) -> str:
+    """Extract audio to a temporary mono WAV file via ffmpeg.
+    Returns the temp-file path, or raises on failure.
+    """
+    import subprocess, tempfile
+    audio_path = tempfile.mktemp(suffix=".wav")
+    result = subprocess.run(
+        ["ffmpeg", "-i", video_path, "-vn",
+         "-acodec", "pcm_s16le", "-ar", str(sr), "-ac", "1",
+         "-y", audio_path],
+        capture_output=True, timeout=120,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"ffmpeg audio extraction failed: {result.stderr.decode(errors='replace')[:200]}")
+    return audio_path
+
+
+def _detect_onset_peaks(audio_path: str, fps: float, sr: int = 22050,
+                         delta: float = 0.5, wait: int = 6,
+                         min_gap_frames: int = 6) -> list[dict]:
+    """Detect onset peaks from a WAV audio file using librosa.
+
+    Returns list[dict] with keys ``frame``, ``score`` (normalised onset
+    strength), ``source`` (= ``"audio"``), sorted by frame and filtered
+    by ``min_gap_frames``.
+    """
+    import librosa
+    y, _ = librosa.load(audio_path, sr=sr, mono=True)
+    onset_env = librosa.onset.onset_strength(y=y, sr=sr)
+    peaks = librosa.util.peak_pick(
+        onset_env,
+        pre_max=3, post_max=3,
+        pre_avg=3, post_avg=5,
+        delta=delta, wait=wait,
+    )
+    if len(peaks) == 0:
+        return []
+
+    times = librosa.frames_to_time(peaks, sr=sr)
+    frames = [int(round(t * fps)) for t in times]
+    scores = onset_env[peaks]
+    smax = float(np.max(scores))
+    if smax > 0:
+        scores = scores / smax
+
+    candidates = []
+    prev = -min_gap_frames
+    for f, s in sorted(zip(frames, scores)):
+        if f - prev >= min_gap_frames:
+            candidates.append({"frame": f, "score": float(s), "source": "audio"})
+            prev = f
+    return candidates
+
+
+def _fuse_audio_wrist(audio_candidates: list[dict],
+                      wrist_candidates: list[dict],
+                      tolerance: int = 2,
+                      min_gap_frames: int = 6) -> list[dict]:
+    """Cross-validate audio onset peaks with wrist velocity peaks.
+
+    Fusion strategy (highest to lowest confidence):
+      1. **audio_visual_fusion** — audio peak with matching wrist peak
+         within ``tolerance`` frames → score = 1.0.
+      2. **audio_only** — audio peak without wrist match → score = 0.8
+         (audio alone is still high precision).
+      3. **wrist_only** — wrist peak without matching audio peak
+         → score = 0.5 × original wrist score (might be hits audio missed).
+
+    Returns fused list sorted by frame with minimum-gap enforcement.
+    """
+    if not audio_candidates:
+        return list(wrist_candidates)
+    if not wrist_candidates:
+        return list(audio_candidates)
+
+    wrist_frames = {w["frame"] for w in wrist_candidates}
+
+    fused: list[dict] = []
+    audio_frames: set[int] = set()
+
+    for ac in audio_candidates:
+        af = ac["frame"]
+        audio_frames.add(af)
+        match = any(abs(af - wf) <= tolerance for wf in wrist_frames)
+        if match:
+            fused.append({"frame": af, "score": 1.0, "source": "audio_visual_fusion"})
+        else:
+            fused.append({"frame": af, "score": 0.8, "source": "audio_only"})
+
+    for wc in wrist_candidates:
+        wf = wc["frame"]
+        if not any(abs(wf - af) <= tolerance for af in audio_frames):
+            fused.append({
+                "frame": wf,
+                "score": 0.5 * wc["score"],
+                "source": "wrist_only",
+            })
+
+    # Remove remaining collisions via min-gap (prefer higher score)
+    fused.sort(key=lambda c: (-c["score"], c["frame"]))
+    result = []
+    suppressed: set[int] = set()
+    for i, c in enumerate(fused):
+        if i in suppressed:
+            continue
+        result.append(c)
+        for j in range(i + 1, len(fused)):
+            if abs(c["frame"] - fused[j]["frame"]) < min_gap_frames:
+                suppressed.add(j)
+    result.sort(key=lambda c: c["frame"])
+    return result
+
+
+class AudioFusionDetector:
+    """Detect hit candidates by fusing audio onset + wrist-velocity peaks.
+
+    Uses ``ffmpeg`` for audio extraction and ``librosa`` for onset
+    detection.  Falls back to wrist-only when audio is unavailable or
+    extraction fails.
+    """
+
+    def __init__(self, fps: float = 30.0, onset_delta: float = 0.5,
+                 onset_wait: int = 6, fusion_tolerance: int = 2,
+                 min_gap_frames: int = 6):
+        self.fps = fps
+        self.onset_delta = onset_delta
+        self.onset_wait = onset_wait
+        self.fusion_tolerance = fusion_tolerance
+        self.min_gap_frames = min_gap_frames
+
+    @classmethod
+    def from_settings(cls) -> "AudioFusionDetector":
+        return cls(
+            fps=float(getattr(settings, "fps", 30.0)),
+            onset_delta=getattr(settings, "audio_onset_delta", 0.5),
+            onset_wait=getattr(settings, "audio_onset_wait", 6),
+            fusion_tolerance=getattr(settings, "audio_fusion_tolerance", 2),
+            min_gap_frames=getattr(settings, "hit_min_gap_frames", 6),
+        )
+
+    def detect(self, video_path: str, pose_df: pd.DataFrame | None,
+               fps: float | None = None) -> list[dict]:
+        """Fuse audio onset peaks with wrist velocity peaks.
+
+        Parameters
+        ----------
+        video_path : str
+            Path to video file with audio track.
+        pose_df : pd.DataFrame or None
+            Pose data for wrist-speed detection (may be None).
+        fps : float, optional
+            Processing FPS (defaults to ``self.fps``).
+
+        Returns
+        -------
+        list[dict]
+            Each dict has ``frame``, ``score``, ``source`` keys.
+            Empty list if everything fails.
+        """
+        if fps is None:
+            fps = self.fps
+
+        wrist_candidates = []
+        if pose_df is not None and len(pose_df) > 0:
+            wrist_candidates = _detect_wrist_peaks(
+                pose_df, fps,
+                min_speed=getattr(settings, "wrist_hit_min_speed", 0.15),
+                min_interval_s=getattr(settings, "wrist_hit_min_interval_s", 0.3),
+                min_kp_conf=getattr(settings, "wrist_hit_min_conf", 0.30),
+            )
+
+        audio_candidates = []
+        try:
+            audio_path = _extract_audio_ffmpeg(video_path)
+            audio_candidates = _detect_onset_peaks(
+                audio_path, fps,
+                delta=self.onset_delta, wait=self.onset_wait,
+                min_gap_frames=self.min_gap_frames,
+            )
+            import os
+            os.remove(audio_path)
+        except Exception as exc:
+            logger.warning("Audio extraction or onset detection failed",
+                           error=str(exc))
+            # If audio fails, fall back to wrist candidates
+            if wrist_candidates:
+                return wrist_candidates
+            return []
+
+        if not audio_candidates and not wrist_candidates:
+            return []
+
+        fused = _fuse_audio_wrist(
+            audio_candidates, wrist_candidates,
+            tolerance=self.fusion_tolerance,
+            min_gap_frames=self.min_gap_frames,
+        )
+
+        if fused:
+            n_fusion = sum(1 for c in fused if c["source"] == "audio_visual_fusion")
+            n_audio = sum(1 for c in fused if c["source"] == "audio_only")
+            n_wrist = sum(1 for c in fused if c["source"] == "wrist_only")
+            logger.info("Audio-visual fusion completed",
+                        total=len(fused), confirmed=n_fusion,
+                        audio_only=n_audio, wrist_only=n_wrist)
+
+        return fused
+
+
 class HitFrameLocalizationStage:
     name = "hit_frame_localization"
     input_keys = ["shuttle", "pose"]
@@ -462,12 +677,58 @@ class HitFrameLocalizationStage:
             shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
 
         pose_df = artifacts.get_parquet("pose")
+        video_path: str | None = config.extra.get("video_path", "")
+        audio_enabled = (
+            getattr(settings, "audio_hit_enabled", True)
+            and bool(video_path)
+        )
 
         detector = GlobalHitCandidateDetector.from_settings()
-        candidates = detector.detect(shuttle_df)
 
-        # Phase 2: pose-based contact refinement (aligns trajectory inflection
-        # to actual racket-shuttle contact using wrist proximity)
+        # ── Phase 0: audio-visual fusion (or wrist-only fallback) ──
+        fusion_candidates: list[dict] = []
+        if audio_enabled:
+            audio_fuser = AudioFusionDetector.from_settings()
+            fusion_candidates = audio_fuser.detect(
+                video_path, pose_df,
+                fps=float(config.processing_fps or 30.0),
+            )
+        elif getattr(settings, "wrist_hit_enabled", True) and pose_df is not None and len(pose_df) > 0:
+            fps = float(config.processing_fps or getattr(settings, "fps", 30.0))
+            fusion_candidates = _detect_wrist_peaks(
+                pose_df, fps,
+                min_speed=getattr(settings, "wrist_hit_min_speed", 0.15),
+                min_interval_s=getattr(settings, "wrist_hit_min_interval_s", 0.3),
+                min_kp_conf=getattr(settings, "wrist_hit_min_conf", 0.30),
+            )
+
+        # ── Phase 1: shuttle trajectory detector ──
+        shuttle_candidates = detector.detect(shuttle_df)
+
+        # ── Merge: fusion candidates get priority, shuttle fills gaps ──
+        candidates = list(fusion_candidates)
+        fusion_frames = {c["frame"] for c in fusion_candidates}
+        for c in shuttle_candidates:
+            if c["frame"] not in fusion_frames:
+                candidates.append(c)
+        candidates = non_max_suppression(candidates, detector.min_gap_frames)
+
+        if audio_enabled:
+            n_source = {"fusion": sum(1 for c in candidates if c.get("source", "").startswith("audio")),
+                        "shuttle": sum(1 for c in candidates if c.get("source") is None)}
+            logger.info("Hit candidates merged (audio-enabled)",
+                        total=len(candidates), sources=n_source)
+        elif fusion_candidates:
+            # Wrist-only fallback — adjust wrist scores and log
+            wrist_weight = getattr(settings, "wrist_hit_score_weight", 0.40)
+            for c in candidates:
+                if c.get("source") == "wrist_peak":
+                    c["score"] *= wrist_weight
+            logger.info("Hit candidates merged (wrist-only fallback)",
+                        total=len(candidates),
+                        wrist_count=len(fusion_candidates))
+
+        # ── Phase 2: pose-based contact refinement (unchanged) ──
         refine_window = getattr(settings, "hit_refine_window", 4)
         refined_count = 0
         if pose_df is not None and len(pose_df) > 0 and refine_window > 0:
@@ -484,35 +745,10 @@ class HitFrameLocalizationStage:
                     refined_count += 1
 
         if refined_count > 0:
-            # Re-run NMS after refinement (shifted frames may now collide)
             candidates = non_max_suppression(candidates, detector.min_gap_frames)
             logger.info("Refined hit frames via wrist-to-shuttle proximity",
-                        refined_count=refined_count, total=len(candidates), window=refine_window)
-
-        # Phase 3: wrist-speed fallback — catch hits missed by shuttle detector
-        # Adapted from Haimantika/badminton-coach: purely kinematic strike detection
-        wrist_hits = []
-        if getattr(settings, "wrist_hit_enabled", True) and pose_df is not None and len(pose_df) > 0:
-            fps = float(config.processing_fps or getattr(settings, "fps", 30.0))
-            wrist_hits = _detect_wrist_peaks(
-                pose_df, fps,
-                min_speed=getattr(settings, "wrist_hit_min_speed", 0.15),
-                min_interval_s=getattr(settings, "wrist_hit_min_interval_s", 0.3),
-                min_kp_conf=getattr(settings, "wrist_hit_min_conf", 0.30),
-            )
-
-        if wrist_hits:
-            # Merge wrist peaks with shuttle candidates
-            wrist_weight = getattr(settings, "wrist_hit_score_weight", 0.40)
-            candidate_frames = {c["frame"] for c in candidates}
-            for w in wrist_hits:
-                w["score"] *= wrist_weight
-                if w["frame"] not in candidate_frames:
-                    candidates.append(w)
-            # Re-run NMS on merged list
-            candidates = non_max_suppression(candidates, detector.min_gap_frames)
-            logger.info("Wrist-speed fallback added hits",
-                        wrist_count=len(wrist_hits), merged_total=len(candidates))
+                        refined_count=refined_count, total=len(candidates),
+                        window=refine_window)
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:
