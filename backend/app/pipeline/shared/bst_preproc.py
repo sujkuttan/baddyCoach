@@ -138,6 +138,73 @@ def normalize_joints_court(
     return (normalized - 0.5).astype(np.float32)
 
 
+def normalize_joints_hip_centered(
+    coords: np.ndarray,
+    vid_w: float = 1.0,
+    vid_h: float = 1.0,
+    conf: np.ndarray | None = None,
+) -> np.ndarray:
+    """Normalize joints by centering on hip midpoint and scaling by torso length.
+
+    From Ryan-z-Feng-ccsf/badminton-coach: hip midpoint is more stable than
+    bbox center (doesn't shift when arms raise), and torso length provides
+    a person-specific scale that's invariant to camera distance.
+
+    COCO-17 indices used:
+    - shoulders: 5 (left), 6 (right)
+    - hips: 11 (left), 12 (right)
+
+    Args:
+        coords: (17, 2) keypoints in pixel coords.
+        vid_w: video width in pixels (for aspect ratio correction).
+        vid_h: video height in pixels (for aspect ratio correction).
+        conf: optional (17,) keypoint confidence; low-conf joints are
+              not used for hip/shoulder center computation.
+
+    Returns:
+        (17, 2) normalized joints, range roughly [-1, 1].
+    """
+    arr = coords.copy().astype(np.float64)
+
+    # Default mask: use all non-zero coords
+    mask = np.ones(len(arr), dtype=bool)
+    if conf is not None:
+        mask &= conf > 0.1
+    mask &= ~np.all(arr == 0.0, axis=1)
+
+    # Hip center
+    if mask[11] and mask[12]:
+        hip_center = (arr[11] + arr[12]) * 0.5
+    elif mask[11]:
+        hip_center = arr[11]
+    elif mask[12]:
+        hip_center = arr[12]
+    else:
+        hip_center = np.array([0.0, 0.0])
+
+    # Shoulder center
+    if mask[5] and mask[6]:
+        shoulder_center = (arr[5] + arr[6]) * 0.5
+    elif mask[5]:
+        shoulder_center = arr[5]
+    elif mask[6]:
+        shoulder_center = arr[6]
+    else:
+        shoulder_center = hip_center + np.array([0.0, -100.0])
+
+    torso_length = float(np.linalg.norm(shoulder_center - hip_center))
+    if torso_length < 1e-6:
+        torso_length = 1.0
+
+    normalized = (arr - hip_center) / torso_length
+
+    # Aspect ratio correction (x is wider in landscape)
+    if vid_h > 0:
+        normalized[:, 0] *= (vid_w / vid_h)
+
+    return normalized.astype(np.float32)
+
+
 def create_bones(joints: np.ndarray, velocity_mag: np.ndarray | None = None,
                  amp_factor: float = 0.0) -> np.ndarray:
     """Create bone vectors from joint positions, optionally velocity-weighted.

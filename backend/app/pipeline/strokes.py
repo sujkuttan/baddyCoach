@@ -6,7 +6,10 @@ from app.config.settings import settings
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.pipeline.shared.court import COURT_LENGTH, COURT_WIDTH, image_to_court, clamp_to_unit
-from app.pipeline.shared.bst_preproc import normalize_joints, normalize_joints_court, create_bones, BONE_PAIRS
+from app.pipeline.shared.bst_preproc import (
+    normalize_joints, normalize_joints_court, normalize_joints_hip_centered,
+    create_bones, BONE_PAIRS,
+)
 from app.pipeline.shared.physics import apply_physics_ensemble, summarize_physics_sources
 from app.models.bst import COACH_STROKE_CLASSES
 
@@ -244,6 +247,10 @@ def _build_clip(
                     debug_clip_stats["n_missing_bbox"] += 1
                 if settings.bst_joint_norm == "court" and homography is not None:
                     joints[t, p_idx] = normalize_joints_court(coords, homography)
+                elif settings.bst_joint_norm == "hip_centered":
+                    joints[t, p_idx] = normalize_joints_hip_centered(
+                        coords, vid_w=vid_w, vid_h=vid_h, conf=kps[:, 2],
+                    )
                 else:
                     bbox = interpolated_bboxes.get(pid, {}).get(frame)
                     joints[t, p_idx] = normalize_joints(
