@@ -5,11 +5,7 @@ from app.pipeline.base import ArtifactStore, StageConfig, StageResult
 from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
-# COCO-17 keypoint indices
-_R_SHOULDER = 6
-_L_SHOULDER = 5
-_R_ELBOW = 8
-_L_ELBOW = 7
+# COCO-17 keypoint indices (used by wrist-speed detector)
 _R_WRIST = 10
 _L_WRIST = 9
 
@@ -594,146 +590,6 @@ def _fuse_audio_wrist(audio_candidates: list[dict],
     return result
 
 
-# ── Kinetic chain verification ───────────────────────────────────────
-# From Ryan-z-Feng-ccsf/badminton-coach's rules_dominant.py: during a
-# hit, shoulder velocity peaks before elbow before wrist (proximal-to-
-# distal).  False positives from non-hit racket movements lack this
-# ordering.
-
-def _compute_joint_velocity(kps_series: np.ndarray, joint_idx: int,
-                             min_conf: float = 0.3,
-                             smooth_window: int = 3) -> np.ndarray:
-    """Compute smoothed velocity magnitude for a single joint.
-
-    Args:
-        kps_series: (T, 17, 3) keypoint array for one player.
-        joint_idx: COCO-17 index of the joint.
-        min_conf: minimum confidence to accept a keypoint.
-        smooth_window: moving-average window for velocity.
-
-    Returns:
-        (T,) velocity magnitude (px/frame), zero at frame 0.
-    """
-    T = len(kps_series)
-    xy = kps_series[:, joint_idx, :2].copy().astype(np.float64)
-    conf = kps_series[:, joint_idx, 2]
-    xy[conf < min_conf] = np.nan
-
-    xy_filled = np.array(pd.DataFrame(xy).ffill().bfill().values, dtype=np.float64)
-    xy_filled = np.nan_to_num(xy_filled, nan=0.0)
-
-    # Speed = |d(coords)/dt| — length T-1
-    diffs = np.diff(xy_filled, axis=0)
-    speed = np.sqrt(np.sum(diffs ** 2, axis=1))  # (T-1,)
-
-    if smooth_window > 1 and len(speed) > smooth_window:
-        cum = np.cumsum(np.insert(speed, 0, 0))
-        speed_smooth = (cum[smooth_window:] - cum[:-smooth_window]) / smooth_window
-        pad_l = smooth_window // 2
-        pad_r = max(0, len(speed) - len(speed_smooth) - pad_l)
-        speed = np.concatenate([
-            np.zeros(pad_l, dtype=np.float64),
-            speed_smooth,
-            np.zeros(pad_r, dtype=np.float64),
-        ])[:len(speed)]
-
-    vel = np.zeros(T, dtype=np.float64)
-    vel[1:] = speed[:T-1]
-    return vel
-
-
-def _verify_kinetic_chain(candidate_frame: int, pose_df: pd.DataFrame,
-                           search_window: int = 5,
-                           min_kp_conf: float = 0.3) -> tuple[bool, float]:
-    """Verify proximal-to-distal kinetic chain near a candidate frame.
-
-    For each player, computes shoulder/elbow/wrist velocity and checks
-    that peaks occur in proximal-to-distal order within ``search_window``
-    frames of ``candidate_frame``.
-
-    Returns:
-        (passes: bool, score: float) where score ∈ [0, 1] reflects the
-        quality of the best kinetic chain found across all players.
-    """
-    if pose_df is None or len(pose_df) < 3:
-        return False, 0.0
-
-    # Build per-player keypoint arrays
-    player_kps: dict[str, np.ndarray] = {}
-    player_frames: dict[str, np.ndarray] = {}
-    for player_id in pose_df["player_id"].unique():
-        player = pose_df[pose_df["player_id"] == player_id].sort_values("frame")
-        frames = player["frame"].values
-        kps_list = []
-        for _, row in player.iterrows():
-            raw = row["keypoints"]
-            kps = np.array(raw.tolist()) if hasattr(raw, "tolist") else np.array(raw)
-            if kps.shape != (17, 3):
-                kps = np.zeros((17, 3), dtype=np.float32)
-            kps_list.append(kps)
-        if len(kps_list) >= 3:
-            player_kps[player_id] = np.array(kps_list)
-            player_frames[player_id] = frames
-
-    if not player_kps:
-        return False, 0.0
-
-    best_score = 0.0
-
-    for player_id, kps_arr in player_kps.items():
-        frames = player_frames[player_id]
-
-        # Detect dominant hand for this player via wrist velocity
-        r_wrist_vel = _compute_joint_velocity(kps_arr, _R_WRIST, min_kp_conf)
-        l_wrist_vel = _compute_joint_velocity(kps_arr, _L_WRIST, min_kp_conf)
-        r_max = float(np.max(r_wrist_vel))
-        l_max = float(np.max(l_wrist_vel))
-
-        if max(r_max, l_max) < 1e-3:
-            continue
-
-        if r_max >= l_max:
-            sh_idx, el_idx, wr_idx = _R_SHOULDER, _R_ELBOW, _R_WRIST
-        else:
-            sh_idx, el_idx, wr_idx = _L_SHOULDER, _L_ELBOW, _L_WRIST
-
-        sh_vel = _compute_joint_velocity(kps_arr, sh_idx, min_kp_conf)
-        el_vel = _compute_joint_velocity(kps_arr, el_idx, min_kp_conf)
-        wr_vel = _compute_joint_velocity(kps_arr, wr_idx, min_kp_conf)
-
-        # Find candidate index in this player's frame array
-        match = np.where(frames == candidate_frame)[0]
-        if len(match) == 0:
-            continue
-        c_idx = int(match[0])
-
-        lo = max(0, c_idx - search_window)
-        hi = min(len(sh_vel), c_idx + search_window + 1)
-        if hi - lo < 3:
-            continue
-
-        # Peak indices within search window (argmax on local segments)
-        sh_peak = lo + int(np.argmax(sh_vel[lo:hi]))
-        el_peak = lo + int(np.argmax(el_vel[lo:hi]))
-        wr_peak = lo + int(np.argmax(wr_vel[lo:hi]))
-
-        # Proximal-to-distal ordering: shoulder ≤ elbow ≤ wrist
-        if not (sh_peak <= el_peak <= wr_peak):
-            continue
-
-        cascade_span = wr_peak - sh_peak
-        wrist_dist = abs(wr_peak - c_idx)
-
-        # Score: tight cascade + wrist peak near candidate
-        span_score = max(0.0, 1.0 - cascade_span / (search_window * 2))
-        prox_score = max(0.0, 1.0 - wrist_dist / search_window)
-        score = 0.6 * span_score + 0.4 * prox_score
-
-        best_score = max(best_score, score)
-
-    return best_score >= 0.5, best_score
-
-
 class AudioFusionDetector:
     """Detect hit candidates by fusing audio onset + wrist-velocity peaks.
 
@@ -920,29 +776,14 @@ class HitFrameLocalizationStage:
                         refined_count=refined_count, total=len(candidates),
                         window=refine_window)
 
-        # ── Phase 3: kinetic chain verification ──
-        # Penalise candidates lacking proximal-to-distal joint velocity
-        # cascade (shoulder → elbow → wrist).  Adapted from
-        # Ryan-z-Feng-ccsf/badminton-coach's rules_dominant.py.
-        kinetic_enabled = getattr(settings, "kinetic_chain_enabled", True)
-        kinetic_window = getattr(settings, "kinetic_chain_window", 5)
-        kinetic_min_score = getattr(settings, "kinetic_chain_min_score", 0.5)
-        kinetic_passed = 0
-        if kinetic_enabled and pose_df is not None and len(pose_df) > 0:
-            for c in candidates:
-                passes, score = _verify_kinetic_chain(
-                    c["frame"], pose_df,
-                    search_window=kinetic_window,
-                    min_kp_conf=getattr(settings, "wrist_hit_min_conf", 0.30),
-                )
-                c["_kinetic_chain_score"] = round(score, 3)
-                if not passes:
-                    c["score"] *= 0.5  # penalise false positives
-                else:
-                    kinetic_passed += 1
-            logger.info("Kinetic chain verification",
-                        passed=kinetic_passed, total=len(candidates),
-                        window=kinetic_window)
+        # ── Phase 3: calibration offset ──
+        # Systematic correction: shuttle trajectory inflection lags true
+        # contact by ~8 frames (labelled vs 99 enriched labels, median error
+        # was +8).  Subtract the offset to center the distribution.
+        calib_offset = getattr(settings, "hit_frame_calibration_offset", 8)
+        for c in candidates:
+            c["frame"] = max(0, c["frame"] - calib_offset)
+            c["_calib_offset"] = calib_offset
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:
@@ -964,8 +805,6 @@ class HitFrameLocalizationStage:
             hit = {"frame": c["frame"], "confidence": c["score"]}
             if "_refined_offset" in c:
                 hit["_refined_offset"] = c["_refined_offset"]
-            if "_kinetic_chain_score" in c:
-                hit["_kinetic_chain_score"] = c["_kinetic_chain_score"]
             if "dominant_hand" in c:
                 hit["dominant_hand"] = c["dominant_hand"]
             hits.append(hit)

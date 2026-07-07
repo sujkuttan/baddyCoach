@@ -1452,10 +1452,6 @@ if __name__ == "__main__":
                         help="Pose model: rtmpose (fast), mmpose/hrnet (accurate), or hybrid (MMPose strokes + RTMPose hits)")
     parser.add_argument("--sample-rate", "-s", type=int, default=0,
                         help="Frame sample rate: 0=auto (10fps), 1=every frame, 2=every 2nd, etc.")
-    parser.add_argument("--kinetic-chain", action="store_true", default=True,
-                        help="Verify proximal-to-distal joint velocity cascade per hit")
-    parser.add_argument("--no-kinetic-chain", action="store_false", dest="kinetic_chain",
-                        help="Disable kinetic chain verification")
     parser.add_argument("--joint-norm", default="bbox", choices=["bbox", "hip_centered"],
                         help="Joint normalization mode: bbox (BST default) or hip_centered (experimental)")
     parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
@@ -1508,13 +1504,10 @@ if __name__ == "__main__":
         settings.mmaction2_ensemble_weight = args.mmaction2_weight
         print(f"MMAction2 ensemble enabled: mode={args.mmaction2_mode}, weight={args.mmaction2_weight}")
 
-    # Hit detection refinements (from Ryan-z-Feng-ccsf/badminton-coach)
-    settings.kinetic_chain_enabled = args.kinetic_chain
+    # Joint normalization mode
     settings.bst_joint_norm = args.joint_norm
     # Audio is too noisy in Colab (other courts) — disable audio-visual fusion
     settings.audio_hit_enabled = False
-    if args.kinetic_chain:
-        print(f"Kinetic chain verification enabled (window={settings.kinetic_chain_window})")
     if args.joint_norm != "bbox":
         print(f"Joint normalization mode: {args.joint_norm}")
 

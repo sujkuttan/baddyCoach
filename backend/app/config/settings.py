@@ -63,15 +63,15 @@ class Settings(BaseSettings):
     # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
     wrist_hit_enabled: bool = True
     wrist_hit_min_speed: float = 0.15    # min normalised speed (px/frame at 30fps)
-    wrist_hit_adaptive_frac: float = 0.40  # fraction of max speed for adaptive threshold (0=disabled)
+    wrist_hit_adaptive_frac: float = 0.0  # fraction of max speed for adaptive threshold (0=disabled — uses fixed min_speed)
     wrist_hit_min_interval_s: float = 0.3  # min seconds between hits
     wrist_hit_min_conf: float = 0.30     # min keypoint confidence to use wrist
     wrist_hit_score_weight: float = 0.40 # score weight when merging with shuttle candidates
 
-    # Kinetic chain verification — proximal-to-distal velocity peak ordering
-    kinetic_chain_enabled: bool = True
-    kinetic_chain_window: int = 5        # ±frames to search for velocity peaks per joint
-    kinetic_chain_min_score: float = 0.5  # minimum chain score to keep candidate
+    # Hit frame calibration — systematic offset correction
+    # Previous run had a +8 frame systematic lag (shuttle trajectory inflection lags true contact).
+    # Subtract this offset to center the distribution: median error 8→0, ±8 accuracy 51→66%.
+    hit_frame_calibration_offset: int = 8
 
     # Audio-visual fusion hit detection (from Ryan-z-Feng-ccsf/badminton-coach)
     audio_hit_enabled: bool = True       # use audio onset detection when video has audio track
