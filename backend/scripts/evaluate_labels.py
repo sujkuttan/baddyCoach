@@ -261,6 +261,17 @@ def summarize_bst_input_quality(shots: pd.DataFrame) -> dict:
     eligible = labeled[labeled["bst_input_eligible"].fillna(False)]
     correct = labeled["stroke_type"] == labeled["true_stroke"]
     accepted_correct = eligible["stroke_type"] == eligible["true_stroke"]
+    per_class = {}
+    classes = sorted(set(labeled["true_stroke"]).union(labeled["stroke_type"]))
+    for stroke in classes:
+        true_mask = labeled["true_stroke"] == stroke
+        predicted_mask = labeled["stroke_type"] == stroke
+        true_positive = int((true_mask & predicted_mask).sum())
+        per_class[stroke] = {
+            "precision": true_positive / max(1, int(predicted_mask.sum())),
+            "recall": true_positive / max(1, int(true_mask.sum())),
+            "count": int(true_mask.sum()),
+        }
     reason_counts = {}
     for reasons in labeled.get("bst_input_quality_reasons", pd.Series(dtype=object)):
         if isinstance(reasons, np.ndarray):
@@ -271,9 +282,11 @@ def summarize_bst_input_quality(shots: pd.DataFrame) -> dict:
         "total_labeled": len(labeled),
         "eligible_labeled": len(eligible),
         "coverage": len(eligible) / max(1, len(labeled)),
+        "abstention_rate": 1.0 - len(eligible) / max(1, len(labeled)),
         "accepted_accuracy": float(accepted_correct.mean()) if len(eligible) else 0.0,
         "overall_accuracy": float(correct.mean()) if len(labeled) else 0.0,
         "reason_counts": reason_counts,
+        "per_class": per_class,
     }
 
 
@@ -351,9 +364,11 @@ def main():
         quality = metrics["bst_input_quality"]
         print("\n  BST Input Quality:")
         print(f"    Coverage:          {quality['coverage']:.1%}")
+        print(f"    Abstention rate:   {quality['abstention_rate']:.1%}")
         print(f"    Accepted accuracy: {quality['accepted_accuracy']:.1%}")
         print(f"    Overall accuracy:  {quality['overall_accuracy']:.1%}")
         print(f"    Abstention reasons: {quality['reason_counts']}")
+        print(f"    Per class: {quality['per_class']}")
     
     print(f"\n{'─' * 70}")
     print(f"  Interpretation notes:")
