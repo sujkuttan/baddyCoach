@@ -1211,7 +1211,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         pd.DataFrame(shots).to_parquet(debug_dir / "shots.parquet", index=False)
 
         # Copy debug parquet files from store to output dir
-        for debug_key in ["debug_bst_outputs", "debug_hit_scores"]:
+        for debug_key in ["debug_bst_outputs", "debug_bst_input_quality", "debug_hit_scores"]:
             df = store.get_parquet(debug_key)
             if df is not None and len(df) > 0:
                 df.to_parquet(debug_dir / f"{debug_key}.parquet", index=False)

@@ -255,6 +255,28 @@ def print_report(result: dict, metrics: dict, show_details: bool = True):
             print(f"    ... and {len(result['false_positives']) - 10} more")
 
 
+def summarize_bst_input_quality(shots: pd.DataFrame) -> dict:
+    """Summarize coverage and strict accuracy for manually labeled shots."""
+    labeled = shots.dropna(subset=["true_stroke"]).copy()
+    eligible = labeled[labeled["bst_input_eligible"].fillna(False)]
+    correct = labeled["stroke_type"] == labeled["true_stroke"]
+    accepted_correct = eligible["stroke_type"] == eligible["true_stroke"]
+    reason_counts = {}
+    for reasons in labeled.get("bst_input_quality_reasons", pd.Series(dtype=object)):
+        if isinstance(reasons, np.ndarray):
+            reasons = reasons.tolist()
+        for reason in reasons if isinstance(reasons, list) else []:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return {
+        "total_labeled": len(labeled),
+        "eligible_labeled": len(eligible),
+        "coverage": len(eligible) / max(1, len(labeled)),
+        "accepted_accuracy": float(accepted_correct.mean()) if len(eligible) else 0.0,
+        "overall_accuracy": float(correct.mean()) if len(labeled) else 0.0,
+        "reason_counts": reason_counts,
+    }
+
+
 def evaluate_enriched_csv(csv_path: str, max_frame_diff: int = 15) -> dict:
     """Evaluate using already-matched enriched CSV (labels_enriched.csv format)."""
     df = pd.read_csv(csv_path)
@@ -282,6 +304,15 @@ def evaluate_enriched_csv(csv_path: str, max_frame_diff: int = 15) -> dict:
                 m["frame_error"] = int(df.iloc[i]["frame_diff"])
     
     metrics = compute_metrics(result)
+    if "bst_input_eligible" in shots.columns:
+        matched_rows = []
+        for match in result["matches"]:
+            if match["shot"] is None:
+                continue
+            row = dict(match["shot"])
+            row["true_stroke"] = match["label"]["stroke"]
+            matched_rows.append(row)
+        metrics["bst_input_quality"] = summarize_bst_input_quality(pd.DataFrame(matched_rows))
     # Override with enriched frame diffs
     if "frame_diff" in df.columns:
         frame_diffs = [int(d) for d in df["frame_diff"] if not pd.isna(d)]
@@ -316,6 +347,13 @@ def main():
         metrics = compute_metrics(result)
     
     print_report(result, metrics, show_details=True)
+    if "bst_input_quality" in metrics:
+        quality = metrics["bst_input_quality"]
+        print("\n  BST Input Quality:")
+        print(f"    Coverage:          {quality['coverage']:.1%}")
+        print(f"    Accepted accuracy: {quality['accepted_accuracy']:.1%}")
+        print(f"    Overall accuracy:  {quality['overall_accuracy']:.1%}")
+        print(f"    Abstention reasons: {quality['reason_counts']}")
     
     print(f"\n{'─' * 70}")
     print(f"  Interpretation notes:")
