@@ -154,6 +154,14 @@ class Settings(BaseSettings):
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
     bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
     bst_validation_level: str = "error"  # "off" | "warn" | "error" — BST input tensor validation; set to "error" during debugging for loud failures
+    bst_input_quality_enabled: bool = True
+    bst_min_clip_video_frames: int = 15
+    bst_min_observed_shuttle_fraction: float = 0.35
+    bst_max_raw_shuttle_gap_frames: int = 7
+    bst_min_pose_coverage: float = 0.70
+    bst_min_keypoint_confidence: float = 0.35
+    bst_max_bbox_interp_gap: int = 10
+    bst_quality_score_min: float = 0.70
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5
