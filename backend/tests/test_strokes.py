@@ -255,6 +255,33 @@ def test_build_clip_masks_low_confidence_joints_in_hip_centered_mode(monkeypatch
     np.testing.assert_array_equal(clip["JnB"][0, 1, 20:22], [0.0, 0.0])
 
 
+def test_build_clip_masks_low_confidence_joints_in_court_mode(monkeypatch):
+    from app.pipeline.strokes import _build_clip
+
+    monkeypatch.setattr("app.pipeline.strokes.settings.bst_joint_norm", "court")
+    frames = [0]
+    shuttle = pd.DataFrame({"frame": frames, "x": [100.0], "y": [100.0], "confidence": [0.9]})
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    keypoints[10] = [999.0, 999.0, 0.1]
+    pose = pd.DataFrame([
+        {"frame": 0, "player_id": player, "keypoints": keypoints.tolist()}
+        for player in ("player_1", "player_2")
+    ])
+    players = [
+        {"id": "player_1", "side": "near", "detections": [{"frame": 0, "bbox": [0, 0, 100, 100]}]},
+        {"id": "player_2", "side": "far", "detections": [{"frame": 0, "bbox": [200, 0, 300, 100]}]},
+    ]
+
+    clip = _build_clip(
+        frames, shuttle, pose, 640, 480, 13.4, 6.1, 1,
+        player_detections=players, player_ids=["player_1", "player_2"],
+        homography=np.eye(3),
+    )
+
+    np.testing.assert_array_equal(clip["JnB"][0, 0, 20:22], [0.0, 0.0])
+    np.testing.assert_array_equal(clip["JnB"][0, 1, 20:22], [0.0, 0.0])
+
+
 def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monkeypatch, tmp_job_dir):
     from app.pipeline.shared import models
 

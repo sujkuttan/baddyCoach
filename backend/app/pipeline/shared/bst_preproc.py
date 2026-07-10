@@ -129,12 +129,16 @@ def normalize_joints_court(
     Returns:
         (17, 2) normalized joints, range [-0.5, 0.5].
     """
-    court_coords = np.array([
-        image_to_court(homography, (float(x), float(y)))
-        for x, y in coords
-    ])
+    coords = np.asarray(coords, dtype=np.float64)
+    invalid_mask = ~np.isfinite(coords).all(axis=1) | np.all(coords == 0.0, axis=1)
+    court_coords = np.zeros_like(coords, dtype=np.float64)
+    for idx, (x, y) in enumerate(coords):
+        if not invalid_mask[idx]:
+            court_coords[idx] = image_to_court(homography, (float(x), float(y)))
     normalized = court_coords / np.array([court_length, court_width])
-    return (normalized - 0.5).astype(np.float32)
+    normalized -= 0.5
+    normalized[invalid_mask] = 0.0
+    return normalized.astype(np.float32)
 
 
 def normalize_joints_hip_centered(
