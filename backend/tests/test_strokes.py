@@ -56,6 +56,17 @@ def test_temporal_resample_upsample():
     assert abs(result[10, 0] - (10 * 9 / 19)) < 0.01
 
 
+def test_temporal_dedup_preserves_quality_abstained_shots():
+    from app.pipeline.strokes import _can_temporally_deduplicate
+
+    assert _can_temporally_deduplicate(
+        {"stroke_type": "unknown", "bst_input_eligible": False},
+        {"stroke_type": "smash", "bst_input_eligible": True},
+        gap=1,
+        max_gap=6,
+    ) is False
+
+
 def test_temporal_resample_downsample():
     """Downsample from 100 to 50 frames."""
     arr = np.arange(100, dtype=np.float32).reshape(100, 1)
@@ -325,3 +336,5 @@ def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monk
 
     assert shots.loc[1, "stroke_type"] == "smash"
     assert shots.loc[1, "bst_input_route"] == "downstream_override"
+    assert shots.loc[1, "stroke_source"] == "temporal_smoothing"
+    assert shots.loc[1, "bst_input_override_source"] == "temporal_smoothing"

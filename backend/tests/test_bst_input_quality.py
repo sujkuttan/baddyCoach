@@ -65,5 +65,21 @@ def test_quality_accumulates_all_failed_hard_checks_and_clamps_score():
         "low_pose_coverage",
         "low_keypoint_confidence",
         "long_bbox_gap",
+        "too_many_interpolated_shuttle",
         "low_quality_score",
     ]
+
+
+def test_quality_scores_and_rejects_repaired_or_interpolated_shuttle_heavily():
+    observed = [True] * 7 + [False] * 6 + [True] * 7
+    result = evaluate_bst_clip_quality(_provenance(
+        shuttle_observed=observed,
+        shuttle_repaired=[False] * 7 + [True] * 6 + [False] * 7,
+        shuttle_interpolated=[False] * 7 + [True] * 6 + [False] * 7,
+    ))
+
+    assert result["repaired_shuttle_fraction"] == 0.3
+    assert result["interpolated_shuttle_fraction"] == 0.3
+    assert result["eligible"] is False
+    assert "too_many_interpolated_shuttle" in result["reasons"]
+    assert "low_quality_score" in result["reasons"]

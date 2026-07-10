@@ -158,6 +158,8 @@ class Settings(BaseSettings):
     bst_min_clip_video_frames: int = 15
     bst_min_observed_shuttle_fraction: float = 0.35
     bst_max_raw_shuttle_gap_frames: int = 7
+    bst_max_repaired_shuttle_fraction: float = 0.50
+    bst_max_interpolated_shuttle_fraction: float = 0.25
     bst_min_pose_coverage: float = 0.70
     bst_min_keypoint_confidence: float = 0.35
     bst_max_bbox_interp_gap: int = 10

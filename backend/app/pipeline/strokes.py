@@ -74,6 +74,19 @@ def _temporal_resample(arr: np.ndarray, target_len: int,
     return out.reshape(target_len, *arr.shape[1:])
 
 
+def _can_temporally_deduplicate(previous: dict, current: dict, gap: int, max_gap: int) -> bool:
+    """Keep quality-abstained shots as auditable records, even when nearby."""
+    if gap > max_gap:
+        return False
+    if not previous.get("bst_input_eligible", True) or not current.get("bst_input_eligible", True):
+        return False
+    return (
+        current["stroke_type"] == previous["stroke_type"]
+        or current["stroke_type"] == "unknown"
+        or previous["stroke_type"] == "unknown"
+    )
+
+
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
     """Get (17, 3) keypoints for a frame/player from pose dataframe."""
     if pose_df is None or len(pose_df) == 0:
@@ -760,6 +773,14 @@ class StrokeClassificationStage:
             shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
 
+        for shot in shots:
+            if not shot["bst_input_eligible"]:
+                if shot.get("stroke_source") in {"bst", "bst_no_physics"}:
+                    shot["stroke_source"] = "quality_abstain"
+                if shot["stroke_type"] != "unknown":
+                    shot["bst_input_route"] = "downstream_override"
+                    shot["bst_input_override_source"] = "physics"
+
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions
         # (even low-confidence) are preserved to avoid rule-based bias from
@@ -783,6 +804,8 @@ class StrokeClassificationStage:
         for shot in shots:
             if shot["bst_input_route"] == "quality_abstain" and shot["stroke_type"] != "unknown":
                 shot["bst_input_route"] = "downstream_override"
+                shot["bst_input_override_source"] = "temporal_smoothing"
+                shot["stroke_source"] = "temporal_smoothing"
 
         # Temporal dedup: merge consecutive shots within 0.2s that share the
         # same stroke type. When the same hit is detected at multiple nearby
@@ -795,12 +818,7 @@ class StrokeClassificationStage:
             for s in shots[1:]:
                 prev = deduped[-1]
                 gap = s["frame"] - prev["frame"]
-                same_type = (
-                    s["stroke_type"] == prev["stroke_type"]
-                    or s["stroke_type"] == "unknown"
-                    or prev["stroke_type"] == "unknown"
-                )
-                if gap <= max_gap and same_type:
+                if _can_temporally_deduplicate(prev, s, gap, max_gap):
                     # Merge: keep the higher-confidence shot
                     if s["stroke_confidence"] > prev["stroke_confidence"]:
                         deduped[-1] = s

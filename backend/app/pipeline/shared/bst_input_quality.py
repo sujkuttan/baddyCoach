@@ -44,6 +44,8 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     near_gaps = values("bbox_gap_near", float)
 
     observed_fraction = _coverage(observed)
+    repaired_fraction = _coverage(repaired)
+    interpolated_fraction = _coverage(interpolated)
     max_shuttle_gap = _longest_false_run(observed)
     far_coverage = _coverage(far_present)
     near_coverage = _coverage(near_present)
@@ -52,35 +54,43 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     max_bbox_gap = int(max(np.max(far_gaps, initial=0), np.max(near_gaps, initial=0)))
 
     reasons = []
+    hard_reasons = []
     score = 1.0
     if video_len < settings.bst_min_clip_video_frames:
-        reasons.append("clip_too_short")
+        hard_reasons.append("clip_too_short")
     if observed_fraction < settings.bst_min_observed_shuttle_fraction:
-        reasons.append("low_observed_shuttle")
+        hard_reasons.append("low_observed_shuttle")
         score -= 0.35
     if max_shuttle_gap > settings.bst_max_raw_shuttle_gap_frames:
-        reasons.append("long_shuttle_gap")
+        hard_reasons.append("long_shuttle_gap")
         score -= 0.25
     if rejected.any():
-        reasons.append("court_rejected_shuttle")
+        hard_reasons.append("court_rejected_shuttle")
         score -= 0.20
     if min(far_coverage, near_coverage) < settings.bst_min_pose_coverage:
-        reasons.append("low_pose_coverage")
+        hard_reasons.append("low_pose_coverage")
         score -= 0.20
     if min(far_median_conf, near_median_conf) < settings.bst_min_keypoint_confidence:
-        reasons.append("low_keypoint_confidence")
+        hard_reasons.append("low_keypoint_confidence")
         score -= 0.15
     if max_bbox_gap > settings.bst_max_bbox_interp_gap:
-        reasons.append("long_bbox_gap")
+        hard_reasons.append("long_bbox_gap")
         score -= 0.15
 
+    score -= 0.50 * repaired_fraction
+    score -= 0.80 * interpolated_fraction
+    if repaired_fraction > settings.bst_max_repaired_shuttle_fraction:
+        hard_reasons.append("too_many_repaired_shuttle")
+    if interpolated_fraction > settings.bst_max_interpolated_shuttle_fraction:
+        hard_reasons.append("too_many_interpolated_shuttle")
+
     score = float(np.clip(score, 0.0, 1.0))
-    hard_failures = bool(reasons)
+    reasons.extend(hard_reasons)
     if score < settings.bst_quality_score_min:
         reasons.append("low_quality_score")
 
     return {
-        "eligible": not hard_failures and score >= settings.bst_quality_score_min,
+        "eligible": not hard_reasons and score >= settings.bst_quality_score_min,
         "score": score,
         "reasons": reasons,
         "observed_shuttle_frames": int(observed.sum()),
@@ -88,6 +98,8 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "interpolated_shuttle_frames": int(interpolated.sum()),
         "court_rejected_shuttle_frames": int(rejected.sum()),
         "observed_shuttle_fraction": observed_fraction,
+        "repaired_shuttle_fraction": repaired_fraction,
+        "interpolated_shuttle_fraction": interpolated_fraction,
         "max_shuttle_gap_frames": max_shuttle_gap,
         "far_pose_coverage": far_coverage,
         "near_pose_coverage": near_coverage,
