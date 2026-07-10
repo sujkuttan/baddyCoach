@@ -7,6 +7,39 @@ def _make_detection(frame, bbox, track_id=None, confidence=0.9):
     return {"frame": frame, "bbox": list(bbox), "confidence": confidence, "track_id": track_id}
 
 
+class _FakeDetection:
+    def __init__(self, bbox, confidence, track_id):
+        self.bbox = bbox
+        self.confidence = confidence
+        self.track_id = track_id
+
+
+class _FakeTracker:
+    def track_frames(self, frames):
+        return {
+            "frames": {
+                0: [_FakeDetection([1, 2, 11, 22], 0.9, 7)],
+                1: [_FakeDetection([2, 3, 12, 23], 0.8, 7)],
+            },
+        }
+
+
+def test_live_yolo_logging_uses_pipeline_logger_contract(monkeypatch):
+    monkeypatch.setattr(
+        "app.pipeline.shared.models.get_yolov8", lambda: _FakeTracker()
+    )
+
+    detections = PlayerTrackingStage()._run_yolov8([
+        np.zeros((8, 8, 3), dtype=np.uint8),
+        np.zeros((8, 8, 3), dtype=np.uint8),
+    ])
+
+    assert detections == [
+        {"frame": 0, "bbox": [1, 2, 11, 22], "confidence": 0.9, "track_id": 7},
+        {"frame": 1, "bbox": [2, 3, 12, 23], "confidence": 0.8, "track_id": 7},
+    ]
+
+
 def test_player_tracking_assigns_near_far(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()

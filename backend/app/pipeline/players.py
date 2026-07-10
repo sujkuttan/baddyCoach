@@ -174,14 +174,21 @@ class PlayerTrackingStage:
             for det in frame_dets if det.track_id is not None
         )
         n_frames_with_dets = sum(1 for v in results["frames"].values() if v)
-        logger.info("ByteTrack raw: %d unique IDs across %d frames (%d detections)",
-                    len(id_counts), n_frames_with_dets, sum(id_counts.values()))
+        logger.info(
+            "ByteTrack raw tracking",
+            unique_ids=len(id_counts),
+            frames_with_detections=n_frames_with_dets,
+            detections=sum(id_counts.values()),
+        )
         if id_counts:
             # Show the most fragmented IDs (fewest detections each)
             small_ids = {k: v for k, v in id_counts.items() if v < 10}
             if small_ids:
-                logger.info("ByteTrack fragmentation: %d IDs with <10 detections: %s",
-                            len(small_ids), dict(sorted(small_ids.items(), key=lambda x: x[1])))
+                logger.info(
+                    "ByteTrack fragmentation",
+                    short_lived_id_count=len(small_ids),
+                    id_detection_counts=dict(sorted(small_ids.items(), key=lambda item: item[1])),
+                )
 
         detections = []
         for frame_idx, frame_dets in results["frames"].items():
