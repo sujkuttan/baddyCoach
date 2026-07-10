@@ -1344,9 +1344,17 @@ def _interpolate_pose_bbox(
     before_frame = None
     after_frame = None
 
-    for candidate in reversed(frame_indices):
-        if candidate >= frame_idx or frame_idx - candidate > range_limit:
-            continue
+    candidate_frames = sorted(set(frame_indices).union(detections_by_frame))
+    before_candidates = [
+        candidate for candidate in candidate_frames
+        if 0 < frame_idx - candidate <= range_limit
+    ]
+    after_candidates = [
+        candidate for candidate in candidate_frames
+        if 0 < candidate - frame_idx <= range_limit
+    ]
+
+    for candidate in reversed(before_candidates):
         match = next(
             (d for d in detections_by_frame.get(candidate, []) if d.get("side") == player_side),
             None,
@@ -1355,9 +1363,7 @@ def _interpolate_pose_bbox(
             before_frame, before_bbox = candidate, np.asarray(match["bbox"], dtype=np.float64)
             break
 
-    for candidate in frame_indices:
-        if candidate <= frame_idx or candidate - frame_idx > range_limit:
-            continue
+    for candidate in after_candidates:
         match = next(
             (d for d in detections_by_frame.get(candidate, []) if d.get("side") == player_side),
             None,
