@@ -11,6 +11,71 @@ from app.config.settings import settings
 # ─── Synthetic architecture tests (no weights needed) ──────────────────────
 
 @pytest.mark.cpu_only
+def test_build_input_background_then_eight_frames():
+    """The checkpoint input is background RGB followed by eight RGB frames."""
+    from app.models.tracknet import _build_input
+
+    background = np.zeros((2, 3, 3), dtype=np.float32)
+    frames = [np.full((2, 3, 3), value, dtype=np.float32) for value in range(1, 9)]
+
+    model_input = _build_input(frames, background)
+
+    assert model_input.shape == (27, 2, 3)
+    assert np.array_equal(model_input[:3], np.zeros((3, 2, 3), dtype=np.float32))
+    for index, value in enumerate(range(1, 9)):
+        assert np.array_equal(model_input[3 + index * 3:6 + index * 3],
+                              np.full((3, 2, 3), value, dtype=np.float32))
+
+
+@pytest.mark.cpu_only
+def test_eight_frame_window_edge_pads_before_and_after_video():
+    """Windows at both ends retain eight slots by repeating the edge frame."""
+    from app.models.tracknet import _build_8frame_window
+
+    frames = [np.full((1, 1, 3), value, dtype=np.float32) for value in range(2)]
+
+    assert [frame[0, 0, 0] for frame in _build_8frame_window(frames, -7)] == [0.0] * 8
+    assert [frame[0, 0, 0] for frame in _build_8frame_window(frames, 1)] == [1.0] * 8
+
+
+@pytest.mark.cpu_only
+def test_extract_largest_component_ignores_higher_isolated_pixel():
+    """Decoding favors the largest valid blob, not the highest single pixel."""
+    from app.models.tracknet import _extract_largest_component
+
+    probabilities = np.zeros((8, 8), dtype=np.float32)
+    probabilities[0, 7] = 0.99
+    probabilities[3:6, 2:5] = 0.80
+
+    x, y, confidence = _extract_largest_component(
+        probabilities, orig_w=80, orig_h=80, threshold=0.50
+    )
+
+    assert x == pytest.approx(3 * 80 / 512)
+    assert y == pytest.approx(4 * 80 / 288)
+    assert confidence == pytest.approx(0.80)
+
+
+@pytest.mark.cpu_only
+def test_triangular_overlap_aggregation_weights_central_predictions_more():
+    """Overlapping eight-channel outputs are combined per frame with triangular weights."""
+    from app.models.tracknet import _aggregate_overlapping_heatmaps
+
+    first = np.zeros((8, 1, 1), dtype=np.float32)
+    second = np.zeros((8, 1, 1), dtype=np.float32)
+    first[4, 0, 0] = 1.0
+    second[1, 0, 0] = 0.0
+
+    aggregate = _aggregate_overlapping_heatmaps(
+        [(0, first), (3, second)], n_frames=11, sequence_length=8
+    )
+
+    # Frame four receives offset 4 (weight 4) and offset 1 (weight 2),
+    # proving overlapping central predictions receive the larger influence.
+    assert aggregate.shape == (11, 1, 1)
+    assert aggregate[4, 0, 0] == pytest.approx(4 / 6)
+
+@pytest.mark.cpu_only
 def test_tracknet_model_forward():
     """Verify custom UNet backbone produces correct output shape."""
     from app.models.tracknet import TrackNetV3Model
@@ -137,7 +202,7 @@ def test_predict_batch_repairs_low_confidence_peak_without_changing_high_confide
             return torch.tensor([[[0.1, 0.2], [0.5, 0.25]]])
 
     peaks = iter([(10.0, 20.0, 0.90), (90.0, 80.0, 0.10)])
-    monkeypatch.setattr("app.models.tracknet._extract_peak", lambda *_: next(peaks))
+    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
     tracker = TrackNetV3(model_path=None, device="cpu")
     tracker.model = StubBackbone()
     tracker.inpaintnet = ConstantRepairNet()

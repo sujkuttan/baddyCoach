@@ -1,7 +1,7 @@
 """TrackNetV3 — custom UNet architecture for shuttlecock tracking.
 
 Architecture matches the checkpoint trained by the original authors:
-  Input:  9 consecutive RGB frames stacked → 27 channels (9×3)
+  Input:  static RGB background plus 8 RGB frames stacked → 27 channels
   Encoder: Conv2D-BN-ReLU blocks with MaxPool (27→64→128→256→512)
   Decoder: Interpolate + skip concat + Conv2D (512→256→128→64→8)
   Output: 8 heatmap channels (first channel used for peak extraction)
@@ -10,6 +10,9 @@ InpaintNet (trajectory rectification):
   Takes a window of (x, y, conf) detections and uses a small temporal CNN
   to fill gaps and smooth the trajectory.
 """
+
+import io
+import zipfile
 
 import numpy as np
 import torch
@@ -175,10 +178,29 @@ class InpaintNet(nn.Module):
 
 INPUT_HEIGHT = 288
 INPUT_WIDTH = 512
+TRACKNET_SEQUENCE_LENGTH = 8
+TRACKNET_BACKGROUND_MODE = "concat"
+
+
+def _build_input(frames: list[np.ndarray], background: np.ndarray) -> np.ndarray:
+    """Build checkpoint input: background RGB followed by eight RGB frames."""
+    if len(frames) != TRACKNET_SEQUENCE_LENGTH:
+        raise ValueError(f"Expected {TRACKNET_SEQUENCE_LENGTH} frames, got {len(frames)}")
+    stacked = np.concatenate([background, *frames], axis=-1)
+    return stacked.transpose(2, 0, 1)
+
+
+def _build_8frame_window(preprocessed: list[np.ndarray], start_idx: int) -> list[np.ndarray]:
+    """Return eight boundary-padded frames beginning at ``start_idx``."""
+    if not preprocessed:
+        raise ValueError("Need at least 1 frame")
+    indices = np.clip(np.arange(start_idx, start_idx + TRACKNET_SEQUENCE_LENGTH),
+                      0, len(preprocessed) - 1)
+    return [preprocessed[index] for index in indices]
 
 
 def _build_9frame_window(preprocessed: list, center_idx: int) -> np.ndarray:
-    """Build a 9-frame input window centered on center_idx.
+    """Legacy compatibility wrapper for callers that still construct 9-frame inputs.
 
     For boundaries (idx < 8), edge frames are repeated (pad).
     Returns: (27, H, W) tensor.
@@ -193,6 +215,53 @@ def _build_9frame_window(preprocessed: list, center_idx: int) -> np.ndarray:
         window = [window[0]] * pad_len + window
     window = np.concatenate(window[-9:], axis=-1)  # (H, W, 27)
     return window.transpose(2, 0, 1)  # (27, H, W)
+
+
+def _triangular_weights(sequence_length: int) -> np.ndarray:
+    """Symmetric temporal weights that favor the central TrackNet outputs."""
+    return 1.0 + np.minimum(np.arange(sequence_length),
+                            (sequence_length - 1) - np.arange(sequence_length))
+
+
+def _extract_largest_component(probabilities: np.ndarray, orig_w: int, orig_h: int,
+                               threshold: float) -> tuple[float, float, float]:
+    """Decode the largest thresholded shuttle blob and scale it to source pixels."""
+    import cv2
+
+    binary = (probabilities >= threshold).astype(np.uint8)
+    n_labels, _labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if n_labels <= 1:
+        return 0.0, 0.0, 0.0
+
+    component = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+    component_mask = _labels == component
+    x_center, y_center = centroids[component]
+    confidence = float(probabilities[component_mask].max())
+    return (float(x_center * orig_w / INPUT_WIDTH),
+            float(y_center * orig_h / INPUT_HEIGHT), confidence)
+
+
+def _aggregate_overlapping_heatmaps(window_outputs: list[tuple[int, np.ndarray]], n_frames: int,
+                                    sequence_length: int = TRACKNET_SEQUENCE_LENGTH) -> np.ndarray:
+    """Reference aggregation helper used by tests and small offline callers.
+
+    Production inference streams this same calculation to keep long-video memory bounded.
+    """
+    if not window_outputs:
+        return np.empty((0,), dtype=np.float32)
+    height, width = window_outputs[0][1].shape[-2:]
+    weighted = np.zeros((n_frames, height, width), dtype=np.float32)
+    weights = np.zeros(n_frames, dtype=np.float32)
+    temporal_weights = _triangular_weights(sequence_length)
+    for start, heatmaps in window_outputs:
+        for offset, heatmap in enumerate(heatmaps):
+            frame = start + offset
+            if 0 <= frame < n_frames:
+                weighted[frame] += temporal_weights[offset] * heatmap
+                weights[frame] += temporal_weights[offset]
+    valid = weights > 0
+    weighted[valid] /= weights[valid, None, None]
+    return weighted
 
 
 def _extract_peak(heatmap: np.ndarray, orig_w: int, orig_h: int) -> tuple[float, float, float]:
@@ -231,7 +300,22 @@ class TrackNetV3:
     def _load_backbone(self, path: str):
         from app.pipeline.shared.models import _checked_load, record_model_health
         try:
-            checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+            try:
+                checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+            except RuntimeError:
+                # The distributed checkpoint is a ZIP bundle containing the real
+                # checkpoint under ckpts/TrackNet_best.pt.
+                with zipfile.ZipFile(path) as archive:
+                    member = next(name for name in archive.namelist()
+                                  if name.endswith("TrackNet_best.pt"))
+                    checkpoint = torch.load(io.BytesIO(archive.read(member)),
+                                            map_location=self.device, weights_only=False)
+            if not isinstance(checkpoint, dict):
+                raise ValueError("checkpoint does not contain metadata and weights")
+            param_dict = checkpoint.get("param_dict", {})
+            if (param_dict.get("seq_len") != TRACKNET_SEQUENCE_LENGTH or
+                    param_dict.get("bg_mode") != TRACKNET_BACKGROUND_MODE):
+                raise ValueError("TrackNet checkpoint contract must be seq_len=8, bg_mode='concat'")
             state_dict = checkpoint if isinstance(checkpoint, dict) else {}
             if 'model' in state_dict:
                 state_dict = state_dict['model']
@@ -249,7 +333,7 @@ class TrackNetV3:
 
             self.model.to(self.device)
             self.model.eval()
-            print(f"TrackNetV3 loaded successfully (custom UNet, 27→8) from {path}")
+            print(f"TrackNetV3 loaded successfully (background + 8 frames, 27→8) from {path}")
         except Exception as e:
             print(f"TrackNetV3 load error: {e}")
             import traceback
@@ -354,31 +438,52 @@ class TrackNetV3:
         n_frames = len(preprocessed)
         from app.config.settings import settings
 
+        # A running mean produces the static background without materialising a
+        # video-sized (frames, height, width, channels) temporary array.
+        background = np.zeros_like(preprocessed[0], dtype=np.float32)
+        for index, frame in enumerate(preprocessed, start=1):
+            background += (frame - background) / index
         all_raw = [None] * n_frames
+        temporal_weights = _triangular_weights(TRACKNET_SEQUENCE_LENGTH)
+        pending_heatmaps: dict[int, np.ndarray] = {}
+        pending_weights: dict[int, float] = {}
 
-        for chunk_start in range(0, n_frames, batch_size):
-            chunk_end = min(chunk_start + batch_size, n_frames)
+        # Starts -7 through n-1 ensure every real frame is present at every
+        # temporal output offset while boundary frames are edge-padded.
+        window_starts = list(range(-(TRACKNET_SEQUENCE_LENGTH - 1), n_frames))
+        for chunk_start in range(0, len(window_starts), batch_size):
+            chunk_starts = window_starts[chunk_start:chunk_start + batch_size]
             batch_windows = []
-            batch_indices = []
-
-            for i in range(chunk_start, chunk_end):
-                window = _build_9frame_window(preprocessed, i)
-                batch_windows.append(window)
-                batch_indices.append(i)
+            for start in chunk_starts:
+                batch_windows.append(_build_input(_build_8frame_window(preprocessed, start), background))
 
             batch_tensor = torch.from_numpy(np.stack(batch_windows)).float().to(self.device)
 
             with torch.no_grad():
                 outputs = self.model(batch_tensor)
-                heatmaps = outputs.cpu().numpy()[:, 0]  # (B, H, W) — first of 8 channels
+                probabilities = torch.sigmoid(outputs).cpu().numpy()
 
-            for j, local_idx in enumerate(batch_indices):
-                hm = heatmaps[j]  # (H, W)
-                x, y, conf = _extract_peak(hm, orig_w, orig_h)
-                # Keep the original-missing mask meaningful for InpaintNet and
-                # downstream trajectory cleaning: sub-threshold peaks are gaps,
-                # not observed coordinates that the repair stage must preserve.
-                all_raw[local_idx] = (x, y, conf) if conf >= settings.shuttle_min_conf else None
+            for start, heatmaps in zip(chunk_starts, probabilities):
+                for offset, heatmap in enumerate(heatmaps):
+                    frame = start + offset
+                    if not 0 <= frame < n_frames:
+                        continue
+                    weight = temporal_weights[offset]
+                    if frame not in pending_heatmaps:
+                        pending_heatmaps[frame] = weight * heatmap
+                        pending_weights[frame] = weight
+                    else:
+                        pending_heatmaps[frame] += weight * heatmap
+                        pending_weights[frame] += weight
+
+                # Once this window has been seen, no later start can produce
+                # frame ``start``. Decode and release it immediately.
+                if start >= 0:
+                    aggregate = pending_heatmaps.pop(start) / pending_weights.pop(start)
+                    x, y, conf = _extract_largest_component(
+                        aggregate, orig_w, orig_h, threshold=settings.shuttle_min_conf
+                    )
+                    all_raw[start] = (x, y, conf) if conf >= settings.shuttle_min_conf else None
 
             del batch_tensor
             if self.device != "cpu":

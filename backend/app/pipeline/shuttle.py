@@ -113,6 +113,7 @@ class ShuttleTrackingStage:
                 "x": pred["x"],
                 "y": pred["y"],
                 "confidence": pred["confidence"],
+                "was_repaired": pred.get("was_repaired", False),
             })
 
         return shuttle_data
