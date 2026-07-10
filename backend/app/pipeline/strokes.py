@@ -101,6 +101,7 @@ def _build_clip(
     homography: np.ndarray | None = None,
     original_len: int | None = None,
     player_ids: list | None = None,
+    shuttle_raw: pd.DataFrame | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -144,14 +145,16 @@ def _build_clip(
                 det_bbox_lookup[pid][d["frame"]] = d["bbox"]
 
     def _interpolate_bboxes(lookup, target_frames):
-        """Linearly interpolate bbox for missing frames."""
+        """Linearly interpolate only short bbox gaps and report source distance."""
         existing = sorted(lookup.keys())
         if not existing:
-            return {}
+            return {}, {}
         result = {}
+        gaps = {}
         for f in target_frames:
             if f in lookup:
                 result[f] = lookup[f]
+                gaps[f] = 0
             else:
                 before = [ef for ef in existing if ef <= f]
                 after = [ef for ef in existing if ef >= f]
@@ -159,23 +162,34 @@ def _build_clip(
                     bf, af = before[-1], after[0]
                     if bf == af:
                         result[f] = lookup[bf]
-                    else:
+                        gaps[f] = 0
+                    elif af - bf <= settings.bst_max_bbox_interp_gap:
                         ratio = (f - bf) / (af - bf)
                         result[f] = tuple(
                             lookup[bf][i] + ratio * (lookup[af][i] - lookup[bf][i])
                             for i in range(4)
                         )
-                elif before:
+                        gaps[f] = max(f - bf, af - f)
+                elif before and f - before[-1] <= settings.bst_max_bbox_interp_gap:
                     result[f] = lookup[before[-1]]
-                elif after:
+                    gaps[f] = f - before[-1]
+                elif after and after[0] - f <= settings.bst_max_bbox_interp_gap:
                     result[f] = lookup[after[0]]
-        return result
+                    gaps[f] = after[0] - f
+                else:
+                    gaps[f] = settings.bst_max_bbox_interp_gap + 1
+                if f not in gaps:
+                    gaps[f] = settings.bst_max_bbox_interp_gap + 1
+        return result, gaps
 
     # Build interpolated bbox lookups for each player
     clip_frames_set = set(frames[:seq_len])
     interpolated_bboxes = {}
+    bbox_gaps = {}
     for pid in list(det_bbox_lookup.keys()):
-        interpolated_bboxes[pid] = _interpolate_bboxes(det_bbox_lookup[pid], clip_frames_set)
+        interpolated_bboxes[pid], bbox_gaps[pid] = _interpolate_bboxes(
+            det_bbox_lookup[pid], clip_frames_set
+        )
 
     # Debug counters for missing data
     bbox_diags = {}
@@ -194,15 +208,49 @@ def _build_clip(
         **bbox_diags,
     }
 
+    provenance = {
+        "video_len": min(n_frames_orig, seq_len),
+        "shuttle_observed": [],
+        "shuttle_repaired": [],
+        "shuttle_interpolated": [],
+        "shuttle_court_rejected": [],
+        "pose_present_far": [],
+        "pose_present_near": [],
+        "pose_keypoint_confidence_far": [],
+        "pose_keypoint_confidence_near": [],
+        "bbox_gap_far": [],
+        "bbox_gap_near": [],
+    }
+    shuttle_lookup = {}
+    if shuttle_df is not None:
+        shuttle_lookup = {int(row["frame"]): row for _, row in shuttle_df.iterrows()}
+    raw_shuttle_lookup = {}
+    if shuttle_raw is not None:
+        raw_shuttle_lookup = {int(row["frame"]): row for _, row in shuttle_raw.iterrows()}
+
     for t, frame in enumerate(frames[:seq_len]):
-        if shuttle_df is not None:
-            s_row = shuttle_df[shuttle_df['frame'] == frame]
-            if len(s_row) > 0:
-                s_conf = float(s_row.iloc[0].get('confidence', 1.0))
-                if s_conf < settings.shuttle_min_conf:
-                    continue
-                sx = float(s_row.iloc[0]['x'])
-                sy = float(s_row.iloc[0]['y'])
+        clean_row = shuttle_lookup.get(frame)
+        raw_row = raw_shuttle_lookup.get(frame)
+        raw_repaired = bool(raw_row.get("was_repaired", False)) if raw_row is not None else False
+        raw_observed = bool(
+            raw_row is not None
+            and not raw_repaired
+            and float(raw_row.get("confidence", 0.0)) >= settings.shuttle_min_conf
+            and np.isfinite(float(raw_row.get("x", np.nan)))
+            and np.isfinite(float(raw_row.get("y", np.nan)))
+        )
+        interpolated = bool(clean_row.get("was_interpolated", False)) if clean_row is not None else False
+        court_rejected = bool(clean_row.get("court_rejected", False)) if clean_row is not None else False
+        provenance["shuttle_observed"].append(raw_observed)
+        provenance["shuttle_repaired"].append(raw_repaired)
+        provenance["shuttle_interpolated"].append(interpolated)
+        provenance["shuttle_court_rejected"].append(court_rejected)
+
+        if clean_row is not None and not court_rejected:
+            s_conf = float(clean_row.get('confidence', 1.0))
+            if s_conf >= settings.shuttle_min_conf:
+                sx = float(clean_row['x'])
+                sy = float(clean_row['y'])
                 if settings.bst_shuttle_norm == "court" and homography is not None:
                     sx, sy = image_to_court(homography, (sx, sy))
                     shuttle[t, 0] = max(0.0, min(1.0, sx / court_length if court_length > 0 else 0))
@@ -239,8 +287,23 @@ def _build_clip(
 
         for p_idx, pid in enumerate(player_order):
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
+            side = "far" if p_idx == 0 else "near"
+            bbox_gap = bbox_gaps.get(pid, {}).get(
+                frame, settings.bst_max_bbox_interp_gap + 1
+            )
+            provenance[f"bbox_gap_{side}"].append(bbox_gap)
             if kps is not None:
                 coords = kps[:, :2]
+                conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(kps))
+                valid_keypoints = (
+                    np.isfinite(coords).all(axis=1)
+                    & (conf >= settings.bst_min_keypoint_confidence)
+                    & ~np.all(coords == 0.0, axis=1)
+                )
+                provenance[f"pose_present_{side}"].append(bool(valid_keypoints.any()))
+                provenance[f"pose_keypoint_confidence_{side}"].append(
+                    float(np.median(conf[valid_keypoints])) if valid_keypoints.any() else 0.0
+                )
                 # Coords are (17, 2); pass confidence for keypoint-bbox masking.
                 # Keypoint-derived bbox structurally eliminates pose/bbox mismatch.
                 if interpolated_bboxes.get(pid, {}).get(frame) is None:
@@ -255,7 +318,7 @@ def _build_clip(
                     bbox = interpolated_bboxes.get(pid, {}).get(frame)
                     joints[t, p_idx] = normalize_joints(
                         coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
-                        conf=kps[:, 2],
+                        conf=conf, min_confidence=settings.bst_min_keypoint_confidence,
                     )
 
                 feet_x = (coords[15, 0] + coords[16, 0]) / 2
@@ -271,6 +334,8 @@ def _build_clip(
                     pos[t, p_idx, 1] = max(0.0, min(1.0, feet_y / vid_h))
             else:
                 debug_clip_stats["n_missing_pose"] += 1
+                provenance[f"pose_present_{side}"].append(False)
+                provenance[f"pose_keypoint_confidence_{side}"].append(0.0)
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     amp = settings.joint_velocity_amplification
@@ -293,6 +358,7 @@ def _build_clip(
         'court_length': court_length,
         'court_width': court_width,
         '_debug_clip': debug_clip_stats,
+        '_bst_provenance': provenance,
     }
 
 
@@ -307,6 +373,7 @@ class StrokeClassificationStage:
             return StageResult.success(metadata={"shot_count": 0})
 
         shuttle_df = artifacts.get_parquet("shuttle")
+        shuttle_raw = artifacts.get_parquet("shuttle_raw")
         pose_df = artifacts.get_parquet("pose")
         court = artifacts.get("court") or {}
 
@@ -396,6 +463,7 @@ class StrokeClassificationStage:
                     homography=homography,
                     original_len=original_n_frames,
                     player_ids=player_ids,
+                    shuttle_raw=shuttle_raw,
                 )
 
                 # Temporal resample to match model's expected seq_len
@@ -464,6 +532,7 @@ class StrokeClassificationStage:
                     homography=homography,
                     original_len=original_n_frames,
                     player_ids=player_ids,
+                    shuttle_raw=shuttle_raw,
                 )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}

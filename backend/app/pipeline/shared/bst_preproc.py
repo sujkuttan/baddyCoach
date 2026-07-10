@@ -18,7 +18,8 @@ BONE_PAIRS = [
 
 def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
                      bbox_margin: float = 0.0,
-                     conf: np.ndarray | None = None) -> np.ndarray:
+                     conf: np.ndarray | None = None,
+                     min_confidence: float = 0.35) -> np.ndarray:
     """Normalize joints using bbox diagonal with center_align.
 
     Matches the official BST preprocessing:
@@ -41,23 +42,22 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
     Returns:
         (17, 2) normalized joints, range roughly [-0.X, 0.X]
     """
+    coords = np.asarray(coords, dtype=np.float64)
+    invalid_mask = ~np.isfinite(coords).all(axis=1) | np.all(coords == 0.0, axis=1)
+    if conf is not None:
+        invalid_mask |= np.asarray(conf) < min_confidence
+
     if det_bbox is not None:
         bbox_min = np.array([det_bbox[0], det_bbox[1]], dtype=np.float64)
         bbox_max = np.array([det_bbox[2], det_bbox[3]], dtype=np.float64)
-        zero_mask = None
     else:
-        mask = np.ones(len(coords), dtype=bool)
-        if conf is not None:
-            mask &= conf > 0.1
-        mask &= ~np.all(coords == 0.0, axis=1)
+        mask = ~invalid_mask
         if mask.any():
             bbox_min = coords[mask].min(axis=0)
             bbox_max = coords[mask].max(axis=0)
-            zero_mask = ~mask
         else:
-            bbox_min = coords.min(axis=0)
-            bbox_max = coords.max(axis=0)
-            zero_mask = None
+            bbox_min = np.zeros(2, dtype=np.float64)
+            bbox_max = np.ones(2, dtype=np.float64)
 
     if bbox_margin > 0:
         margin = (bbox_max - bbox_min) * bbox_margin
@@ -72,8 +72,7 @@ def normalize_joints(coords: np.ndarray, det_bbox: tuple | None = None,
     center = (bbox_min + bbox_max) / 2.0
     normalized -= (center - bbox_min) / diag
 
-    if zero_mask is not None:
-        normalized[zero_mask] = 0.0
+    normalized[invalid_mask] = 0.0
 
     return normalized.astype(np.float32)
 

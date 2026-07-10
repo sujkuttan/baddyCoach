@@ -117,3 +117,49 @@ def test_stroke_classification_empty_hits(tmp_job_dir):
 
     assert result.status == "success"
     assert result.metadata["shot_count"] == 0
+
+
+def test_build_clip_zeros_court_rejected_shuttle_and_records_provenance():
+    from app.pipeline.strokes import _build_clip
+
+    frames = [0, 1, 2]
+    shuttle = pd.DataFrame({
+        "frame": frames,
+        "x": [100.0, 200.0, 300.0],
+        "y": [100.0, 200.0, 300.0],
+        "confidence": [0.9, 0.9, 0.9],
+        "was_interpolated": [False, True, False],
+        "court_rejected": [False, True, False],
+    })
+    shuttle_raw = pd.DataFrame({
+        "frame": frames,
+        "x": [100.0, np.nan, 300.0],
+        "y": [100.0, np.nan, 300.0],
+        "confidence": [0.9, 0.0, 0.9],
+        "was_repaired": [False, True, False],
+    })
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    pose = pd.DataFrame([
+        {"frame": frame, "player_id": player, "keypoints": keypoints.tolist()}
+        for frame in frames for player in ("player_1", "player_2")
+    ])
+    players = [
+        {"id": "player_1", "side": "near", "detections": [
+            {"frame": frame, "bbox": [0, 0, 100, 100]} for frame in frames
+        ]},
+        {"id": "player_2", "side": "far", "detections": [
+            {"frame": frame, "bbox": [200, 0, 300, 100]} for frame in frames
+        ]},
+    ]
+
+    clip = _build_clip(
+        frames, shuttle, pose, 640, 480, 13.4, 6.1, 3,
+        player_detections=players, player_ids=["player_1", "player_2"],
+        shuttle_raw=shuttle_raw,
+    )
+
+    np.testing.assert_array_equal(clip["shuttle"][1], [0.0, 0.0])
+    assert clip["_bst_provenance"]["shuttle_observed"] == [True, False, True]
+    assert clip["_bst_provenance"]["shuttle_repaired"] == [False, True, False]
+    assert clip["_bst_provenance"]["shuttle_interpolated"] == [False, True, False]
+    assert clip["_bst_provenance"]["shuttle_court_rejected"] == [False, True, False]

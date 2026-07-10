@@ -386,6 +386,24 @@ def test_normalize_joints_conf_masks_nonzero():
     assert not np.all(norm_without[5] == 0.0), "Non-zero keypoint without conf should NOT be zeroed"
 
 
+def test_normalize_joints_masks_low_confidence_joint_with_detection_bbox():
+    from app.pipeline.shared.bst_preproc import normalize_joints
+
+    coords = np.full((17, 2), [50.0, 50.0], dtype=np.float32)
+    coords[9] = [60.0, 60.0]
+    coords[10] = [999.0, 999.0]
+    confidence = np.ones(17, dtype=np.float32)
+    confidence[10] = 0.1
+
+    normalized = normalize_joints(
+        coords, det_bbox=(0.0, 0.0, 100.0, 100.0), conf=confidence,
+        min_confidence=0.35,
+    )
+
+    np.testing.assert_array_equal(normalized[10], [0.0, 0.0])
+    assert np.any(normalized[9] != 0.0)
+
+
 def test_normalize_joints_regression_not_other_player_bbox():
     """Pose of player A should never be normalized by player B's bbox.
 
