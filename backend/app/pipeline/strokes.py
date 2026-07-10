@@ -301,6 +301,8 @@ def _build_clip(
                     & (conf >= settings.bst_min_keypoint_confidence)
                     & ~np.all(coords == 0.0, axis=1)
                 )
+                masked_coords = coords.copy()
+                masked_coords[~valid_keypoints] = 0.0
                 provenance[f"pose_present_{side}"].append(bool(valid_keypoints.any()))
                 provenance[f"pose_keypoint_confidence_{side}"].append(
                     float(np.median(conf[valid_keypoints])) if valid_keypoints.any() else 0.0
@@ -310,20 +312,20 @@ def _build_clip(
                 if interpolated_bboxes.get(pid, {}).get(frame) is None:
                     debug_clip_stats["n_missing_bbox"] += 1
                 if settings.bst_joint_norm == "court" and homography is not None:
-                    joints[t, p_idx] = normalize_joints_court(coords, homography)
+                    joints[t, p_idx] = normalize_joints_court(masked_coords, homography)
                 elif settings.bst_joint_norm == "hip_centered":
                     joints[t, p_idx] = normalize_joints_hip_centered(
-                        coords, vid_w=vid_w, vid_h=vid_h, conf=kps[:, 2],
+                        masked_coords, vid_w=vid_w, vid_h=vid_h, conf=conf,
                     )
                 else:
                     bbox = interpolated_bboxes.get(pid, {}).get(frame)
                     joints[t, p_idx] = normalize_joints(
-                        coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
+                        masked_coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
                         conf=conf, min_confidence=settings.bst_min_keypoint_confidence,
                     )
 
-                feet_x = (coords[15, 0] + coords[16, 0]) / 2
-                feet_y = max(coords[15, 1], coords[16, 1])
+                feet_x = (masked_coords[15, 0] + masked_coords[16, 0]) / 2
+                feet_y = max(masked_coords[15, 1], masked_coords[16, 1])
                 if homography is not None:
                     court_x, court_y = image_to_court(homography, (feet_x, feet_y))
                     court_x, court_y = clamp_to_unit(court_x / court_length if court_length > 0 else 0,
@@ -758,10 +760,6 @@ class StrokeClassificationStage:
             shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
 
-        for shot in shots:
-            if shot["bst_input_route"] == "quality_abstain" and shot["stroke_type"] != "unknown":
-                shot["bst_input_route"] = "downstream_override"
-
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions
         # (even low-confidence) are preserved to avoid rule-based bias from
@@ -781,6 +779,10 @@ class StrokeClassificationStage:
                     if majority != stype and count >= settings.stroke_smoothing_majority_count:
                         shots[i]["stroke_type"] = majority
                         shots[i]["stroke_confidence"] = 0.3
+
+        for shot in shots:
+            if shot["bst_input_route"] == "quality_abstain" and shot["stroke_type"] != "unknown":
+                shot["bst_input_route"] = "downstream_override"
 
         # Temporal dedup: merge consecutive shots within 0.2s that share the
         # same stroke type. When the same hit is detected at multiple nearby

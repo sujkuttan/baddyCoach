@@ -227,3 +227,74 @@ def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tm
     assert bool(shots.loc[1, "is_bst_fallback"]) is True
     assert "court_rejected_shuttle" in shots.loc[1, "bst_input_quality_reasons"]
     assert store.get_parquet("debug_bst_input_quality") is not None
+
+
+def test_build_clip_masks_low_confidence_joints_in_hip_centered_mode(monkeypatch):
+    from app.pipeline.strokes import _build_clip
+
+    monkeypatch.setattr("app.pipeline.strokes.settings.bst_joint_norm", "hip_centered")
+    frames = [0]
+    shuttle = pd.DataFrame({"frame": frames, "x": [100.0], "y": [100.0], "confidence": [0.9]})
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    keypoints[10] = [999.0, 999.0, 0.1]
+    pose = pd.DataFrame([
+        {"frame": 0, "player_id": player, "keypoints": keypoints.tolist()}
+        for player in ("player_1", "player_2")
+    ])
+    players = [
+        {"id": "player_1", "side": "near", "detections": [{"frame": 0, "bbox": [0, 0, 100, 100]}]},
+        {"id": "player_2", "side": "far", "detections": [{"frame": 0, "bbox": [200, 0, 300, 100]}]},
+    ]
+
+    clip = _build_clip(
+        frames, shuttle, pose, 640, 480, 13.4, 6.1, 1,
+        player_detections=players, player_ids=["player_1", "player_2"],
+    )
+
+    np.testing.assert_array_equal(clip["JnB"][0, 0, 20:22], [0.0, 0.0])
+    np.testing.assert_array_equal(clip["JnB"][0, 1, 20:22], [0.0, 0.0])
+
+
+def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monkeypatch, tmp_job_dir):
+    from app.pipeline.shared import models
+
+    classifier = _QualityGateClassifier()
+    monkeypatch.setattr(models, "get_bst", lambda: classifier)
+    monkeypatch.setattr("app.pipeline.strokes.settings.fusion_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.hierarchical_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.confusion_pair_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.stroke_smoothing_window", 1)
+    monkeypatch.setattr("app.pipeline.strokes.settings.stroke_smoothing_majority_count", 1)
+
+    store = ArtifactStore(tmp_job_dir)
+    store.set_parquet("hits", pd.DataFrame({"frame": [0, 30, 60], "confidence": [0.9] * 3}))
+    store.set_parquet("shuttle", pd.DataFrame({
+        "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,
+        "confidence": [0.9] * 80, "was_interpolated": [False] * 80,
+        "court_rejected": [False] * 30 + [True] + [False] * 49,
+    }))
+    store.set_parquet("shuttle_raw", pd.DataFrame({
+        "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,
+        "confidence": [0.9] * 80, "was_repaired": [False] * 80,
+    }))
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    store.set_parquet("pose", pd.DataFrame([
+        {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
+        for f in range(80) for p in ("player_1", "player_2")
+    ]))
+    store.set("court", {"court_length": 13.4, "court_width": 6.1})
+    store.set("players", {"players": [
+        {"id": "player_1", "side": "near", "detections": [
+            {"frame": f, "bbox": [0, 0, 100, 100]} for f in range(80)
+        ]},
+        {"id": "player_2", "side": "far", "detections": [
+            {"frame": f, "bbox": [200, 0, 300, 100]} for f in range(80)
+        ]},
+    ]})
+
+    StrokeClassificationStage().run(store, StageConfig())
+    shots = store.get_parquet("shots").sort_values("frame").reset_index(drop=True)
+
+    assert shots.loc[1, "stroke_type"] == "smash"
+    assert shots.loc[1, "bst_input_route"] == "downstream_override"

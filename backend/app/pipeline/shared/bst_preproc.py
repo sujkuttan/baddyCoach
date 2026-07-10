@@ -201,6 +201,8 @@ def normalize_joints_hip_centered(
     if vid_h > 0:
         normalized[:, 0] *= (vid_w / vid_h)
 
+    normalized[~mask] = 0.0
+
     return normalized.astype(np.float32)
 
 
