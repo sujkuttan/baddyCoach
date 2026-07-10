@@ -59,3 +59,12 @@ def test_colab_delegates_court_space_enrichment_to_backend_helper():
 
     assert "from app.pipeline.shuttle import _add_court_space_columns" in source
     assert "_add_court_space_columns(shuttle_df, np.array(court[\"homography\"]), float(video_fps))" in source
+
+
+def test_colab_pose_fallback_preserves_player_identity():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert "def _interpolate_pose_bbox" in source
+    assert "before_bbox" in source
+    assert "after_bbox" in source
+    assert "(1.0 - fraction) * before_bbox + fraction * after_bbox" in source

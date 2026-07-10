@@ -1331,6 +1331,51 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     return report
 
 
+def _interpolate_pose_bbox(
+    frame_idx: int,
+    player_side: str,
+    frame_indices: list[int],
+    detections_by_frame: dict[int, list[dict]],
+    range_limit: int = 10,
+) -> list[float] | None:
+    """Resolve a pose bbox from detections of the requested side only."""
+    before_bbox = None
+    after_bbox = None
+    before_frame = None
+    after_frame = None
+
+    for candidate in reversed(frame_indices):
+        if candidate >= frame_idx or frame_idx - candidate > range_limit:
+            continue
+        match = next(
+            (d for d in detections_by_frame.get(candidate, []) if d.get("side") == player_side),
+            None,
+        )
+        if match is not None:
+            before_frame, before_bbox = candidate, np.asarray(match["bbox"], dtype=np.float64)
+            break
+
+    for candidate in frame_indices:
+        if candidate <= frame_idx or candidate - frame_idx > range_limit:
+            continue
+        match = next(
+            (d for d in detections_by_frame.get(candidate, []) if d.get("side") == player_side),
+            None,
+        )
+        if match is not None:
+            after_frame, after_bbox = candidate, np.asarray(match["bbox"], dtype=np.float64)
+            break
+
+    if before_bbox is not None and after_bbox is not None:
+        fraction = (frame_idx - before_frame) / (after_frame - before_frame)
+        return ((1.0 - fraction) * before_bbox + fraction * after_bbox).tolist()
+    if before_bbox is not None:
+        return before_bbox.tolist()
+    if after_bbox is not None:
+        return after_bbox.tolist()
+    return None
+
+
 def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
                    all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0,
@@ -1414,27 +1459,10 @@ def _process_batch(frames, global_indices, batch_start_offset,
         frame = frames[local_idx]
         dets_for_frame = all_det.get(global_idx, [])
         if not dets_for_frame:
-            for pid in ["player_1", "player_2"]:
-                best_det = None
-                best_dist = float('inf')
-                for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
-                    other_global = global_indices[other_idx]
-                    for d in all_det.get(other_global, []):
-                        if d.get("side") == ("near" if pid == "player_1" else "far"):
-                            dist = abs(other_idx - local_idx)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_det = d
-                if best_det is None:
-                    for other_idx in range(max(0, local_idx - 10), min(len(global_indices), local_idx + 10)):
-                        other_global = global_indices[other_idx]
-                        for d in all_det.get(other_global, []):
-                            dist = abs(other_idx - local_idx)
-                            if dist < best_dist:
-                                best_dist = dist
-                                best_det = d
-                if best_det:
-                    crop_list.append((global_idx, pid, best_det["bbox"], frame))
+            for pid, side in [("player_1", "near"), ("player_2", "far")]:
+                bbox = _interpolate_pose_bbox(global_idx, side, global_indices, all_det)
+                if bbox is not None:
+                    crop_list.append((global_idx, pid, bbox, frame))
             continue
         near_det = None
         far_det = None
@@ -1450,8 +1478,16 @@ def _process_batch(frames, global_indices, batch_start_offset,
                 near_det, far_det = dets_for_frame[0], dets_for_frame[1]
             else:
                 near_det, far_det = dets_for_frame[1], dets_for_frame[0]
-        elif near_det is None and len(dets_for_frame) == 1:
+        elif near_det is None and far_det is None and len(dets_for_frame) == 1:
             near_det = dets_for_frame[0]
+        if near_det is None:
+            bbox = _interpolate_pose_bbox(global_idx, "near", global_indices, all_det)
+            if bbox is not None:
+                near_det = {"bbox": bbox}
+        if far_det is None:
+            bbox = _interpolate_pose_bbox(global_idx, "far", global_indices, all_det)
+            if bbox is not None:
+                far_det = {"bbox": bbox}
         if near_det:
             crop_list.append((global_idx, "player_1", near_det["bbox"], frame))
         if far_det:
