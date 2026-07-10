@@ -1,4 +1,5 @@
 import inspect
+from pathlib import Path
 import cv2
 import numpy as np
 import torch
@@ -51,3 +52,10 @@ def test_colab_tracknet_uses_masked_inpaintnet_repair_api():
     )
 
     assert repaired == [(10.0, 20.0, 0.9), (50.0, 25.0, 0.0), (90.0, 80.0, 0.8)]
+
+
+def test_colab_delegates_court_space_enrichment_to_backend_helper():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert "from app.pipeline.shuttle import _add_court_space_columns" in source
+    assert "_add_court_space_columns(shuttle_df, np.array(court[\"homography\"]), float(video_fps))" in source

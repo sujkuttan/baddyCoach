@@ -13,7 +13,9 @@ def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.
     """Add court-space coordinates, speed, and direction to shuttle dataframe.
 
     Computes x_court, y_court (metres via homography), speed_court (m/s),
-    and direction_x, direction_y (normalised) for each frame with valid pixel coords.
+    and direction_x, direction_y (normalised) for each valid detection. Points
+    beyond the configured court margin or with an impossible consecutive speed
+    are marked ``court_rejected`` and retain their raw pixel coordinates.
     """
     from app.pipeline.shared.court import image_to_court, COURT_LENGTH, COURT_WIDTH
 
@@ -22,25 +24,46 @@ def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.
     speeds = np.full(len(df), np.nan, dtype=np.float64)
     dir_xs = np.full(len(df), np.nan, dtype=np.float64)
     dir_ys = np.full(len(df), np.nan, dtype=np.float64)
+    court_rejected = np.zeros(len(df), dtype=bool)
 
     prev_cx, prev_cy = None, None
     for i, (_, row) in enumerate(df.iterrows()):
         x, y = row.get("x"), row.get("y")
         if pd.notna(x) and pd.notna(y):
             cx, cy = image_to_court(H, (float(x), float(y)))
-            cx = max(0.0, min(COURT_LENGTH, cx))
-            cy = max(0.0, min(COURT_WIDTH, cy))
+            out_of_bounds = (
+                not np.isfinite(cx)
+                or not np.isfinite(cy)
+                or cx < -settings.shuttle_oob_margin_meters
+                or cx > COURT_LENGTH + settings.shuttle_oob_margin_meters
+                or cy < -settings.shuttle_oob_margin_meters
+                or cy > COURT_WIDTH + settings.shuttle_oob_margin_meters
+            )
+            if out_of_bounds:
+                court_rejected[i] = True
+                prev_cx, prev_cy = None, None
+                continue
+
+            speed = np.nan
             court_xs[i] = cx
             court_ys[i] = cy
             if prev_cx is not None:
                 dx = cx - prev_cx
                 dy = cy - prev_cy
                 speed = np.sqrt(dx * dx + dy * dy) * fps
+                if speed > settings.shuttle_max_speed_mps:
+                    court_rejected[i] = True
+                    court_xs[i] = np.nan
+                    court_ys[i] = np.nan
+                    prev_cx, prev_cy = None, None
+                    continue
                 speeds[i] = speed
                 norm = np.sqrt(dx * dx + dy * dy) + 1e-8
                 dir_xs[i] = dx / norm
                 dir_ys[i] = dy / norm
             prev_cx, prev_cy = cx, cy
+        else:
+            prev_cx, prev_cy = None, None
 
     df = df.copy()
     df["x_court"] = court_xs
@@ -48,6 +71,7 @@ def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.
     df["speed_court"] = speeds
     df["direction_x"] = dir_xs
     df["direction_y"] = dir_ys
+    df["court_rejected"] = court_rejected
     return df
 
 

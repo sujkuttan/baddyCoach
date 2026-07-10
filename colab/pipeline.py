@@ -42,6 +42,7 @@ from app.pipeline.shared.utils import (
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
 from app.pipeline.shared.models import ensure_model, MODEL_REGISTRY
+from app.pipeline.shuttle import _add_court_space_columns
 from app.pipeline.shared.shuttle_utils import clean_trajectory
 
 CKPT_DIR = Path("ckpts")
@@ -1144,6 +1145,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                   f"{jumps_before} >{settings.shuttle_max_jump_px:.0f}px jumps → ~0")
         else:
             store.set_parquet("shuttle_raw", shuttle_df.copy())
+
+        if court and court.get("valid", False) and court.get("homography") is not None:
+            shuttle_df = _add_court_space_columns(shuttle_df, np.array(court["homography"]), float(video_fps))
+            print("  Added court-space columns to shuttle data")
+
         store.set_parquet("shuttle", shuttle_df)
 
         pose_df = pd.DataFrame(all_pose)

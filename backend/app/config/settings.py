@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     shuttle_max_jump_px: float = 200.0  # there-and-back spike threshold
     shuttle_max_interp_gap: int = 7  # max frames to linearly interpolate across gaps
     shuttle_smooth_window: int = 3  # moving median window (0=off, 3=de-jitter)
+    shuttle_oob_margin_meters: float = 1.0  # allowed court-space overshoot before rejection
+    shuttle_max_speed_mps: float = 80.0  # reject consecutive court-space detections above this speed
 
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280
