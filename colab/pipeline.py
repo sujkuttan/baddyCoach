@@ -188,11 +188,34 @@ class TrackNetV3:
             try:
                 from app.models.tracknet import InpaintNet
                 checkpoint = torch.load(inpaintnet_path, map_location=device, weights_only=False)
-                state_dict = checkpoint if isinstance(checkpoint, dict) else {}
-                if 'model' in state_dict:
-                    state_dict = state_dict['model']
-                self.inpaintnet = InpaintNet()
-                self.inpaintnet.load_state_dict(state_dict, strict=False)
+                state_dict = checkpoint
+                while isinstance(state_dict, dict):
+                    nested = next((state_dict[key] for key in ("model_state_dict", "model", "state_dict")
+                                   if key in state_dict), None)
+                    if nested is None:
+                        break
+                    state_dict = nested
+                if not isinstance(state_dict, dict):
+                    raise ValueError("checkpoint does not contain a state_dict")
+                state_dict = {
+                    key.removeprefix("module.").replace("buttleneck", "buttelneck"): value
+                    for key, value in state_dict.items()
+                }
+                model = InpaintNet()
+                expected = model.state_dict()
+                missing = sorted(set(expected) - set(state_dict))
+                unexpected = sorted(set(state_dict) - set(expected))
+                shape_mismatches = sorted(
+                    key for key in set(expected) & set(state_dict)
+                    if tuple(expected[key].shape) != tuple(state_dict[key].shape)
+                )
+                if missing or unexpected or shape_mismatches:
+                    raise ValueError(
+                        f"checkpoint mismatch: missing={missing[:5]}, unexpected={unexpected[:5]}, "
+                        f"shape_mismatches={shape_mismatches[:5]}"
+                    )
+                model.load_state_dict(state_dict, strict=True)
+                self.inpaintnet = model
                 self.inpaintnet.to(device).eval()
                 if device == "cuda":
                     self.inpaintnet = self.inpaintnet.half()
@@ -259,55 +282,57 @@ class TrackNetV3:
                             orig_w: int, orig_h: int) -> list[tuple]:
         import torch
         n = len(raw_detections)
-
-        xs = np.array([d[0] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
-        ys = np.array([d[1] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
-        confs = np.array([d[2] if d is not None else 0.0 for d in raw_detections], dtype=np.float32)
-
-        mask = ~np.isnan(xs)
-        if mask.sum() >= 2:
-            indices = np.arange(n)
-            xs = np.interp(indices, indices[mask], xs[mask])
-            ys = np.interp(indices, indices[mask], ys[mask])
-            confs = np.interp(indices, indices[mask], confs[mask])
-        elif mask.sum() == 1:
-            xs[:] = xs[mask][0]
-            ys[:] = ys[mask][0]
-            confs[:] = confs[mask][0] * 0.5
-        else:
+        if self.inpaintnet is None or n == 0:
             return raw_detections
 
-        if self.inpaintnet is not None:
-            window = self.inpaintnet.window_size
-            if n >= window:
-                with torch.no_grad():
-                    inpaint_input = np.stack([xs, ys, confs], axis=0)[np.newaxis, :, :]
-                    inpaint_tensor = torch.from_numpy(inpaint_input).float().to(self.device)
-                    if self.device == "cuda":
-                        inpaint_tensor = inpaint_tensor.half()
-                    refined = self.inpaintnet(inpaint_tensor).cpu().numpy()[0]
-                    xs = 0.7 * xs + 0.3 * refined[0]
-                    ys = 0.7 * ys + 0.3 * refined[1]
+        coords_px = np.array([
+            (d[0], d[1]) if d is not None else (np.nan, np.nan)
+            for d in raw_detections
+        ], dtype=np.float64)
+        valid = np.isfinite(coords_px).all(axis=1)
+        if not valid.any() or valid.all():
+            return raw_detections
 
-        window_smooth = 3
-        if n >= window_smooth:
-            kernel = np.ones(window_smooth) / window_smooth
-            xs = np.concatenate([
-                xs[:window_smooth // 2],
-                np.convolve(xs, kernel, mode='valid'),
-                xs[-(window_smooth // 2):],
-            ])[:n]
-            ys = np.concatenate([
-                ys[:window_smooth // 2],
-                np.convolve(ys, kernel, mode='valid'),
-                ys[-(window_smooth // 2):],
-            ])[:n]
+        norm = coords_px.copy()
+        norm[:, 0] = np.clip(norm[:, 0] / max(orig_w, 1), 0.0, 1.0)
+        norm[:, 1] = np.clip(norm[:, 1] / max(orig_h, 1), 0.0, 1.0)
+        filled = norm.copy()
+        indices = np.arange(n)
+        for coordinate in range(2):
+            filled[~valid, coordinate] = np.interp(
+                indices[~valid], indices[valid], norm[valid, coordinate]
+            )
 
-        xs = np.clip(xs, 0, orig_w)
-        ys = np.clip(ys, 0, orig_h)
-        confs = np.clip(confs, 0, 1)
+        sequence_length = min(16, n)
+        center = (sequence_length - 1) / 2.0
+        weights = np.exp(-((np.arange(sequence_length) - center) ** 2) /
+                         (2 * (sequence_length / 2.0) ** 2))
+        weighted_predictions = np.zeros((n, 2), dtype=np.float64)
+        weight_sums = np.zeros(n, dtype=np.float64)
+        missing = ~valid
+        dtype = torch.float16 if self.device == "cuda" else torch.float32
+        with torch.no_grad():
+            for start in range(n - sequence_length + 1):
+                stop = start + sequence_length
+                coords_tensor = torch.tensor(filled[start:stop], dtype=dtype,
+                                             device=self.device).unsqueeze(0)
+                mask_tensor = torch.tensor(missing[start:stop, None], dtype=dtype,
+                                           device=self.device).unsqueeze(0)
+                predicted = self.inpaintnet(coords_tensor, mask_tensor)[0].float().cpu().numpy()
+                for offset in range(sequence_length):
+                    frame = start + offset
+                    if missing[frame]:
+                        weighted_predictions[frame] += weights[offset] * predicted[offset]
+                        weight_sums[frame] += weights[offset]
 
-        return [(float(xs[i]), float(ys[i]), float(confs[i])) for i in range(n)]
+        repaired = list(raw_detections)
+        for frame in np.flatnonzero(missing):
+            if weight_sums[frame] == 0:
+                continue
+            point = weighted_predictions[frame] / weight_sums[frame]
+            repaired[frame] = (float(np.clip(point[0], 0.0, 1.0) * orig_w),
+                               float(np.clip(point[1], 0.0, 1.0) * orig_h), 0.0)
+        return repaired
 
     def predict_batch(self, frames, original_size=None):
         import torch
@@ -348,15 +373,30 @@ class TrackNetV3:
             for j in range(len(windows)):
                 hm = heatmaps[j]
                 y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
-                raw_results[chunk_start + j] = (
+                detection = (
                     float(x_idx * ow / self.input_width),
                     float(y_idx * oh / self.input_height),
                     float(hm.max()),
                 )
+                raw_results[chunk_start + j] = (
+                    detection if detection[2] >= settings.shuttle_min_conf else None
+                )
             del tensor, out, heatmaps, batch, windows
 
+        original_missing = [item is None for item in raw_results]
         rectified = self._rectify_trajectory(raw_results, ow, oh)
-        return [{"x": r[0], "y": r[1], "confidence": r[2]} for r in rectified]
+        repaired_confidence = max(settings.shuttle_clean_min_conf, settings.shuttle_min_conf + 0.05)
+        results = []
+        for frame, result in enumerate(rectified):
+            if result is None:
+                results.append({"x": 0.0, "y": 0.0, "confidence": 0.0})
+                continue
+            item = {"x": result[0], "y": result[1], "confidence": result[2]}
+            if original_missing[frame]:
+                item["confidence"] = repaired_confidence
+                item["was_repaired"] = True
+            results.append(item)
+        return results
 
 
 class CourtKeypointDetector:

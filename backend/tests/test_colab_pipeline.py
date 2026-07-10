@@ -1,6 +1,8 @@
 import inspect
 import cv2
 import numpy as np
+import torch
+import torch.nn as nn
 
 
 def _synthetic_court_frame(corners):
@@ -30,3 +32,22 @@ def test_colab_court_detection_uses_shared_hough_trapezoid_detector():
     H, valid = compute_homography(corners)
     assert H is not None
     assert valid is True
+
+
+def test_colab_tracknet_uses_masked_inpaintnet_repair_api():
+    """Colab TrackNet must use the same coords+mask InpaintNet repair contract."""
+    import colab.pipeline as pipeline
+
+    class ConstantRepairNet(nn.Module):
+        def forward(self, coords, mask):
+            assert coords.shape == (1, 3, 2)
+            assert torch.equal(mask[0, :, 0], torch.tensor([0.0, 1.0, 0.0]))
+            return torch.tensor([[[0.1, 0.2], [0.5, 0.25], [0.9, 0.8]]])
+
+    tracker = pipeline.TrackNetV3(model_path="missing.pt", device="cpu")
+    tracker.inpaintnet = ConstantRepairNet()
+    repaired = tracker._rectify_trajectory(
+        [(10.0, 20.0, 0.9), None, (90.0, 80.0, 0.8)], 100, 100
+    )
+
+    assert repaired == [(10.0, 20.0, 0.9), (50.0, 25.0, 0.0), (90.0, 80.0, 0.8)]

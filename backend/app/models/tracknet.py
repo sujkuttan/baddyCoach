@@ -115,35 +115,58 @@ class TrackNetV3Model(nn.Module):
 # InpaintNet — trajectory rectification and gap-filling
 # ═══════════════════════════════════════════════════════════════════════════════
 
+class _Conv1DBlock(nn.Module):
+    """Checkpoint-compatible Conv1d + LeakyReLU block."""
+
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.conv = nn.Conv1d(in_dim, out_dim, kernel_size=3, padding="same", bias=True)
+        self.relu = nn.LeakyReLU()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.relu(self.conv(x))
+
+
+class _Double1DConv(nn.Module):
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        self.conv_1 = _Conv1DBlock(in_dim, out_dim)
+        self.conv_2 = _Conv1DBlock(out_dim, out_dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.conv_2(self.conv_1(x))
+
+
 class InpaintNet(nn.Module):
-    """Temporal trajectory rectification network.
+    """Official TrackNetV3 trajectory repair architecture.
 
-    Takes a sliding window of (x, y, confidence) detections and applies
-    a small temporal CNN to:
-      1. Fill gaps (frames where no shuttle was detected)
-      2. Smooth noisy detections
-      3. Reject outliers (temporal consistency)
-
-    Input:  (B, 3, T)  — x, y, confidence over a T-frame window
-    Output: (B, 2, T)  — refined x, y positions
+    ``coords`` has shape ``(batch, sequence, 2)`` in normalized image space;
+    ``mask`` has shape ``(batch, sequence, 1)`` and marks original misses.
     """
 
-    def __init__(self, window_size: int = 15, hidden_dim: int = 64):
+    def __init__(self):
         super().__init__()
-        self.window_size = window_size
+        self.down_1 = _Conv1DBlock(3, 32)
+        self.down_2 = _Conv1DBlock(32, 64)
+        self.down_3 = _Conv1DBlock(64, 128)
+        # Keep the published checkpoint's historical spelling.
+        self.buttelneck = _Double1DConv(128, 256)
+        self.up_1 = _Conv1DBlock(384, 128)
+        self.up_2 = _Conv1DBlock(192, 64)
+        self.up_3 = _Conv1DBlock(96, 32)
+        self.predictor = nn.Conv1d(32, 2, 3, padding="same")
+        self.sigmoid = nn.Sigmoid()
 
-        self.conv1 = nn.Conv1d(3, hidden_dim, kernel_size=5, padding=2)
-        self.conv2 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=2)
-        self.conv3 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=2)
-        self.conv4 = nn.Conv1d(hidden_dim, hidden_dim, kernel_size=5, padding=2)
-        self.out = nn.Conv1d(hidden_dim, 2, kernel_size=3, padding=1)
-
-    def forward(self, x):
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-        x = torch.relu(self.conv4(x))
-        return self.out(x)
+    def forward(self, coords: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        x = torch.cat([coords, mask], dim=2).permute(0, 2, 1)
+        x1 = self.down_1(x)
+        x2 = self.down_2(x1)
+        x3 = self.down_3(x2)
+        x = self.buttelneck(x3)
+        x = self.up_1(torch.cat([x, x3], dim=1))
+        x = self.up_2(torch.cat([x, x2], dim=1))
+        x = self.up_3(torch.cat([x, x1], dim=1))
+        return self.sigmoid(self.predictor(x)).permute(0, 2, 1)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -237,22 +260,57 @@ class TrackNetV3:
             record_model_health("tracknet", status)
 
     def _load_inpaintnet(self, path: str):
+        from app.pipeline.shared.logging import logger
+        from app.pipeline.shared.models import record_model_health
         try:
             checkpoint = torch.load(path, map_location=self.device, weights_only=False)
-            state_dict = checkpoint if isinstance(checkpoint, dict) else {}
-            if 'model' in state_dict:
-                state_dict = state_dict['model']
+            state_dict = checkpoint
+            while isinstance(state_dict, dict):
+                nested = next((state_dict[key] for key in ("model_state_dict", "model", "state_dict")
+                               if key in state_dict), None)
+                if nested is None:
+                    break
+                state_dict = nested
+            if not isinstance(state_dict, dict):
+                raise ValueError("checkpoint does not contain a state_dict")
 
-            self.inpaintnet = InpaintNet()
-            self.inpaintnet.load_state_dict(state_dict, strict=False)
-            self.inpaintnet.to(self.device)
+            state_dict = {
+                key.removeprefix("module.").replace("buttleneck", "buttelneck"): value
+                for key, value in state_dict.items()
+            }
+            model = InpaintNet()
+            expected = model.state_dict()
+            missing = sorted(set(expected) - set(state_dict))
+            unexpected = sorted(set(state_dict) - set(expected))
+            shape_mismatches = sorted(
+                key for key in set(expected) & set(state_dict)
+                if tuple(expected[key].shape) != tuple(state_dict[key].shape)
+            )
+            if missing or unexpected or shape_mismatches:
+                status = {
+                    "loaded": False,
+                    "error": "InpaintNet checkpoint key or tensor-shape mismatch",
+                    "missing": missing,
+                    "unexpected": unexpected,
+                    "shape_mismatches": shape_mismatches,
+                }
+                record_model_health("inpaintnet", status)
+                logger.warning("InpaintNet checkpoint incompatible; trajectory repair disabled",
+                               missing=str(missing), unexpected=str(unexpected),
+                               shape_mismatches=str(shape_mismatches))
+                self.inpaintnet = None
+                return
+
+            model.load_state_dict(state_dict, strict=True)
+            self.inpaintnet = model.to(self.device)
             self.inpaintnet.eval()
-            from app.pipeline.shared.logging import logger
+            record_model_health("inpaintnet", {"loaded": True, "error": None,
+                                                "n_tensors": len(expected)})
             logger.info(f"InpaintNet loaded successfully from {path}")
         except Exception as e:
-            from app.pipeline.shared.logging import logger
             logger.warning(f"InpaintNet load error: {e}, proceeding without trajectory rectification")
             self.inpaintnet = None
+            record_model_health("inpaintnet", {"loaded": False, "error": str(e)})
 
     def _preprocess(self, frames: list[np.ndarray]) -> list[np.ndarray]:
         """Preprocess each frame: resize → RGB → normalize.
@@ -294,6 +352,7 @@ class TrackNetV3:
 
         preprocessed = self._preprocess(frames)
         n_frames = len(preprocessed)
+        from app.config.settings import settings
 
         all_raw = [None] * n_frames
 
@@ -316,21 +375,30 @@ class TrackNetV3:
             for j, local_idx in enumerate(batch_indices):
                 hm = heatmaps[j]  # (H, W)
                 x, y, conf = _extract_peak(hm, orig_w, orig_h)
-                all_raw[local_idx] = (x, y, conf)
+                # Keep the original-missing mask meaningful for InpaintNet and
+                # downstream trajectory cleaning: sub-threshold peaks are gaps,
+                # not observed coordinates that the repair stage must preserve.
+                all_raw[local_idx] = (x, y, conf) if conf >= settings.shuttle_min_conf else None
 
             del batch_tensor
             if self.device != "cpu":
                 torch.cuda.empty_cache()
 
+        original_missing = [item is None for item in all_raw]
         if self.inpaintnet is not None:
             all_raw = self._rectify_trajectory(all_raw, orig_w, orig_h)
 
         results = []
-        for item in all_raw:
+        repaired_confidence = max(settings.shuttle_clean_min_conf, settings.shuttle_min_conf + 0.05)
+        for frame, item in enumerate(all_raw):
             if item is None:
                 results.append({"x": 0.0, "y": 0.0, "confidence": 0.0})
             else:
-                results.append({"x": item[0], "y": item[1], "confidence": item[2]})
+                result = {"x": item[0], "y": item[1], "confidence": item[2]}
+                if original_missing[frame]:
+                    result["confidence"] = repaired_confidence
+                    result["was_repaired"] = True
+                results.append(result)
 
         return results
 
@@ -340,55 +408,55 @@ class TrackNetV3:
 
     def _rectify_trajectory(self, raw_detections: list[tuple | None],
                             orig_w: int, orig_h: int) -> list[tuple]:
-        """Apply InpaintNet to smooth and gap-fill the trajectory.
-
-        Falls back to linear interpolation when InpaintNet is unavailable.
-        """
+        """Repair only originally missing points with masked InpaintNet inference."""
         n = len(raw_detections)
-
-        xs = np.array([d[0] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
-        ys = np.array([d[1] if d is not None else np.nan for d in raw_detections], dtype=np.float32)
-        confs = np.array([d[2] if d is not None else 0.0 for d in raw_detections], dtype=np.float32)
-
-        mask = ~np.isnan(xs)
-        if mask.sum() >= 2:
-            indices = np.arange(n)
-            xs = np.interp(indices, indices[mask], xs[mask])
-            ys = np.interp(indices, indices[mask], ys[mask])
-            confs = np.interp(indices, indices[mask], confs[mask])
-        elif mask.sum() == 1:
-            xs[:] = xs[mask][0]
-            ys[:] = ys[mask][0]
-            confs[:] = confs[mask][0] * 0.5
-        else:
+        if self.inpaintnet is None or n == 0:
             return raw_detections
 
-        if self.inpaintnet is not None:
-            window = self.inpaintnet.window_size
-            if n >= window:
-                with torch.no_grad():
-                    inpaint_input = np.stack([xs, ys, confs], axis=0)[np.newaxis, :, :]
-                    inpaint_tensor = torch.from_numpy(inpaint_input).float().to(self.device)
-                    refined = self.inpaintnet(inpaint_tensor).cpu().numpy()[0]
-                    xs = 0.7 * xs + 0.3 * refined[0]
-                    ys = 0.7 * ys + 0.3 * refined[1]
+        coords_px = np.array([
+            (d[0], d[1]) if d is not None else (np.nan, np.nan)
+            for d in raw_detections
+        ], dtype=np.float64)
+        valid = np.isfinite(coords_px).all(axis=1)
+        if not valid.any() or valid.all():
+            return raw_detections
 
-        window_smooth = 3
-        if n >= window_smooth:
-            kernel = np.ones(window_smooth) / window_smooth
-            xs = np.concatenate([
-                xs[:window_smooth // 2],
-                np.convolve(xs, kernel, mode='valid'),
-                xs[-(window_smooth // 2):],
-            ])[:n]
-            ys = np.concatenate([
-                ys[:window_smooth // 2],
-                np.convolve(ys, kernel, mode='valid'),
-                ys[-(window_smooth // 2):],
-            ])[:n]
+        norm = coords_px.copy()
+        norm[:, 0] = np.clip(norm[:, 0] / max(orig_w, 1), 0.0, 1.0)
+        norm[:, 1] = np.clip(norm[:, 1] / max(orig_h, 1), 0.0, 1.0)
+        filled = norm.copy()
+        indices = np.arange(n)
+        for coordinate in range(2):
+            filled[~valid, coordinate] = np.interp(
+                indices[~valid], indices[valid], norm[valid, coordinate]
+            )
 
-        xs = np.clip(xs, 0, orig_w)
-        ys = np.clip(ys, 0, orig_h)
-        confs = np.clip(confs, 0, 1)
+        sequence_length = min(16, n)
+        center = (sequence_length - 1) / 2.0
+        weights = np.exp(-((np.arange(sequence_length) - center) ** 2) /
+                         (2 * (sequence_length / 2.0) ** 2))
+        weighted_predictions = np.zeros((n, 2), dtype=np.float64)
+        weight_sums = np.zeros(n, dtype=np.float64)
+        missing = ~valid
+        with torch.no_grad():
+            for start in range(n - sequence_length + 1):
+                stop = start + sequence_length
+                coords_tensor = torch.tensor(filled[start:stop], dtype=torch.float32,
+                                             device=self.device).unsqueeze(0)
+                mask_tensor = torch.tensor(missing[start:stop, None], dtype=torch.float32,
+                                           device=self.device).unsqueeze(0)
+                predicted = self.inpaintnet(coords_tensor, mask_tensor)[0].cpu().numpy()
+                for offset in range(sequence_length):
+                    frame = start + offset
+                    if missing[frame]:
+                        weighted_predictions[frame] += weights[offset] * predicted[offset]
+                        weight_sums[frame] += weights[offset]
 
-        return [(float(xs[i]), float(ys[i]), float(confs[i])) for i in range(n)]
+        repaired = list(raw_detections)
+        for frame in np.flatnonzero(missing):
+            if weight_sums[frame] == 0:
+                continue
+            point = weighted_predictions[frame] / weight_sums[frame]
+            repaired[frame] = (float(np.clip(point[0], 0.0, 1.0) * orig_w),
+                               float(np.clip(point[1], 0.0, 1.0) * orig_h), 0.0)
+        return repaired
