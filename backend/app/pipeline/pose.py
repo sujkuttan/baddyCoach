@@ -224,12 +224,31 @@ class PoseEstimationStage:
     @staticmethod
     def _find_fallback_bbox(frame_idx: int, player_id: str,
                             det_lookup: dict, range_limit: int = 10):
-        """Find fallback bbox via temporal interpolation within same player's own detections."""
+        """Resolve a short same-player detection gap without crossing identities."""
         my_dets = det_lookup.get(player_id, {})
-        for delta in range(1, range_limit + 1):
-            for offset in (frame_idx + delta, frame_idx - delta):
-                if offset in my_dets:
-                    return my_dets[offset]
+        if not my_dets:
+            return None
+
+        before = next(
+            (frame for frame in range(frame_idx - 1, frame_idx - range_limit - 1, -1)
+             if frame in my_dets),
+            None,
+        )
+        after = next(
+            (frame for frame in range(frame_idx + 1, frame_idx + range_limit + 1)
+             if frame in my_dets),
+            None,
+        )
+
+        if before is not None and after is not None:
+            start = np.asarray(my_dets[before], dtype=np.float64)
+            end = np.asarray(my_dets[after], dtype=np.float64)
+            fraction = (frame_idx - before) / (after - before)
+            return (start + fraction * (end - start)).tolist()
+        if before is not None:
+            return list(my_dets[before])
+        if after is not None:
+            return list(my_dets[after])
         return None
 
     def _store_data(self, artifacts: ArtifactStore, pose_data: list[dict]) -> StageResult:
