@@ -163,3 +163,67 @@ def test_build_clip_zeros_court_rejected_shuttle_and_records_provenance():
     assert clip["_bst_provenance"]["shuttle_repaired"] == [False, True, False]
     assert clip["_bst_provenance"]["shuttle_interpolated"] == [False, True, False]
     assert clip["_bst_provenance"]["shuttle_court_rejected"] == [False, True, False]
+
+
+class _QualityGateClassifier:
+    seq_len = 20
+
+    def __init__(self):
+        self.received = []
+
+    def predict_from_clips(self, clips, **kwargs):
+        self.received = clips
+        results = [("smash", 0.9, 3, 0.5, 0.0, 0.0) for _ in clips]
+        probs = np.zeros((len(clips), 25), dtype=np.float32)
+        if len(clips):
+            probs[:, 3] = 1.0
+        return results, probs
+
+
+def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tmp_job_dir):
+    from app.pipeline.shared import models
+
+    classifier = _QualityGateClassifier()
+    monkeypatch.setattr(models, "get_bst", lambda: classifier)
+    monkeypatch.setattr("app.pipeline.strokes.settings.fusion_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.hierarchical_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.confusion_pair_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
+
+    store = ArtifactStore(tmp_job_dir)
+    store.set_parquet("hits", pd.DataFrame({"frame": [0, 30], "confidence": [0.9, 0.9]}))
+    store.set_parquet("shuttle", pd.DataFrame({
+        "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
+        "confidence": [0.9] * 50, "was_interpolated": [False] * 50,
+        "court_rejected": [False] * 30 + [True] + [False] * 19,
+    }))
+    store.set_parquet("shuttle_raw", pd.DataFrame({
+        "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
+        "confidence": [0.9] * 50, "was_repaired": [False] * 50,
+    }))
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    store.set_parquet("pose", pd.DataFrame([
+        {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
+        for f in range(50) for p in ("player_1", "player_2")
+    ]))
+    store.set("court", {"court_length": 13.4, "court_width": 6.1})
+    store.set("players", {"players": [
+        {"id": "player_1", "side": "near", "detections": [
+            {"frame": f, "bbox": [0, 0, 100, 100]} for f in range(50)
+        ]},
+        {"id": "player_2", "side": "far", "detections": [
+            {"frame": f, "bbox": [200, 0, 300, 100]} for f in range(50)
+        ]},
+    ]})
+
+    result = StrokeClassificationStage().run(store, StageConfig(debug_level=1))
+    shots = store.get_parquet("shots").sort_values("frame").reset_index(drop=True)
+
+    assert result.status == "success"
+    assert len(classifier.received) == 1
+    assert shots.loc[0, "bst_input_route"] == "bst"
+    assert shots.loc[1, "bst_input_route"] == "quality_abstain"
+    assert shots.loc[1, "stroke_type"] == "unknown"
+    assert bool(shots.loc[1, "is_bst_fallback"]) is True
+    assert "court_rejected_shuttle" in shots.loc[1, "bst_input_quality_reasons"]
+    assert store.get_parquet("debug_bst_input_quality") is not None

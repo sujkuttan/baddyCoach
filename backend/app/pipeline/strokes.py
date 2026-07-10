@@ -10,6 +10,7 @@ from app.pipeline.shared.bst_preproc import (
     normalize_joints, normalize_joints_court, normalize_joints_hip_centered,
     create_bones, BONE_PAIRS,
 )
+from app.pipeline.shared.bst_input_quality import evaluate_bst_clip_quality
 from app.pipeline.shared.physics import apply_physics_ensemble, summarize_physics_sources
 from app.models.bst import COACH_STROKE_CLASSES
 
@@ -539,37 +540,70 @@ class StrokeClassificationStage:
             all_clips.append(clip)
             clip_hit_pairs.append((frame, hit, clip_frames))
 
-        # Phase 2: batch inference (GPU-efficient, all clips in one call)
+        # Phase 2: evaluate quality, then batch only evidence-supported clips.
         batch_size = config.extra.get("bst_batch", 32)
         debug_level = config.debug_level
-
-        # Collect debug info for logits (needed for calibration) when requested
         collect_debug = debug_level >= 1 or settings.report_include_logits
-        bst_debug_collector = [] if collect_debug else None
-        all_results, probs_matrix = classifier.predict_from_clips(
-            all_clips, batch_size=batch_size,
-            debug_collector=bst_debug_collector,
-            return_probs=True,
+        quality_records = [
+            evaluate_bst_clip_quality(clip["_bst_provenance"])
+            for clip in all_clips
+        ]
+        eligible_indices = [
+            i for i, quality in enumerate(quality_records)
+            if not settings.bst_input_quality_enabled or quality["eligible"]
+        ]
+        eligible_clips = [all_clips[i] for i in eligible_indices]
+        abstained_result = ("unknown", 0.0, 0, 0.5, 0.0, 0.0)
+        all_results = [abstained_result for _ in all_clips]
+        probs_matrix = np.zeros((len(all_clips), 25), dtype=np.float32)
+        bst_debug_by_clip = {}
+
+        if eligible_clips:
+            eligible_debug = [] if collect_debug else None
+            eligible_results, eligible_probs = classifier.predict_from_clips(
+                eligible_clips, batch_size=batch_size,
+                debug_collector=eligible_debug,
+                return_probs=True,
+            )
+            for result_idx, clip_idx in enumerate(eligible_indices):
+                all_results[clip_idx] = eligible_results[result_idx]
+                if eligible_probs is not None:
+                    probs_matrix[clip_idx] = eligible_probs[result_idx]
+                if eligible_debug is not None and result_idx < len(eligible_debug):
+                    entry = dict(eligible_debug[result_idx])
+                    entry["clip_index"] = clip_idx
+                    bst_debug_by_clip[clip_idx] = entry
+
+        if bst_debug_by_clip:
+            artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_by_clip.values()))
+        if debug_level >= 1:
+            artifacts.set_parquet("debug_bst_input_quality", pd.DataFrame(quality_records))
+
+        logger.info(
+            "BST input quality routing",
+            total_clips=len(all_clips),
+            bst_eligible=len(eligible_indices),
+            quality_abstained=len(all_clips) - len(eligible_indices),
+            abstention_reasons=str(Counter(
+                reason for quality in quality_records for reason in quality["reasons"]
+            )),
         )
 
-        if bst_debug_collector is not None and len(bst_debug_collector) > 0:
-            artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
-
         # ── Phase 2b: MMAction2 ensemble (optional) ──────────────────────
-        if settings.mmaction2_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.mmaction2_enabled and eligible_indices:
             from app.pipeline.shared.models import get_mmaction2
             mma_clf = get_mmaction2()
             if mma_clf is not None:
                 logger.info("Running MMAction2 ensemble", mode=settings.mmaction2_mode, weight=settings.mmaction2_ensemble_weight)
                 mma_results, mma_probs = mma_clf.predict_from_clips(
-                    all_clips, batch_size=batch_size, return_probs=True,
+                    eligible_clips, batch_size=batch_size, return_probs=True,
                 )
-                if mma_probs is not None and mma_probs.shape == probs_matrix.shape:
+                if mma_probs is not None and mma_probs.shape == (len(eligible_indices), 25):
                     w = settings.mmaction2_ensemble_weight
-                    probs_matrix = (1.0 - w) * probs_matrix + w * mma_probs
+                    eligible_probs = (1.0 - w) * probs_matrix[eligible_indices] + w * mma_probs
+                    probs_matrix[eligible_indices] = eligible_probs
                     # Re-derive results from ensembled probs
-                    new_results = []
-                    for i, probs in enumerate(probs_matrix):
+                    for result_idx, probs in enumerate(eligible_probs):
                         pred_idx = int(np.argmax(probs))
                         confidence = float(probs[pred_idx])
                         stroke_type = "unknown"
@@ -577,17 +611,19 @@ class StrokeClassificationStage:
                             from app.models.bst import map_to_coach_class
                             stroke_type = map_to_coach_class(pred_idx)
                         # Preserve alpha/sims from BST result if available
-                        orig = all_results[i] if i < len(all_results) else None
+                        clip_idx = eligible_indices[result_idx]
+                        orig = all_results[clip_idx]
                         alpha = orig[3] if orig and len(orig) > 3 else 0.5
                         p0 = orig[4] if orig and len(orig) > 4 else 0.0
                         p1 = orig[5] if orig and len(orig) > 5 else 0.0
-                        new_results.append((stroke_type, confidence, pred_idx, alpha, p0, p1))
-                    all_results = new_results
-                    logger.info("MMAction2 ensemble applied to %d shots", len(all_results))
+                        all_results[clip_idx] = (stroke_type, confidence, pred_idx, alpha, p0, p1)
+                    logger.info("MMAction2 ensemble applied", shots=len(eligible_indices))
                 else:
-                    logger.warning("MMAction2 ensemble skipped: shape mismatch BST=%s MMA=%s",
-                                   probs_matrix.shape if probs_matrix is not None else None,
-                                   mma_probs.shape if mma_probs is not None else None)
+                    logger.warning(
+                        "MMAction2 ensemble skipped: shape mismatch",
+                        bst_shape=str((len(eligible_indices), 25)),
+                        mma_shape=str(mma_probs.shape if mma_probs is not None else None),
+                    )
 
         # Phase 3: build shot records from results
         for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha, aim_attention_p0, aim_attention_p1)) in enumerate(zip(clip_hit_pairs, all_results)):
@@ -610,22 +646,40 @@ class StrokeClassificationStage:
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
+            quality = quality_records[i]
+            shot.update({
+                "bst_input_eligible": bool(quality["eligible"]),
+                "bst_input_quality_score": float(quality["score"]),
+                "bst_input_quality_reasons": quality["reasons"],
+                "bst_input_route": "bst" if i in eligible_indices else "quality_abstain",
+                "bst_input_observed_shuttle_frames": quality["observed_shuttle_frames"],
+                "bst_input_repaired_shuttle_frames": quality["repaired_shuttle_frames"],
+                "bst_input_interpolated_shuttle_frames": quality["interpolated_shuttle_frames"],
+                "bst_input_court_rejected_shuttle_frames": quality["court_rejected_shuttle_frames"],
+                "bst_input_max_shuttle_gap_frames": quality["max_shuttle_gap_frames"],
+                "bst_input_far_pose_coverage": quality["far_pose_coverage"],
+                "bst_input_near_pose_coverage": quality["near_pose_coverage"],
+                "bst_input_far_pose_median_confidence": quality["far_pose_median_confidence"],
+                "bst_input_near_pose_median_confidence": quality["near_pose_median_confidence"],
+                "bst_input_max_bbox_gap_frames": quality["max_bbox_gap_frames"],
+            })
+            debug_entry = bst_debug_by_clip.get(i, {})
 
-            if is_rule_based and bst_debug_collector is not None and i < len(bst_debug_collector):
-                ev = bst_debug_collector[i].get("rule_evidence", {})
-                top3 = bst_debug_collector[i].get("rule_top3", [])
+            if is_rule_based and debug_entry:
+                ev = debug_entry.get("rule_evidence", {})
+                top3 = debug_entry.get("rule_top3", [])
                 if ev:
                     shot["rule_evidence"] = ev
                 if top3:
                     shot["rule_top3"] = top3
 
-            if bst_debug_collector is not None and i < len(bst_debug_collector):
-                raw_conf = bst_debug_collector[i].get("bst_raw_confidence")
+            if debug_entry:
+                raw_conf = debug_entry.get("bst_raw_confidence")
                 if raw_conf is not None and not is_rule_based:
                     shot["bst_raw_confidence"] = raw_conf
 
-            if settings.report_include_logits and bst_debug_collector is not None and i < len(bst_debug_collector):
-                logits_str = bst_debug_collector[i].get("logits_all")
+            if settings.report_include_logits and debug_entry:
+                logits_str = debug_entry.get("logits_all")
                 if logits_str:
                     shot["logits"] = logits_str
 
@@ -670,25 +724,26 @@ class StrokeClassificationStage:
 
         # Phase 3a: context fusion layer — nudge BST logits by physics/context
         fps = float(config.processing_fps or settings.fps)
-        shuttle_raw = artifacts.get_parquet("shuttle_raw")
-        if settings.fusion_enabled and probs_matrix is not None and len(shots) > 0:
+        if settings.fusion_enabled and eligible_indices:
             from app.pipeline.shared.context_fusion import ContextFusion
             fusion = ContextFusion.from_settings()
-            probs_matrix = fusion.fuse(
-                shots, probs_matrix,
+            probs_matrix[eligible_indices] = fusion.fuse(
+                [shots[i] for i in eligible_indices], probs_matrix[eligible_indices],
                 shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
             )
 
         # Phase 3b: hierarchical family classifier — reduce cross-family noise
-        if settings.hierarchical_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.hierarchical_enabled and eligible_indices:
             from app.pipeline.shared.hierarchical_classifier import hierarchical_refine
-            probs_matrix = hierarchical_refine(probs_matrix, penalty=settings.hierarchical_penalty)
+            probs_matrix[eligible_indices] = hierarchical_refine(
+                probs_matrix[eligible_indices], penalty=settings.hierarchical_penalty
+            )
 
         # Phase 3b.5: confusion-pair correction — resolve within-family ambiguities
-        if settings.confusion_pair_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.confusion_pair_enabled and eligible_indices:
             from app.pipeline.shared.confusion_pairs import resolve_confusion_pairs
-            probs_matrix = resolve_confusion_pairs(
-                probs_matrix, shots, shuttle_df, shuttle_raw,
+            probs_matrix[eligible_indices] = resolve_confusion_pairs(
+                probs_matrix[eligible_indices], [shots[i] for i in eligible_indices], shuttle_df, shuttle_raw,
                 pose_df, court, fps, vid_w, vid_h,
                 boost=settings.confusion_pair_boost,
             )
@@ -702,6 +757,10 @@ class StrokeClassificationStage:
             shots, probs_matrix, physics_classes,
             shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
+
+        for shot in shots:
+            if shot["bst_input_route"] == "quality_abstain" and shot["stroke_type"] != "unknown":
+                shot["bst_input_route"] = "downstream_override"
 
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions
