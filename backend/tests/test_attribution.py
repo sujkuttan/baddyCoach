@@ -47,7 +47,9 @@ def test_attribution_assigns_player_to_shots(tmp_job_dir):
     assert result.status == "success"
     shots_df = store.get_parquet("shots")
     assert "player_id" in shots_df.columns
-    assert shots_df["player_id"].notna().all()
+    assert "owner_confident" in shots_df.columns
+    assert "owner_source" in shots_df.columns
+    assert set(shots_df["side"]).issubset({"near", "far", "unknown"})
 
 
 def test_attribution_continues_with_invalid_court_geometry(tmp_job_dir):
@@ -77,11 +79,12 @@ def test_attribution_continues_with_invalid_court_geometry(tmp_job_dir):
     assert result.status == "success"
     shots_df = store.get_parquet("shots")
     assert "player_id" in shots_df.columns
-    assert shots_df["player_id"].notna().all()
+    assert "owner_confident" in shots_df.columns
+    assert set(shots_df["side"]).issubset({"near", "far", "unknown"})
 
 
 def test_bst_alpha_attribution_respects_alpha(tmp_job_dir):
-    """Verify BST aimplayer_alpha and class_id feed into bst_near/bst_far ownership sub-scores."""
+    """Verify BST aimplayer_alpha and class_id feed diagnostic BST fields only."""
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
 
@@ -117,27 +120,21 @@ def test_bst_alpha_attribution_respects_alpha(tmp_job_dir):
     assert result.status == "success"
 
     shots_df = store.get_parquet("shots")
-    assert "player_id" in shots_df.columns
-    assert shots_df["player_id"].notna().all()
-    assert "ownership_bst_near" in shots_df.columns
-    assert "ownership_bst_far" in shots_df.columns
+    assert "ownership_bst_diag_near" in shots_df.columns
+    assert "ownership_bst_diag_far" in shots_df.columns
 
-    # Shot 0: alpha=0.85 (>0.5+0.15) → far; class_id=3 (Top_smash) → overrides to (0.2, 0.8)
-    assert shots_df.loc[0, "ownership_bst_near"] == pytest.approx(0.2, abs=0.01)
-    assert shots_df.loc[0, "ownership_bst_far"] == pytest.approx(0.8, abs=0.01)
-    # Shot 1: alpha=0.55 (within 0.15 threshold) → neutral alpha; class_id=5 (Top_clear, conf=0.4≥0.3) → (0.2, 0.8)
-    assert shots_df.loc[1, "ownership_bst_near"] == pytest.approx(0.2, abs=0.01)
-    assert shots_df.loc[1, "ownership_bst_far"] == pytest.approx(0.8, abs=0.01)
-    # Shot 2: alpha=0.12 (<0.5-0.15) → strong near (0.75); class_id=0 → no override
-    assert shots_df.loc[2, "ownership_bst_near"] == pytest.approx(0.75, abs=0.01)
-    assert shots_df.loc[2, "ownership_bst_far"] == pytest.approx(0.25, abs=0.01)
-    # Shot 3: alpha=0.72 (>0.5+0.15) → moderate far (0.54); class_id=15 (Bottom_lift, conf=0.7≥0.3) → overrides to (0.8, 0.2)
-    assert shots_df.loc[3, "ownership_bst_near"] == pytest.approx(0.8, abs=0.01)
-    assert shots_df.loc[3, "ownership_bst_far"] == pytest.approx(0.2, abs=0.01)
+    assert shots_df.loc[0, "ownership_bst_diag_near"] == pytest.approx(0.2, abs=0.01)
+    assert shots_df.loc[0, "ownership_bst_diag_far"] == pytest.approx(0.8, abs=0.01)
+    assert shots_df.loc[1, "ownership_bst_diag_near"] == pytest.approx(0.2, abs=0.01)
+    assert shots_df.loc[1, "ownership_bst_diag_far"] == pytest.approx(0.8, abs=0.01)
+    assert shots_df.loc[2, "ownership_bst_diag_near"] == pytest.approx(0.75, abs=0.01)
+    assert shots_df.loc[2, "ownership_bst_diag_far"] == pytest.approx(0.25, abs=0.01)
+    assert shots_df.loc[3, "ownership_bst_diag_near"] == pytest.approx(0.8, abs=0.01)
+    assert shots_df.loc[3, "ownership_bst_diag_far"] == pytest.approx(0.2, abs=0.01)
 
 
 def test_attention_owner_match_alpha_far(tmp_job_dir):
-    """Alpha > 0.5, Viterbi assigns far → attention_owner_match=True."""
+    """Alpha diagnostics are retained even when the final owner abstains."""
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
     store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
@@ -155,16 +152,15 @@ def test_attention_owner_match_alpha_far(tmp_job_dir):
     result = stage.run(store, config)
     assert result.status == "success"
     shots_df = store.get_parquet("shots")
-    # BST sub-score: alpha=0.85 (>0.5+0.15) → far, class_id=0 → no override → (0.3, 0.7)
-    assert "ownership_bst_near" in shots_df.columns
-    assert shots_df.loc[0, "ownership_bst_near"] == pytest.approx(0.3, abs=0.02)
-    assert shots_df.loc[0, "ownership_bst_far"] == pytest.approx(0.7, abs=0.02)
-    # Post-attribution diagnostic still works
-    assert shots_df.loc[0, "attention_alpha_owner"] == "far"
+    assert "ownership_bst_diag_near" in shots_df.columns
+    assert shots_df.loc[0, "ownership_bst_diag_near"] == pytest.approx(0.3, abs=0.02)
+    assert shots_df.loc[0, "ownership_bst_diag_far"] == pytest.approx(0.7, abs=0.02)
+    assert shots_df.loc[0, "attention_alpha_owner"] is None
+    assert shots_df.loc[0, "attention_owner_match"] is None
 
 
 def test_attention_owner_match_alpha_near(tmp_job_dir):
-    """Alpha < 0.5 → BST sub-score favors near; diagnostic check."""
+    """Alpha < 0.5 updates diagnostics but not owner matching without an assignment."""
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
     store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
@@ -182,11 +178,9 @@ def test_attention_owner_match_alpha_near(tmp_job_dir):
     result = stage.run(store, config)
     assert result.status == "success"
     shots_df = store.get_parquet("shots")
-    # BST sub-score: alpha=0.12 (<0.5-0.15) → strong near (0.75); class_id=0 → no override
-    assert shots_df.loc[0, "ownership_bst_near"] == pytest.approx(0.75, abs=0.02)
-    assert shots_df.loc[0, "ownership_bst_far"] == pytest.approx(0.25, abs=0.02)
-    # Post-attribution diagnostic: alpha < 0.5 → alpha_owner = "near"
-    assert shots_df.loc[0, "attention_alpha_owner"] == "near"
+    assert shots_df.loc[0, "ownership_bst_diag_near"] == pytest.approx(0.75, abs=0.02)
+    assert shots_df.loc[0, "ownership_bst_diag_far"] == pytest.approx(0.25, abs=0.02)
+    assert shots_df.loc[0, "attention_alpha_owner"] is None
 
 
 def test_attention_owner_match_alpha_ambiguous(tmp_job_dir):
@@ -301,3 +295,86 @@ def test_turn_prior_is_reported_but_not_used_in_local_score():
     assert first["near_score"] == pytest.approx(after_near["near_score"])
     assert first["far_score"] == pytest.approx(after_near["far_score"])
     assert after_near["turn_near"] != pytest.approx(after_near["turn_far"])
+
+
+def test_unanchored_rally_stays_unknown(tmp_job_dir):
+    store = ArtifactStore(tmp_job_dir)
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    store.set("court", {"valid": False})
+    store.set_parquet("rallies", pd.DataFrame({"rally_id": [1], "start_frame": [0], "end_frame": [20]}))
+    store.set_parquet(
+        "shots",
+        pd.DataFrame(
+            {
+                "frame": [0, 10, 20],
+                "rally_id": [1, 1, 1],
+                "stroke_type": ["clear", "clear", "clear"],
+                "stroke_confidence": [0.8, 0.8, 0.8],
+            }
+        ),
+    )
+    store.set_parquet(
+        "shuttle",
+        pd.DataFrame(
+            {
+                "frame": [0, 10, 20],
+                "x": [100.0, 100.0, 100.0],
+                "y": [200.0, 200.0, 200.0],
+                "confidence": [0.1, 0.1, 0.1],
+            }
+        ),
+    )
+
+    PlayerAttributionStage().run(store, StageConfig())
+    shots = store.get_parquet("shots")
+
+    assert shots["player_id"].isna().all()
+    assert set(shots["side"]) == {"unknown"}
+    assert shots["owner_confident"].eq(False).all()
+    assert set(shots["owner_source"]) == {"unknown"}
+
+
+def test_short_compatible_gap_bridges_between_anchors(tmp_job_dir, monkeypatch):
+    store = ArtifactStore(tmp_job_dir)
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+    store.set("court", {"valid": False})
+    store.set_parquet("rallies", pd.DataFrame({"rally_id": [1], "start_frame": [0], "end_frame": [30]}))
+    store.set_parquet(
+        "shots",
+        pd.DataFrame(
+            {
+                "frame": [0, 10, 20, 30],
+                "rally_id": [1, 1, 1, 1],
+                "stroke_type": ["clear", "clear", "clear", "clear"],
+                "stroke_confidence": [0.8, 0.8, 0.8, 0.8],
+            }
+        ),
+    )
+    store.set_parquet(
+        "shuttle",
+        pd.DataFrame(
+            {
+                "frame": [0, 10, 20, 30],
+                "x": [0.0, 0.0, 0.0, 0.0],
+                "y": [0.0, 0.0, 0.0, 0.0],
+                "confidence": [0.9, 0.9, 0.9, 0.9],
+            }
+        ),
+    )
+
+    scripted = iter(
+        [
+            {"near_score": 0.82, "far_score": 0.18, "trajectory_near": 0.9, "trajectory_far": 0.1, "court_side_near": 0.8, "court_side_far": 0.2, "proximity_near": 0.8, "proximity_far": 0.2, "motion_near": 0.5, "motion_far": 0.5, "pose_near": 0.5, "pose_far": 0.5, "turn_near": 0.5, "turn_far": 0.5, "bst_diag_near": 0.4, "bst_diag_far": 0.6},
+            {"near_score": 0.52, "far_score": 0.48, "trajectory_near": 0.5, "trajectory_far": 0.5, "court_side_near": 0.5, "court_side_far": 0.5, "proximity_near": 0.5, "proximity_far": 0.5, "motion_near": 0.5, "motion_far": 0.5, "pose_near": 0.5, "pose_far": 0.5, "turn_near": 0.5, "turn_far": 0.5, "bst_diag_near": 0.5, "bst_diag_far": 0.5},
+            {"near_score": 0.49, "far_score": 0.51, "trajectory_near": 0.5, "trajectory_far": 0.5, "court_side_near": 0.5, "court_side_far": 0.5, "proximity_near": 0.5, "proximity_far": 0.5, "motion_near": 0.5, "motion_far": 0.5, "pose_near": 0.5, "pose_far": 0.5, "turn_near": 0.5, "turn_far": 0.5, "bst_diag_near": 0.5, "bst_diag_far": 0.5},
+            {"near_score": 0.19, "far_score": 0.81, "trajectory_near": 0.2, "trajectory_far": 0.8, "court_side_near": 0.2, "court_side_far": 0.8, "proximity_near": 0.2, "proximity_far": 0.8, "motion_near": 0.5, "motion_far": 0.5, "pose_near": 0.5, "pose_far": 0.5, "turn_near": 0.5, "turn_far": 0.5, "bst_diag_near": 0.6, "bst_diag_far": 0.4},
+        ]
+    )
+    monkeypatch.setattr(OwnershipScorer, "score", lambda self, **kwargs: next(scripted))
+
+    PlayerAttributionStage().run(store, StageConfig())
+    shots = store.get_parquet("shots")
+
+    assert shots["side"].tolist() == ["near", "far", "near", "far"]
+    assert shots["owner_source"].tolist() == ["local_anchor", "viterbi_bridge", "viterbi_bridge", "local_anchor"]
+    assert shots["owner_confident"].tolist() == [True, True, True, True]
