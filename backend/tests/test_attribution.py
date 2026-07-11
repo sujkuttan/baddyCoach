@@ -3,6 +3,7 @@ import pandas as pd
 import pytest
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import PlayerAttributionStage
+from app.pipeline.shared.ownership_scorer import OwnershipScorer
 
 
 def test_attribution_assigns_player_to_shots(tmp_job_dir):
@@ -231,3 +232,72 @@ def test_attention_owner_match_no_alpha(tmp_job_dir):
     assert "attention_owner_match" in shots_df.columns
     assert shots_df["attention_owner_match"].isna().all()
     assert shots_df["attention_alpha_owner"].isna().all()
+
+
+def test_bst_alpha_is_diagnostic_only_not_emission():
+    scorer = OwnershipScorer(
+        trajectory_weight=1.0,
+        court_side_weight=0.0,
+        proximity_weight=0.0,
+        motion_weight=0.0,
+        pose_feasibility_weight=0.0,
+        turn_prior_weight=0.0,
+        bst_weight=0.0,
+        calib_near_mean=0.5,
+        calib_near_std=1.0,
+        calib_far_mean=0.5,
+        calib_far_std=1.0,
+    )
+    shuttle_df = pd.DataFrame(
+        {
+            "frame": [7, 10, 13],
+            "x": [640.0, 660.0, 700.0],
+            "y": [300.0, 310.0, 320.0],
+            "confidence": [0.9, 0.9, 0.9],
+        }
+    )
+    players = {
+        "players": [
+            {"id": "p1", "side": "near", "detections": []},
+            {"id": "p2", "side": "far", "detections": []},
+        ]
+    }
+    court = {"homography": np.eye(3).tolist()}
+
+    low_alpha = scorer.score(shuttle_df, None, players, court, frame=10, shot={"aimplayer_alpha": 0.10})
+    high_alpha = scorer.score(shuttle_df, None, players, court, frame=10, shot={"aimplayer_alpha": 0.90})
+
+    assert low_alpha["near_score"] == pytest.approx(high_alpha["near_score"])
+    assert low_alpha["far_score"] == pytest.approx(high_alpha["far_score"])
+    assert low_alpha["bst_diag_near"] != pytest.approx(high_alpha["bst_diag_near"])
+
+
+def test_turn_prior_is_reported_but_not_used_in_local_score():
+    scorer = OwnershipScorer(
+        trajectory_weight=0.0,
+        court_side_weight=1.0,
+        proximity_weight=0.0,
+        motion_weight=0.0,
+        pose_feasibility_weight=0.0,
+        turn_prior_weight=0.0,
+        bst_weight=0.0,
+        calib_near_mean=0.5,
+        calib_near_std=1.0,
+        calib_far_mean=0.5,
+        calib_far_std=1.0,
+    )
+    shuttle_df = pd.DataFrame({"frame": [10], "x": [500.0], "y": [200.0], "confidence": [0.9]})
+    players = {
+        "players": [
+            {"id": "p1", "side": "near", "detections": []},
+            {"id": "p2", "side": "far", "detections": []},
+        ]
+    }
+    court = {"homography": np.eye(3).tolist()}
+
+    first = scorer.score(shuttle_df, None, players, court, frame=10, prev_owner=None, shot={})
+    after_near = scorer.score(shuttle_df, None, players, court, frame=10, prev_owner="p1", shot={})
+
+    assert first["near_score"] == pytest.approx(after_near["near_score"])
+    assert first["far_score"] == pytest.approx(after_near["far_score"])
+    assert after_near["turn_near"] != pytest.approx(after_near["turn_far"])
