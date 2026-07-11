@@ -796,8 +796,11 @@ def _generate_report(court, players_data, shots, rallies, coach,
             "start_ts": round(s["frame"] / fps, 3),
             "stroke_type": s["stroke_type"],
             "confidence": round(s.get("stroke_confidence", 0.5), 3),
-            "player_id": s.get("player_id", "player_1"),
+            "player_id": s.get("player_id"),
             "rally_id": s.get("rally_id"),
+            "owner_confident": bool(s.get("owner_confident", False)),
+            "owner_source": s.get("owner_source", "unknown"),
+            "owner_reason": s.get("owner_reason", "missing"),
         }
         # ts_end: next shot's start_ts, or +1s for last shot
         if shot_idx < len(shots):
@@ -1296,7 +1299,9 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         "strokes": [
             {"frame": s["frame"], "timestamp": round(s["frame"] / video_fps, 2),
              "stroke_type": s["stroke_type"], "confidence": round(s.get("stroke_confidence", 0.5), 3),
-             "player_id": s.get("player_id", "player_1"), "rally_id": s.get("rally_id")}
+             "player_id": s.get("player_id"), "rally_id": s.get("rally_id"),
+             "side": s.get("side", "unknown"), "owner_confident": bool(s.get("owner_confident", False)),
+             "owner_source": s.get("owner_source", "unknown"), "owner_reason": s.get("owner_reason", "missing")}
             for s in shots
         ],
     })

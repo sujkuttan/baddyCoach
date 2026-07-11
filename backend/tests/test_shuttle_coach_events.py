@@ -49,6 +49,20 @@ class TestMatchModelFromTables:
         model = MatchModel.from_tables(tables)
         assert model.player_ids == ["p1", "p2"]
 
+    def test_player_ids_ignore_unknown_owner_rows(self):
+        tables = _make_tables()
+        tables["shots"] = pd.DataFrame(
+            {
+                "rally_id": [1, 1, 2],
+                "player_id": ["p1", None, "p2"],
+                "owner_confident": [True, False, True],
+                "shot_type": ["smash", "clear", "drop"],
+            }
+        )
+        model = MatchModel.from_tables(tables)
+        assert model.player_ids == ["p1", "p2"]
+        assert list(model.shots_of("p1")["shot_type"]) == ["smash"]
+
     def test_pose_is_none_when_missing(self):
         tables = _make_tables()
         del tables["pose"]
@@ -69,6 +83,13 @@ class TestMatchModelShotsOf:
         model = MatchModel.from_tables(tables)
         result = model.shots_of("unknown")
         assert len(result) == 0
+
+    def test_filters_unconfident_rows(self):
+        tables = _make_tables()
+        tables["shots"]["owner_confident"] = [True, False, True]
+        model = MatchModel.from_tables(tables)
+        p2_shots = model.shots_of("p2")
+        assert p2_shots.empty
 
 
 class TestMatchModelPositionsOf:

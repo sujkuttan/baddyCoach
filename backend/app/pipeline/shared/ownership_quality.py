@@ -97,7 +97,10 @@ def assign_rally_owners(
 def confident_owner_shots(shots_df) -> pd.DataFrame:
     if not isinstance(shots_df, pd.DataFrame) or shots_df.empty:
         return pd.DataFrame()
-    if "owner_confident" not in shots_df.columns or "player_id" not in shots_df.columns:
+    if "player_id" not in shots_df.columns:
         return shots_df.iloc[0:0].copy()
-    mask = shots_df["owner_confident"].fillna(False) & shots_df["player_id"].notna()
+    if "owner_confident" in shots_df.columns:
+        mask = shots_df["owner_confident"].fillna(False) & shots_df["player_id"].notna()
+    else:
+        mask = shots_df["player_id"].notna()
     return shots_df[mask].copy()
