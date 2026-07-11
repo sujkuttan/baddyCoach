@@ -255,6 +255,59 @@ def print_report(result: dict, metrics: dict, show_details: bool = True):
             print(f"    ... and {len(result['false_positives']) - 10} more")
 
 
+def summarize_bst_input_quality(shots: pd.DataFrame, total_labeled: int | None = None) -> dict:
+    """Summarize coverage and strict accuracy for manually labeled shots."""
+    labeled = shots.dropna(subset=["true_stroke"]).copy()
+    total = int(total_labeled) if total_labeled is not None else len(labeled)
+    eligible = labeled[labeled["bst_input_eligible"].fillna(False)]
+    correct = labeled["stroke_type"] == labeled["true_stroke"]
+    accepted_correct = eligible["stroke_type"] == eligible["true_stroke"]
+    per_class = {}
+    classes = sorted(set(labeled["true_stroke"]).union(labeled["stroke_type"]))
+    for stroke in classes:
+        true_mask = labeled["true_stroke"] == stroke
+        predicted_mask = labeled["stroke_type"] == stroke
+        true_positive = int((true_mask & predicted_mask).sum())
+        per_class[stroke] = {
+            "precision": true_positive / max(1, int(predicted_mask.sum())),
+            "recall": true_positive / max(1, int(true_mask.sum())),
+            "count": int(true_mask.sum()),
+        }
+    reason_counts = {}
+    for reasons in labeled.get("bst_input_quality_reasons", pd.Series(dtype=object)):
+        if isinstance(reasons, np.ndarray):
+            reasons = reasons.tolist()
+        for reason in reasons if isinstance(reasons, list) else []:
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+    return {
+        "total_labeled": total,
+        "matched_labeled": len(labeled),
+        "eligible_labeled": len(eligible),
+        "coverage": len(eligible) / max(1, total),
+        "abstention_rate": 1.0 - len(eligible) / max(1, total),
+        "accepted_accuracy": float(accepted_correct.mean()) if len(eligible) else 0.0,
+        "overall_accuracy": float(correct.sum()) / max(1, total),
+        "reason_counts": reason_counts,
+        "per_class": per_class,
+    }
+
+
+def attach_bst_input_quality_metrics(result: dict, metrics: dict, shots: pd.DataFrame) -> None:
+    """Attach the same quality report to enriched and ordinary label flows."""
+    if "bst_input_eligible" not in shots.columns:
+        return
+    matched_rows = []
+    for match in result["matches"]:
+        if match["shot"] is None:
+            continue
+        row = dict(match["shot"])
+        row["true_stroke"] = match["label"]["stroke"]
+        matched_rows.append(row)
+    metrics["bst_input_quality"] = summarize_bst_input_quality(
+        pd.DataFrame(matched_rows), total_labeled=result["n_labels"]
+    )
+
+
 def evaluate_enriched_csv(csv_path: str, max_frame_diff: int = 15) -> dict:
     """Evaluate using already-matched enriched CSV (labels_enriched.csv format)."""
     df = pd.read_csv(csv_path)
@@ -282,6 +335,7 @@ def evaluate_enriched_csv(csv_path: str, max_frame_diff: int = 15) -> dict:
                 m["frame_error"] = int(df.iloc[i]["frame_diff"])
     
     metrics = compute_metrics(result)
+    attach_bst_input_quality_metrics(result, metrics, shots)
     # Override with enriched frame diffs
     if "frame_diff" in df.columns:
         frame_diffs = [int(d) for d in df["frame_diff"] if not pd.isna(d)]
@@ -314,8 +368,18 @@ def main():
         shots = load_pipeline_shots("results/hybrid_results/debug/shots.parquet")
         result = match_labels_to_shots(labels, shots, radius_frames=radius)
         metrics = compute_metrics(result)
+        attach_bst_input_quality_metrics(result, metrics, shots)
     
     print_report(result, metrics, show_details=True)
+    if "bst_input_quality" in metrics:
+        quality = metrics["bst_input_quality"]
+        print("\n  BST Input Quality:")
+        print(f"    Coverage:          {quality['coverage']:.1%}")
+        print(f"    Abstention rate:   {quality['abstention_rate']:.1%}")
+        print(f"    Accepted accuracy: {quality['accepted_accuracy']:.1%}")
+        print(f"    Overall accuracy:  {quality['overall_accuracy']:.1%}")
+        print(f"    Abstention reasons: {quality['reason_counts']}")
+        print(f"    Per class: {quality['per_class']}")
     
     print(f"\n{'─' * 70}")
     print(f"  Interpretation notes:")

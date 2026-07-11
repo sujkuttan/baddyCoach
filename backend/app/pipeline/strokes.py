@@ -10,6 +10,7 @@ from app.pipeline.shared.bst_preproc import (
     normalize_joints, normalize_joints_court, normalize_joints_hip_centered,
     create_bones, BONE_PAIRS,
 )
+from app.pipeline.shared.bst_input_quality import evaluate_bst_clip_quality
 from app.pipeline.shared.physics import apply_physics_ensemble, summarize_physics_sources
 from app.models.bst import COACH_STROKE_CLASSES
 
@@ -73,6 +74,19 @@ def _temporal_resample(arr: np.ndarray, target_len: int,
     return out.reshape(target_len, *arr.shape[1:])
 
 
+def _can_temporally_deduplicate(previous: dict, current: dict, gap: int, max_gap: int) -> bool:
+    """Keep quality-abstained shots as auditable records, even when nearby."""
+    if gap > max_gap:
+        return False
+    if not previous.get("bst_input_eligible", True) or not current.get("bst_input_eligible", True):
+        return False
+    return (
+        current["stroke_type"] == previous["stroke_type"]
+        or current["stroke_type"] == "unknown"
+        or previous["stroke_type"] == "unknown"
+    )
+
+
 def _get_keypoints_for_frame(pose_df: pd.DataFrame, frame: int, player_id: str) -> np.ndarray | None:
     """Get (17, 3) keypoints for a frame/player from pose dataframe."""
     if pose_df is None or len(pose_df) == 0:
@@ -101,6 +115,7 @@ def _build_clip(
     homography: np.ndarray | None = None,
     original_len: int | None = None,
     player_ids: list | None = None,
+    shuttle_raw: pd.DataFrame | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -144,14 +159,16 @@ def _build_clip(
                 det_bbox_lookup[pid][d["frame"]] = d["bbox"]
 
     def _interpolate_bboxes(lookup, target_frames):
-        """Linearly interpolate bbox for missing frames."""
+        """Linearly interpolate only short bbox gaps and report source distance."""
         existing = sorted(lookup.keys())
         if not existing:
-            return {}
+            return {}, {}
         result = {}
+        gaps = {}
         for f in target_frames:
             if f in lookup:
                 result[f] = lookup[f]
+                gaps[f] = 0
             else:
                 before = [ef for ef in existing if ef <= f]
                 after = [ef for ef in existing if ef >= f]
@@ -159,23 +176,34 @@ def _build_clip(
                     bf, af = before[-1], after[0]
                     if bf == af:
                         result[f] = lookup[bf]
-                    else:
+                        gaps[f] = 0
+                    elif af - bf <= settings.bst_max_bbox_interp_gap:
                         ratio = (f - bf) / (af - bf)
                         result[f] = tuple(
                             lookup[bf][i] + ratio * (lookup[af][i] - lookup[bf][i])
                             for i in range(4)
                         )
-                elif before:
+                        gaps[f] = max(f - bf, af - f)
+                elif before and f - before[-1] <= settings.bst_max_bbox_interp_gap:
                     result[f] = lookup[before[-1]]
-                elif after:
+                    gaps[f] = f - before[-1]
+                elif after and after[0] - f <= settings.bst_max_bbox_interp_gap:
                     result[f] = lookup[after[0]]
-        return result
+                    gaps[f] = after[0] - f
+                else:
+                    gaps[f] = settings.bst_max_bbox_interp_gap + 1
+                if f not in gaps:
+                    gaps[f] = settings.bst_max_bbox_interp_gap + 1
+        return result, gaps
 
     # Build interpolated bbox lookups for each player
     clip_frames_set = set(frames[:seq_len])
     interpolated_bboxes = {}
+    bbox_gaps = {}
     for pid in list(det_bbox_lookup.keys()):
-        interpolated_bboxes[pid] = _interpolate_bboxes(det_bbox_lookup[pid], clip_frames_set)
+        interpolated_bboxes[pid], bbox_gaps[pid] = _interpolate_bboxes(
+            det_bbox_lookup[pid], clip_frames_set
+        )
 
     # Debug counters for missing data
     bbox_diags = {}
@@ -194,15 +222,49 @@ def _build_clip(
         **bbox_diags,
     }
 
+    provenance = {
+        "video_len": min(n_frames_orig, seq_len),
+        "shuttle_observed": [],
+        "shuttle_repaired": [],
+        "shuttle_interpolated": [],
+        "shuttle_court_rejected": [],
+        "pose_present_far": [],
+        "pose_present_near": [],
+        "pose_keypoint_confidence_far": [],
+        "pose_keypoint_confidence_near": [],
+        "bbox_gap_far": [],
+        "bbox_gap_near": [],
+    }
+    shuttle_lookup = {}
+    if shuttle_df is not None:
+        shuttle_lookup = {int(row["frame"]): row for _, row in shuttle_df.iterrows()}
+    raw_shuttle_lookup = {}
+    if shuttle_raw is not None:
+        raw_shuttle_lookup = {int(row["frame"]): row for _, row in shuttle_raw.iterrows()}
+
     for t, frame in enumerate(frames[:seq_len]):
-        if shuttle_df is not None:
-            s_row = shuttle_df[shuttle_df['frame'] == frame]
-            if len(s_row) > 0:
-                s_conf = float(s_row.iloc[0].get('confidence', 1.0))
-                if s_conf < settings.shuttle_min_conf:
-                    continue
-                sx = float(s_row.iloc[0]['x'])
-                sy = float(s_row.iloc[0]['y'])
+        clean_row = shuttle_lookup.get(frame)
+        raw_row = raw_shuttle_lookup.get(frame)
+        raw_repaired = bool(raw_row.get("was_repaired", False)) if raw_row is not None else False
+        raw_observed = bool(
+            raw_row is not None
+            and not raw_repaired
+            and float(raw_row.get("confidence", 0.0)) >= settings.shuttle_min_conf
+            and np.isfinite(float(raw_row.get("x", np.nan)))
+            and np.isfinite(float(raw_row.get("y", np.nan)))
+        )
+        interpolated = bool(clean_row.get("was_interpolated", False)) if clean_row is not None else False
+        court_rejected = bool(clean_row.get("court_rejected", False)) if clean_row is not None else False
+        provenance["shuttle_observed"].append(raw_observed)
+        provenance["shuttle_repaired"].append(raw_repaired)
+        provenance["shuttle_interpolated"].append(interpolated)
+        provenance["shuttle_court_rejected"].append(court_rejected)
+
+        if clean_row is not None and not court_rejected:
+            s_conf = float(clean_row.get('confidence', 1.0))
+            if s_conf >= settings.shuttle_min_conf:
+                sx = float(clean_row['x'])
+                sy = float(clean_row['y'])
                 if settings.bst_shuttle_norm == "court" and homography is not None:
                     sx, sy = image_to_court(homography, (sx, sy))
                     shuttle[t, 0] = max(0.0, min(1.0, sx / court_length if court_length > 0 else 0))
@@ -239,27 +301,44 @@ def _build_clip(
 
         for p_idx, pid in enumerate(player_order):
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
+            side = "far" if p_idx == 0 else "near"
+            bbox_gap = bbox_gaps.get(pid, {}).get(
+                frame, settings.bst_max_bbox_interp_gap + 1
+            )
+            provenance[f"bbox_gap_{side}"].append(bbox_gap)
             if kps is not None:
                 coords = kps[:, :2]
+                conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(kps))
+                valid_keypoints = (
+                    np.isfinite(coords).all(axis=1)
+                    & (conf >= settings.bst_min_keypoint_confidence)
+                    & ~np.all(coords == 0.0, axis=1)
+                )
+                masked_coords = coords.copy()
+                masked_coords[~valid_keypoints] = 0.0
+                provenance[f"pose_present_{side}"].append(bool(valid_keypoints.any()))
+                provenance[f"pose_keypoint_confidence_{side}"].append(
+                    float(np.median(conf[valid_keypoints])) if valid_keypoints.any() else 0.0
+                )
                 # Coords are (17, 2); pass confidence for keypoint-bbox masking.
                 # Keypoint-derived bbox structurally eliminates pose/bbox mismatch.
                 if interpolated_bboxes.get(pid, {}).get(frame) is None:
                     debug_clip_stats["n_missing_bbox"] += 1
                 if settings.bst_joint_norm == "court" and homography is not None:
-                    joints[t, p_idx] = normalize_joints_court(coords, homography)
+                    joints[t, p_idx] = normalize_joints_court(masked_coords, homography)
                 elif settings.bst_joint_norm == "hip_centered":
                     joints[t, p_idx] = normalize_joints_hip_centered(
-                        coords, vid_w=vid_w, vid_h=vid_h, conf=kps[:, 2],
+                        masked_coords, vid_w=vid_w, vid_h=vid_h, conf=conf,
                     )
                 else:
                     bbox = interpolated_bboxes.get(pid, {}).get(frame)
                     joints[t, p_idx] = normalize_joints(
-                        coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
-                        conf=kps[:, 2],
+                        masked_coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
+                        conf=conf, min_confidence=settings.bst_min_keypoint_confidence,
                     )
 
-                feet_x = (coords[15, 0] + coords[16, 0]) / 2
-                feet_y = max(coords[15, 1], coords[16, 1])
+                feet_x = (masked_coords[15, 0] + masked_coords[16, 0]) / 2
+                feet_y = max(masked_coords[15, 1], masked_coords[16, 1])
                 if homography is not None:
                     court_x, court_y = image_to_court(homography, (feet_x, feet_y))
                     court_x, court_y = clamp_to_unit(court_x / court_length if court_length > 0 else 0,
@@ -271,6 +350,8 @@ def _build_clip(
                     pos[t, p_idx, 1] = max(0.0, min(1.0, feet_y / vid_h))
             else:
                 debug_clip_stats["n_missing_pose"] += 1
+                provenance[f"pose_present_{side}"].append(False)
+                provenance[f"pose_keypoint_confidence_{side}"].append(0.0)
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     amp = settings.joint_velocity_amplification
@@ -293,6 +374,7 @@ def _build_clip(
         'court_length': court_length,
         'court_width': court_width,
         '_debug_clip': debug_clip_stats,
+        '_bst_provenance': provenance,
     }
 
 
@@ -307,6 +389,7 @@ class StrokeClassificationStage:
             return StageResult.success(metadata={"shot_count": 0})
 
         shuttle_df = artifacts.get_parquet("shuttle")
+        shuttle_raw = artifacts.get_parquet("shuttle_raw")
         pose_df = artifacts.get_parquet("pose")
         court = artifacts.get("court") or {}
 
@@ -396,6 +479,7 @@ class StrokeClassificationStage:
                     homography=homography,
                     original_len=original_n_frames,
                     player_ids=player_ids,
+                    shuttle_raw=shuttle_raw,
                 )
 
                 # Temporal resample to match model's expected seq_len
@@ -464,43 +548,77 @@ class StrokeClassificationStage:
                     homography=homography,
                     original_len=original_n_frames,
                     player_ids=player_ids,
+                    shuttle_raw=shuttle_raw,
                 )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
             all_clips.append(clip)
             clip_hit_pairs.append((frame, hit, clip_frames))
 
-        # Phase 2: batch inference (GPU-efficient, all clips in one call)
+        # Phase 2: evaluate quality, then batch only evidence-supported clips.
         batch_size = config.extra.get("bst_batch", 32)
         debug_level = config.debug_level
-
-        # Collect debug info for logits (needed for calibration) when requested
         collect_debug = debug_level >= 1 or settings.report_include_logits
-        bst_debug_collector = [] if collect_debug else None
-        all_results, probs_matrix = classifier.predict_from_clips(
-            all_clips, batch_size=batch_size,
-            debug_collector=bst_debug_collector,
-            return_probs=True,
+        quality_records = [
+            evaluate_bst_clip_quality(clip["_bst_provenance"])
+            for clip in all_clips
+        ]
+        eligible_indices = [
+            i for i, quality in enumerate(quality_records)
+            if not settings.bst_input_quality_enabled or quality["eligible"]
+        ]
+        eligible_clips = [all_clips[i] for i in eligible_indices]
+        abstained_result = ("unknown", 0.0, 0, 0.5, 0.0, 0.0)
+        all_results = [abstained_result for _ in all_clips]
+        probs_matrix = np.zeros((len(all_clips), 25), dtype=np.float32)
+        bst_debug_by_clip = {}
+
+        if eligible_clips:
+            eligible_debug = [] if collect_debug else None
+            eligible_results, eligible_probs = classifier.predict_from_clips(
+                eligible_clips, batch_size=batch_size,
+                debug_collector=eligible_debug,
+                return_probs=True,
+            )
+            for result_idx, clip_idx in enumerate(eligible_indices):
+                all_results[clip_idx] = eligible_results[result_idx]
+                if eligible_probs is not None:
+                    probs_matrix[clip_idx] = eligible_probs[result_idx]
+                if eligible_debug is not None and result_idx < len(eligible_debug):
+                    entry = dict(eligible_debug[result_idx])
+                    entry["clip_index"] = clip_idx
+                    bst_debug_by_clip[clip_idx] = entry
+
+        if bst_debug_by_clip:
+            artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_by_clip.values()))
+        if debug_level >= 1:
+            artifacts.set_parquet("debug_bst_input_quality", pd.DataFrame(quality_records))
+
+        logger.info(
+            "BST input quality routing",
+            total_clips=len(all_clips),
+            bst_eligible=len(eligible_indices),
+            quality_abstained=len(all_clips) - len(eligible_indices),
+            abstention_reasons=str(Counter(
+                reason for quality in quality_records for reason in quality["reasons"]
+            )),
         )
 
-        if bst_debug_collector is not None and len(bst_debug_collector) > 0:
-            artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_collector))
-
         # ── Phase 2b: MMAction2 ensemble (optional) ──────────────────────
-        if settings.mmaction2_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.mmaction2_enabled and eligible_indices:
             from app.pipeline.shared.models import get_mmaction2
             mma_clf = get_mmaction2()
             if mma_clf is not None:
                 logger.info("Running MMAction2 ensemble", mode=settings.mmaction2_mode, weight=settings.mmaction2_ensemble_weight)
                 mma_results, mma_probs = mma_clf.predict_from_clips(
-                    all_clips, batch_size=batch_size, return_probs=True,
+                    eligible_clips, batch_size=batch_size, return_probs=True,
                 )
-                if mma_probs is not None and mma_probs.shape == probs_matrix.shape:
+                if mma_probs is not None and mma_probs.shape == (len(eligible_indices), 25):
                     w = settings.mmaction2_ensemble_weight
-                    probs_matrix = (1.0 - w) * probs_matrix + w * mma_probs
+                    eligible_probs = (1.0 - w) * probs_matrix[eligible_indices] + w * mma_probs
+                    probs_matrix[eligible_indices] = eligible_probs
                     # Re-derive results from ensembled probs
-                    new_results = []
-                    for i, probs in enumerate(probs_matrix):
+                    for result_idx, probs in enumerate(eligible_probs):
                         pred_idx = int(np.argmax(probs))
                         confidence = float(probs[pred_idx])
                         stroke_type = "unknown"
@@ -508,17 +626,19 @@ class StrokeClassificationStage:
                             from app.models.bst import map_to_coach_class
                             stroke_type = map_to_coach_class(pred_idx)
                         # Preserve alpha/sims from BST result if available
-                        orig = all_results[i] if i < len(all_results) else None
+                        clip_idx = eligible_indices[result_idx]
+                        orig = all_results[clip_idx]
                         alpha = orig[3] if orig and len(orig) > 3 else 0.5
                         p0 = orig[4] if orig and len(orig) > 4 else 0.0
                         p1 = orig[5] if orig and len(orig) > 5 else 0.0
-                        new_results.append((stroke_type, confidence, pred_idx, alpha, p0, p1))
-                    all_results = new_results
-                    logger.info("MMAction2 ensemble applied to %d shots", len(all_results))
+                        all_results[clip_idx] = (stroke_type, confidence, pred_idx, alpha, p0, p1)
+                    logger.info("MMAction2 ensemble applied", shots=len(eligible_indices))
                 else:
-                    logger.warning("MMAction2 ensemble skipped: shape mismatch BST=%s MMA=%s",
-                                   probs_matrix.shape if probs_matrix is not None else None,
-                                   mma_probs.shape if mma_probs is not None else None)
+                    logger.warning(
+                        "MMAction2 ensemble skipped: shape mismatch",
+                        bst_shape=str((len(eligible_indices), 25)),
+                        mma_shape=str(mma_probs.shape if mma_probs is not None else None),
+                    )
 
         # Phase 3: build shot records from results
         for i, ((frame, hit, clip_frames), (stroke_type, confidence, raw_class_id, alpha, aim_attention_p0, aim_attention_p1)) in enumerate(zip(clip_hit_pairs, all_results)):
@@ -541,22 +661,40 @@ class StrokeClassificationStage:
                 "is_rule_based": is_rule_based,
                 "is_bst_fallback": is_rule_based,
             }
+            quality = quality_records[i]
+            shot.update({
+                "bst_input_eligible": bool(quality["eligible"]),
+                "bst_input_quality_score": float(quality["score"]),
+                "bst_input_quality_reasons": quality["reasons"],
+                "bst_input_route": "bst" if i in eligible_indices else "quality_abstain",
+                "bst_input_observed_shuttle_frames": quality["observed_shuttle_frames"],
+                "bst_input_repaired_shuttle_frames": quality["repaired_shuttle_frames"],
+                "bst_input_interpolated_shuttle_frames": quality["interpolated_shuttle_frames"],
+                "bst_input_court_rejected_shuttle_frames": quality["court_rejected_shuttle_frames"],
+                "bst_input_max_shuttle_gap_frames": quality["max_shuttle_gap_frames"],
+                "bst_input_far_pose_coverage": quality["far_pose_coverage"],
+                "bst_input_near_pose_coverage": quality["near_pose_coverage"],
+                "bst_input_far_pose_median_confidence": quality["far_pose_median_confidence"],
+                "bst_input_near_pose_median_confidence": quality["near_pose_median_confidence"],
+                "bst_input_max_bbox_gap_frames": quality["max_bbox_gap_frames"],
+            })
+            debug_entry = bst_debug_by_clip.get(i, {})
 
-            if is_rule_based and bst_debug_collector is not None and i < len(bst_debug_collector):
-                ev = bst_debug_collector[i].get("rule_evidence", {})
-                top3 = bst_debug_collector[i].get("rule_top3", [])
+            if is_rule_based and debug_entry:
+                ev = debug_entry.get("rule_evidence", {})
+                top3 = debug_entry.get("rule_top3", [])
                 if ev:
                     shot["rule_evidence"] = ev
                 if top3:
                     shot["rule_top3"] = top3
 
-            if bst_debug_collector is not None and i < len(bst_debug_collector):
-                raw_conf = bst_debug_collector[i].get("bst_raw_confidence")
+            if debug_entry:
+                raw_conf = debug_entry.get("bst_raw_confidence")
                 if raw_conf is not None and not is_rule_based:
                     shot["bst_raw_confidence"] = raw_conf
 
-            if settings.report_include_logits and bst_debug_collector is not None and i < len(bst_debug_collector):
-                logits_str = bst_debug_collector[i].get("logits_all")
+            if settings.report_include_logits and debug_entry:
+                logits_str = debug_entry.get("logits_all")
                 if logits_str:
                     shot["logits"] = logits_str
 
@@ -601,25 +739,26 @@ class StrokeClassificationStage:
 
         # Phase 3a: context fusion layer — nudge BST logits by physics/context
         fps = float(config.processing_fps or settings.fps)
-        shuttle_raw = artifacts.get_parquet("shuttle_raw")
-        if settings.fusion_enabled and probs_matrix is not None and len(shots) > 0:
+        if settings.fusion_enabled and eligible_indices:
             from app.pipeline.shared.context_fusion import ContextFusion
             fusion = ContextFusion.from_settings()
-            probs_matrix = fusion.fuse(
-                shots, probs_matrix,
+            probs_matrix[eligible_indices] = fusion.fuse(
+                [shots[i] for i in eligible_indices], probs_matrix[eligible_indices],
                 shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
             )
 
         # Phase 3b: hierarchical family classifier — reduce cross-family noise
-        if settings.hierarchical_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.hierarchical_enabled and eligible_indices:
             from app.pipeline.shared.hierarchical_classifier import hierarchical_refine
-            probs_matrix = hierarchical_refine(probs_matrix, penalty=settings.hierarchical_penalty)
+            probs_matrix[eligible_indices] = hierarchical_refine(
+                probs_matrix[eligible_indices], penalty=settings.hierarchical_penalty
+            )
 
         # Phase 3b.5: confusion-pair correction — resolve within-family ambiguities
-        if settings.confusion_pair_enabled and probs_matrix is not None and probs_matrix.shape[0] > 0:
+        if settings.confusion_pair_enabled and eligible_indices:
             from app.pipeline.shared.confusion_pairs import resolve_confusion_pairs
-            probs_matrix = resolve_confusion_pairs(
-                probs_matrix, shots, shuttle_df, shuttle_raw,
+            probs_matrix[eligible_indices] = resolve_confusion_pairs(
+                probs_matrix[eligible_indices], [shots[i] for i in eligible_indices], shuttle_df, shuttle_raw,
                 pose_df, court, fps, vid_w, vid_h,
                 boost=settings.confusion_pair_boost,
             )
@@ -633,6 +772,14 @@ class StrokeClassificationStage:
             shots, probs_matrix, physics_classes,
             shuttle_df, shuttle_raw, pose_df, court, fps, vid_w, vid_h,
         )
+
+        for shot in shots:
+            if not shot["bst_input_eligible"]:
+                if shot.get("stroke_source") in {"bst", "bst_no_physics"}:
+                    shot["stroke_source"] = "quality_abstain"
+                if shot["stroke_type"] != "unknown":
+                    shot["bst_input_route"] = "downstream_override"
+                    shot["bst_input_override_source"] = "physics"
 
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions
@@ -654,6 +801,12 @@ class StrokeClassificationStage:
                         shots[i]["stroke_type"] = majority
                         shots[i]["stroke_confidence"] = 0.3
 
+        for shot in shots:
+            if shot["bst_input_route"] == "quality_abstain" and shot["stroke_type"] != "unknown":
+                shot["bst_input_route"] = "downstream_override"
+                shot["bst_input_override_source"] = "temporal_smoothing"
+                shot["stroke_source"] = "temporal_smoothing"
+
         # Temporal dedup: merge consecutive shots within 0.2s that share the
         # same stroke type. When the same hit is detected at multiple nearby
         # frames, BST produces similar classifications — keep only the one
@@ -665,12 +818,7 @@ class StrokeClassificationStage:
             for s in shots[1:]:
                 prev = deduped[-1]
                 gap = s["frame"] - prev["frame"]
-                same_type = (
-                    s["stroke_type"] == prev["stroke_type"]
-                    or s["stroke_type"] == "unknown"
-                    or prev["stroke_type"] == "unknown"
-                )
-                if gap <= max_gap and same_type:
+                if _can_temporally_deduplicate(prev, s, gap, max_gap):
                     # Merge: keep the higher-confidence shot
                     if s["stroke_confidence"] > prev["stroke_confidence"]:
                         deduped[-1] = s
