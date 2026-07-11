@@ -173,6 +173,15 @@ class Settings(BaseSettings):
     bst_min_keypoint_confidence: float = 0.35
     bst_max_bbox_interp_gap: int = 10
     bst_quality_score_min: float = 0.70
+    aim_alpha_enabled: bool = True
+    aim_alpha_min_quality_score: float = 0.75
+    aim_alpha_contact_window: int = 2
+    aim_alpha_max_pose_coverage_gap: float = 0.25
+    aim_alpha_max_pose_conf_gap: float = 0.20
+    aim_alpha_max_anchor_shift: int = 1
+    aim_alpha_max_stability_span: float = 0.45
+    aim_alpha_min_contact_separation: float = 0.12
+    aim_alpha_probe_offsets: list[int] = [-1, 0, 1]
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5

@@ -1,9 +1,12 @@
-from app.pipeline.shared.bst_input_quality import evaluate_bst_clip_quality
+import pytest
+
+from app.pipeline.shared.bst_input_quality import evaluate_aim_alpha_quality, evaluate_bst_clip_quality
 
 
 def _provenance(**overrides):
     value = {
         "video_len": 20,
+        "contact_frame_index": 10,
         "shuttle_observed": [True] * 12 + [False] * 7 + [True],
         "shuttle_repaired": [False] * 20,
         "shuttle_interpolated": [False] * 20,
@@ -14,6 +17,10 @@ def _provenance(**overrides):
         "pose_keypoint_confidence_near": [0.9] * 20,
         "bbox_gap_far": [0] * 20,
         "bbox_gap_near": [0] * 20,
+        "resolved_far_pid": ["player_2"] * 20,
+        "resolved_near_pid": ["player_1"] * 20,
+        "wrist_shuttle_distance_far": [0.6] * 20,
+        "wrist_shuttle_distance_near": [0.2] * 20,
     }
     value.update(overrides)
     return value
@@ -83,3 +90,31 @@ def test_quality_scores_and_rejects_repaired_or_interpolated_shuttle_heavily():
     assert result["eligible"] is False
     assert "too_many_interpolated_shuttle" in result["reasons"]
     assert "low_quality_score" in result["reasons"]
+
+
+def test_aim_alpha_quality_accepts_balanced_contact_window():
+    result = evaluate_aim_alpha_quality(_provenance())
+
+    assert result["reliable"] is True
+    assert result["contact_window_valid"] is True
+    assert result["identity_stable"] is True
+    assert result["reasons"] == []
+    assert result["pose_balance_score"] == 1.0
+    assert result["contact_separation"] == pytest.approx(0.4)
+
+
+def test_aim_alpha_quality_rejects_asymmetric_pose_and_identity_instability():
+    result = evaluate_aim_alpha_quality(
+        _provenance(
+            pose_present_far=[True] * 8 + [False] * 5 + [True] * 7,
+            pose_keypoint_confidence_far=[0.9] * 8 + [0.0] * 5 + [0.9] * 7,
+            resolved_far_pid=["player_2"] * 10 + ["player_3"] * 10,
+            wrist_shuttle_distance_far=[0.25] * 20,
+            wrist_shuttle_distance_near=[0.2] * 20,
+        )
+    )
+
+    assert result["reliable"] is False
+    assert "contact_pose_imbalance" in result["reasons"]
+    assert "identity_unstable" in result["reasons"]
+    assert "contact_separation_too_small" in result["reasons"]

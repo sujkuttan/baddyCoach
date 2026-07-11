@@ -10,7 +10,7 @@ from app.pipeline.shared.bst_preproc import (
     normalize_joints, normalize_joints_court, normalize_joints_hip_centered,
     create_bones, BONE_PAIRS,
 )
-from app.pipeline.shared.bst_input_quality import evaluate_bst_clip_quality
+from app.pipeline.shared.bst_input_quality import evaluate_aim_alpha_quality, evaluate_bst_clip_quality
 from app.pipeline.shared.physics import apply_physics_ensemble, summarize_physics_sources
 from app.models.bst import COACH_STROKE_CLASSES
 
@@ -116,6 +116,8 @@ def _build_clip(
     original_len: int | None = None,
     player_ids: list | None = None,
     shuttle_raw: pd.DataFrame | None = None,
+    hit_frame: int | None = None,
+    alpha_probe_offset: int = 0,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -224,6 +226,7 @@ def _build_clip(
 
     provenance = {
         "video_len": min(n_frames_orig, seq_len),
+        "contact_frame_index": 0,
         "shuttle_observed": [],
         "shuttle_repaired": [],
         "shuttle_interpolated": [],
@@ -234,7 +237,13 @@ def _build_clip(
         "pose_keypoint_confidence_near": [],
         "bbox_gap_far": [],
         "bbox_gap_near": [],
+        "resolved_far_pid": [],
+        "resolved_near_pid": [],
+        "wrist_shuttle_distance_far": [],
+        "wrist_shuttle_distance_near": [],
     }
+    if hit_frame is not None and frames:
+        provenance["contact_frame_index"] = min(range(len(frames)), key=lambda i: abs(frames[i] - hit_frame))
     shuttle_lookup = {}
     if shuttle_df is not None:
         shuttle_lookup = {int(row["frame"]): row for _, row in shuttle_df.iterrows()}
@@ -298,6 +307,8 @@ def _build_clip(
             else:
                 near_pid = 'player_1'
         player_order = [far_pid, near_pid]
+        provenance["resolved_far_pid"].append(far_pid)
+        provenance["resolved_near_pid"].append(near_pid)
 
         for p_idx, pid in enumerate(player_order):
             kps = _get_keypoints_for_frame(pose_df, frame, pid)
@@ -306,6 +317,7 @@ def _build_clip(
                 frame, settings.bst_max_bbox_interp_gap + 1
             )
             provenance[f"bbox_gap_{side}"].append(bbox_gap)
+            wrist_distance = np.nan
             if kps is not None:
                 coords = kps[:, :2]
                 conf = kps[:, 2] if kps.shape[1] >= 3 else np.ones(len(kps))
@@ -348,10 +360,25 @@ def _build_clip(
                 else:
                     pos[t, p_idx, 0] = max(0.0, min(1.0, feet_x / vid_w))
                     pos[t, p_idx, 1] = max(0.0, min(1.0, feet_y / vid_h))
+
+                clean_row = shuttle_lookup.get(frame)
+                bbox = interpolated_bboxes.get(pid, {}).get(frame)
+                if (
+                    clean_row is not None
+                    and not bool(clean_row.get("court_rejected", False))
+                    and float(clean_row.get("confidence", 0.0)) >= settings.shuttle_min_conf
+                    and kps.shape[1] >= 3
+                    and float(kps[10, 2]) >= settings.bst_min_keypoint_confidence
+                    and bbox is not None
+                ):
+                    bbox_h = max(float(bbox[3] - bbox[1]), 1.0)
+                    wrist_xy = kps[10, :2]
+                    wrist_distance = float(np.linalg.norm(wrist_xy - np.array([float(clean_row["x"]), float(clean_row["y"])])) / bbox_h)
             else:
                 debug_clip_stats["n_missing_pose"] += 1
                 provenance[f"pose_present_{side}"].append(False)
                 provenance[f"pose_keypoint_confidence_{side}"].append(0.0)
+            provenance[f"wrist_shuttle_distance_{side}"].append(wrist_distance)
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     amp = settings.joint_velocity_amplification
@@ -375,7 +402,114 @@ def _build_clip(
         'court_width': court_width,
         '_debug_clip': debug_clip_stats,
         '_bst_provenance': provenance,
+        '_alpha_probe_offset': alpha_probe_offset,
     }
+
+
+def _prepare_bst_clip_for_hit(
+    frame: int,
+    hit_pos: int,
+    hit_frames_sorted: list[int],
+    classifier,
+    shuttle_df: pd.DataFrame | None,
+    shuttle_raw: pd.DataFrame | None,
+    pose_df: pd.DataFrame | None,
+    vid_w: float,
+    vid_h: float,
+    court_length: float,
+    court_width: float,
+    player_sides: dict | None,
+    player_list: list,
+    homography: np.ndarray | None,
+    player_ids: list[str],
+    alpha_probe_offset: int = 0,
+) -> tuple[dict, list[int]]:
+    anchor_frame = max(0, int(frame + alpha_probe_offset))
+    use_midpoint = settings.bst_clip_boundary == "midpoint"
+
+    if use_midpoint:
+        prev_hit = hit_frames_sorted[hit_pos - 1] if hit_pos > 0 else max(0, anchor_frame - 20)
+        next_hit = hit_frames_sorted[hit_pos + 1] if hit_pos + 1 < len(hit_frames_sorted) else anchor_frame + 20
+        start_frame = (prev_hit + anchor_frame) // 2
+        end_frame = (anchor_frame + next_hit) // 2
+
+        if end_frame - start_frame < settings.bst_min_clip_frames:
+            half_floor = settings.bst_min_clip_frames // 2
+            start_frame = max(0, anchor_frame - half_floor)
+            end_frame = anchor_frame + (settings.bst_min_clip_frames - half_floor)
+
+        clip_frames = list(range(start_frame, end_frame))
+        original_n_frames = len(clip_frames)
+        clip = _build_clip(
+            clip_frames, shuttle_df, pose_df,
+            vid_w, vid_h, court_length, court_width,
+            seq_len=original_n_frames,
+            player_sides=player_sides, player_detections=player_list,
+            homography=homography,
+            original_len=original_n_frames,
+            player_ids=player_ids,
+            shuttle_raw=shuttle_raw,
+            hit_frame=anchor_frame,
+            alpha_probe_offset=alpha_probe_offset,
+        )
+        if original_n_frames != classifier.seq_len:
+            clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
+            clip['shuttle'] = _temporal_resample(clip['shuttle'], classifier.seq_len, zero_is_missing=True)
+            clip['pos'] = _temporal_resample(clip['pos'], classifier.seq_len)
+        clip['video_len'] = min(original_n_frames, classifier.seq_len)
+        return clip, clip_frames
+
+    start_frame = anchor_frame
+    if hit_pos < len(hit_frames_sorted) - 1:
+        end_frame = min(
+            anchor_frame + classifier.seq_len,
+            max(anchor_frame + settings.bst_min_clip_frames, hit_frames_sorted[hit_pos + 1]),
+        )
+    else:
+        end_frame = anchor_frame + classifier.seq_len
+
+    if shuttle_df is not None:
+        seg = shuttle_df[
+            (shuttle_df["frame"] >= start_frame) &
+            (shuttle_df["frame"] <= end_frame)
+        ].copy().sort_values("frame")
+        if len(seg) > 10:
+            sx = seg["x"].values.astype(np.float64)
+            sy = seg["y"].values.astype(np.float64)
+            frame_gaps = np.diff(seg["frame"].values, prepend=seg["frame"].values[0])
+            spd = np.sqrt(np.diff(sx, prepend=sx[0]) ** 2 + np.diff(sy, prepend=sy[0]) ** 2) / np.maximum(frame_gaps, 1)
+            land_frames = settings.rally_dead_frames
+            streak = 0
+            for i, speed in enumerate(spd):
+                if speed < settings.rally_dead_speed_px:
+                    streak += 1
+                    if streak >= land_frames:
+                        land_frame = int(seg.iloc[i - land_frames + 1]["frame"])
+                        if end_frame - land_frame > land_frames * 2:
+                            end_frame = land_frame + 5
+                        break
+                else:
+                    streak = 0
+
+    clip_frames = list(range(start_frame, end_frame))
+    original_n_frames = len(clip_frames)
+    while len(clip_frames) < classifier.seq_len:
+        clip_frames.append(clip_frames[-1] if clip_frames else anchor_frame)
+    clip_frames = clip_frames[:classifier.seq_len]
+
+    clip = _build_clip(
+        clip_frames, shuttle_df, pose_df,
+        vid_w, vid_h, court_length, court_width,
+        seq_len=classifier.seq_len,
+        player_sides=player_sides, player_detections=player_list,
+        homography=homography,
+        original_len=original_n_frames,
+        player_ids=player_ids,
+        shuttle_raw=shuttle_raw,
+        hit_frame=anchor_frame,
+        alpha_probe_offset=alpha_probe_offset,
+    )
+    return clip, clip_frames
 
 
 class StrokeClassificationStage:
@@ -448,108 +582,24 @@ class StrokeClassificationStage:
         for _, hit in hits_df.iterrows():
             frame = int(hit["frame"])
             hit_pos = hit_frames_sorted.index(frame)
-            use_midpoint = settings.bst_clip_boundary == "midpoint"
-
-            if use_midpoint:
-                # Midpoint-to-midpoint convention:
-                #   - start = midpoint(prev_hit, curr_hit) → preparation phase
-                #   - end   = midpoint(curr_hit, next_hit) → next approach
-                #   - contact frame is in the middle of the clip
-                #   - temporal resample maps variable-length clips to seq_len
-                prev_hit = hit_frames_sorted[hit_pos - 1] if hit_pos > 0 else max(0, frame - 20)
-                next_hit = hit_frames_sorted[hit_pos + 1] if hit_pos + 1 < len(hit_frames_sorted) else frame + 20
-                start_frame = (prev_hit + frame) // 2
-                end_frame = (frame + next_hit) // 2
-
-                # Enforce minimum clip length so short exchanges don't collapse
-                if end_frame - start_frame < settings.bst_min_clip_frames:
-                    half_floor = settings.bst_min_clip_frames // 2
-                    start_frame = max(0, frame - half_floor)
-                    end_frame = frame + (settings.bst_min_clip_frames - half_floor)
-
-                clip_frames = list(range(start_frame, end_frame))
-                original_n_frames = len(clip_frames)
-
-                # Build clip with actual (non-padded) frame range
-                clip = _build_clip(
-                    clip_frames, shuttle_df, pose_df,
-                    vid_w, vid_h, court_length, court_width,
-                    seq_len=original_n_frames,
-                    player_sides=player_sides, player_detections=player_list,
-                    homography=homography,
-                    original_len=original_n_frames,
-                    player_ids=player_ids,
-                    shuttle_raw=shuttle_raw,
-                )
-
-                # Temporal resample to match model's expected seq_len
-                if original_n_frames != classifier.seq_len:
-                    clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
-                    clip['shuttle'] = _temporal_resample(clip['shuttle'], classifier.seq_len,
-                                                        zero_is_missing=True)
-                    clip['pos'] = _temporal_resample(clip['pos'], classifier.seq_len)
-                clip['video_len'] = min(original_n_frames, classifier.seq_len)
-
-            else:
-                # Hit-start convention (default):
-                #   - start at the current hit (position 0 = the stroke launch)
-                #   - end at the next hit (one inter-hit segment, not two)
-                #   - positional encoding expects the stroke at a fixed position
-                #   - frames beyond video_len are masked by the model
-                #   - bst_min_clip_frames: floor on real frames so short exchanges
-                #     don't fall back to unknown (14% of clips <20 frames)
-                start_frame = frame
-                if hit_pos < len(hit_frames_sorted) - 1:
-                    end_frame = min(
-                        frame + classifier.seq_len,
-                        max(frame + settings.bst_min_clip_frames,
-                            hit_frames_sorted[hit_pos + 1])
-                    )
-                else:
-                    end_frame = frame + classifier.seq_len
-
-                # Truncate clip at shuttle landing: if the shuttle stops moving
-                # (speed near zero for several frames) before end_frame, end the
-                # clip there to avoid dead air padding.
-                if shuttle_df is not None:
-                    seg = shuttle_df[
-                        (shuttle_df["frame"] >= start_frame) &
-                        (shuttle_df["frame"] <= end_frame)
-                    ].copy().sort_values("frame")
-                    if len(seg) > 10:
-                        sx = seg["x"].values.astype(np.float64)
-                        sy = seg["y"].values.astype(np.float64)
-                        frame_gaps = np.diff(seg["frame"].values, prepend=seg["frame"].values[0])
-                        spd = np.sqrt(np.diff(sx, prepend=sx[0])**2 + np.diff(sy, prepend=sy[0])**2) / np.maximum(frame_gaps, 1)
-                        land_frames = settings.rally_dead_frames
-                        streak = 0
-                        for i, s in enumerate(spd):
-                            if s < settings.rally_dead_speed_px:
-                                streak += 1
-                                if streak >= land_frames:
-                                    land_frame = int(seg.iloc[i - land_frames + 1]["frame"])
-                                    if end_frame - land_frame > land_frames * 2:
-                                        end_frame = land_frame + 5
-                                    break
-                            else:
-                                streak = 0
-
-                clip_frames = list(range(start_frame, end_frame))
-                original_n_frames = len(clip_frames)
-                while len(clip_frames) < classifier.seq_len:
-                    clip_frames.append(clip_frames[-1] if clip_frames else frame)
-                clip_frames = clip_frames[:classifier.seq_len]
-
-                clip = _build_clip(
-                    clip_frames, shuttle_df, pose_df,
-                    vid_w, vid_h, court_length, court_width,
-                    seq_len=classifier.seq_len,
-                    player_sides=player_sides, player_detections=player_list,
-                    homography=homography,
-                    original_len=original_n_frames,
-                    player_ids=player_ids,
-                    shuttle_raw=shuttle_raw,
-                )
+            clip, clip_frames = _prepare_bst_clip_for_hit(
+                frame=frame,
+                hit_pos=hit_pos,
+                hit_frames_sorted=hit_frames_sorted,
+                classifier=classifier,
+                shuttle_df=shuttle_df,
+                shuttle_raw=shuttle_raw,
+                pose_df=pose_df,
+                vid_w=vid_w,
+                vid_h=vid_h,
+                court_length=court_length,
+                court_width=court_width,
+                player_sides=player_sides,
+                player_list=player_list,
+                homography=homography,
+                player_ids=player_ids,
+                alpha_probe_offset=0,
+            )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
             all_clips.append(clip)
@@ -561,6 +611,10 @@ class StrokeClassificationStage:
         collect_debug = debug_level >= 1 or settings.report_include_logits
         quality_records = [
             evaluate_bst_clip_quality(clip["_bst_provenance"])
+            for clip in all_clips
+        ]
+        alpha_quality_records = [
+            evaluate_aim_alpha_quality(clip["_bst_provenance"])
             for clip in all_clips
         ]
         eligible_indices = [
@@ -592,7 +646,18 @@ class StrokeClassificationStage:
         if bst_debug_by_clip:
             artifacts.set_parquet("debug_bst_outputs", pd.DataFrame(bst_debug_by_clip.values()))
         if debug_level >= 1:
-            artifacts.set_parquet("debug_bst_input_quality", pd.DataFrame(quality_records))
+            artifacts.set_parquet("debug_bst_input_quality", pd.DataFrame([
+                {**quality_records[i], **{
+                    "aim_alpha_reliable": alpha_quality_records[i]["reliable"],
+                    "aim_alpha_quality_score": alpha_quality_records[i]["score"],
+                    "aim_alpha_quality_reasons": alpha_quality_records[i]["reasons"],
+                    "aim_alpha_contact_window_valid": alpha_quality_records[i]["contact_window_valid"],
+                    "aim_alpha_pose_balance_score": alpha_quality_records[i]["pose_balance_score"],
+                    "aim_alpha_identity_stable": alpha_quality_records[i]["identity_stable"],
+                    "aim_alpha_contact_separation": alpha_quality_records[i]["contact_separation"],
+                }}
+                for i in range(len(quality_records))
+            ]))
 
         logger.info(
             "BST input quality routing",
@@ -603,6 +668,43 @@ class StrokeClassificationStage:
                 reason for quality in quality_records for reason in quality["reasons"]
             )),
         )
+
+        probe_results_by_clip = {}
+        if settings.aim_alpha_enabled and eligible_indices:
+            probe_requests = []
+            for clip_idx in eligible_indices:
+                if not alpha_quality_records[clip_idx]["reliable"]:
+                    continue
+                frame, _, _ = clip_hit_pairs[clip_idx]
+                hit_pos = hit_frames_sorted.index(int(frame))
+                for offset in settings.aim_alpha_probe_offsets:
+                    if offset == 0 or abs(offset) > settings.aim_alpha_max_anchor_shift:
+                        continue
+                    probe_clip, _ = _prepare_bst_clip_for_hit(
+                        frame=int(frame),
+                        hit_pos=hit_pos,
+                        hit_frames_sorted=hit_frames_sorted,
+                        classifier=classifier,
+                        shuttle_df=shuttle_df,
+                        shuttle_raw=shuttle_raw,
+                        pose_df=pose_df,
+                        vid_w=vid_w,
+                        vid_h=vid_h,
+                        court_length=court_length,
+                        court_width=court_width,
+                        player_sides=player_sides,
+                        player_list=player_list,
+                        homography=homography,
+                        player_ids=player_ids,
+                        alpha_probe_offset=offset,
+                    )
+                    probe_requests.append((clip_idx, offset, probe_clip))
+            if probe_requests:
+                probe_outputs = classifier.predict_from_clips([item[2] for item in probe_requests], batch_size=batch_size)
+                if isinstance(probe_outputs, tuple):
+                    probe_outputs = probe_outputs[0]
+                for (clip_idx, offset, _), result in zip(probe_requests, probe_outputs):
+                    probe_results_by_clip.setdefault(clip_idx, {})[offset] = float(result[3])
 
         # ── Phase 2b: MMAction2 ensemble (optional) ──────────────────────
         if settings.mmaction2_enabled and eligible_indices:
@@ -662,6 +764,23 @@ class StrokeClassificationStage:
                 "is_bst_fallback": is_rule_based,
             }
             quality = quality_records[i]
+            alpha_quality = dict(alpha_quality_records[i])
+            probe_offsets = probe_results_by_clip.get(i, {})
+            probe_alphas = [alpha] + [probe_offsets[offset] for offset in sorted(probe_offsets)]
+            stability_span = float(max(probe_alphas) - min(probe_alphas)) if probe_alphas else 0.0
+            probe_dirs = {
+                "far" if probe_alpha > 0.5 else "near" if probe_alpha < 0.5 else "uncertain"
+                for probe_alpha in probe_alphas
+            }
+            if "far" in probe_dirs and "near" in probe_dirs:
+                alpha_quality["reliable"] = False
+                alpha_quality["reasons"] = list(alpha_quality["reasons"]) + ["probe_direction_flip"]
+            if stability_span > settings.aim_alpha_max_stability_span:
+                alpha_quality["reliable"] = False
+                alpha_quality["reasons"] = list(alpha_quality["reasons"]) + ["probe_span_too_wide"]
+            alpha_route = "alpha_ok" if alpha_quality["reliable"] else (
+                "alpha_abstain_instability" if probe_offsets else "alpha_abstain_quality"
+            )
             shot.update({
                 "bst_input_eligible": bool(quality["eligible"]),
                 "bst_input_quality_score": float(quality["score"]),
@@ -677,6 +796,15 @@ class StrokeClassificationStage:
                 "bst_input_far_pose_median_confidence": quality["far_pose_median_confidence"],
                 "bst_input_near_pose_median_confidence": quality["near_pose_median_confidence"],
                 "bst_input_max_bbox_gap_frames": quality["max_bbox_gap_frames"],
+                "aim_alpha_reliable": bool(alpha_quality["reliable"]),
+                "aim_alpha_quality_score": float(alpha_quality["score"]),
+                "aim_alpha_quality_reasons": list(dict.fromkeys(alpha_quality["reasons"])),
+                "aim_alpha_route": alpha_route,
+                "aim_alpha_contact_window_valid": bool(alpha_quality["contact_window_valid"]),
+                "aim_alpha_pose_balance_score": float(alpha_quality["pose_balance_score"]),
+                "aim_alpha_identity_stable": bool(alpha_quality["identity_stable"]),
+                "aim_alpha_contact_separation": float(alpha_quality["contact_separation"]),
+                "aim_alpha_stability_span": stability_span,
             })
             debug_entry = bst_debug_by_clip.get(i, {})
 

@@ -117,7 +117,8 @@ class PlayerAttributionStage:
         for idx, shot in shots_df.iterrows():
             alpha = shot.get("aimplayer_alpha")
             side = shot.get("side")
-            if alpha is None or side not in {"near", "far"}:
+            alpha_reliable = bool(shot.get("aim_alpha_reliable", False))
+            if alpha is None or side not in {"near", "far"} or not alpha_reliable:
                 shots_df.at[idx, "attention_owner_match"] = None
                 shots_df.at[idx, "attention_alpha_owner"] = None
                 continue

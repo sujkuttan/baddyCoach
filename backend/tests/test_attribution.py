@@ -228,6 +228,43 @@ def test_attention_owner_match_no_alpha(tmp_job_dir):
     assert shots_df["attention_alpha_owner"].isna().all()
 
 
+def test_attention_owner_match_requires_reliable_alpha(tmp_job_dir, monkeypatch):
+    from app.pipeline.shared.ownership_quality import OwnerDecision
+
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    store.set("court", {"valid": True, "corners_pixel": [(100, 500), (1820, 500), (100, 100), (1820, 100)]})
+    store.set_parquet(
+        "shots",
+        pd.DataFrame(
+            {
+                "frame": [0],
+                "rally_id": [1],
+                "stroke_type": ["clear"],
+                "stroke_confidence": [0.9],
+                "aimplayer_alpha": [0.85],
+                "aim_alpha_reliable": [False],
+            }
+        ),
+    )
+    store.set_parquet("rallies", pd.DataFrame({"rally_id": [1], "start_frame": [0], "end_frame": [0]}))
+    store.set_parquet("shuttle", pd.DataFrame({"frame": [0], "x": [200], "y": [300], "confidence": [0.95]}))
+    store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
+
+    monkeypatch.setattr(
+        "app.pipeline.attribution.assign_rally_owners",
+        lambda indices, scores, players_by_side, settings: {
+            indices[0]: OwnerDecision(side="far", player_id="player_2", confident=True, source="local_anchor", reason="test")
+        },
+    )
+
+    result = PlayerAttributionStage().run(store, config)
+    assert result.status == "success"
+    shots_df = store.get_parquet("shots")
+    assert shots_df.loc[0, "attention_alpha_owner"] is None
+    assert shots_df.loc[0, "attention_owner_match"] is None
+
+
 def test_bst_alpha_is_diagnostic_only_not_emission():
     scorer = OwnershipScorer(
         trajectory_weight=1.0,

@@ -65,3 +65,10 @@ def test_colab_exports_bst_input_quality_debug_artifact():
     source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
 
     assert '"debug_bst_input_quality"' in source
+
+
+def test_colab_preserves_aim_alpha_quality_fields_in_outputs():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert '"aim_alpha_reliable"' in source
+    assert '"aim_alpha_route"' in source
