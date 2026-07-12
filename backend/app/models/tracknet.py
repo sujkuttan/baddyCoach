@@ -226,19 +226,80 @@ def _triangular_weights(sequence_length: int) -> np.ndarray:
 def _extract_largest_component(probabilities: np.ndarray, orig_w: int, orig_h: int,
                                threshold: float) -> tuple[float, float, float]:
     """Decode the largest thresholded shuttle blob and scale it to source pixels."""
+    candidates = _extract_component_candidates(
+        probabilities, orig_w=orig_w, orig_h=orig_h, threshold=threshold, max_components=1
+    )
+    if not candidates:
+        return 0.0, 0.0, 0.0
+    x, y, confidence, _area = candidates[0]
+    return x, y, confidence
+
+
+def _extract_component_candidates(
+    probabilities: np.ndarray,
+    orig_w: int,
+    orig_h: int,
+    threshold: float,
+    max_components: int,
+) -> list[tuple[float, float, float, int]]:
+    """Return top thresholded shuttle blobs as (x, y, confidence, area)."""
     import cv2
 
     binary = (probabilities >= threshold).astype(np.uint8)
-    n_labels, _labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
     if n_labels <= 1:
-        return 0.0, 0.0, 0.0
+        return []
 
-    component = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
-    component_mask = _labels == component
-    x_center, y_center = centroids[component]
-    confidence = float(probabilities[component_mask].max())
-    return (float(x_center * orig_w / INPUT_WIDTH),
-            float(y_center * orig_h / INPUT_HEIGHT), confidence)
+    order = np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1]
+    candidates: list[tuple[float, float, float, int]] = []
+    for offset in order[:max_components]:
+        component = 1 + int(offset)
+        component_mask = labels == component
+        x_center, y_center = centroids[component]
+        confidence = float(probabilities[component_mask].max())
+        area = int(stats[component, cv2.CC_STAT_AREA])
+        candidates.append((
+            float(x_center * orig_w / INPUT_WIDTH),
+            float(y_center * orig_h / INPUT_HEIGHT),
+            confidence,
+            area,
+        ))
+    return candidates
+
+
+def _select_detection_candidate(
+    candidates: list[tuple[float, float, float, int]],
+    prev_accepted: tuple[float, float, float] | None,
+    prev_prev_accepted: tuple[float, float, float] | None,
+    *,
+    motion_weight: float,
+    confidence_weight: float,
+    distance_scale_px: float,
+) -> tuple[float, float, float, int] | None:
+    """Choose the candidate most consistent with recent shuttle motion."""
+    if not candidates:
+        return None
+    if prev_accepted is None:
+        return candidates[0]
+
+    if prev_prev_accepted is None:
+        pred_x, pred_y = float(prev_accepted[0]), float(prev_accepted[1])
+    else:
+        pred_x = float(prev_accepted[0] + (prev_accepted[0] - prev_prev_accepted[0]))
+        pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
+
+    scale = max(float(distance_scale_px), 1.0)
+    best = None
+    best_score = -np.inf
+    for candidate in candidates:
+        x, y, conf, _area = candidate
+        dist = float(np.hypot(x - pred_x, y - pred_y))
+        motion_score = 1.0 / (1.0 + dist / scale)
+        score = float(motion_weight) * motion_score + float(confidence_weight) * float(conf)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
 
 
 def _aggregate_overlapping_heatmaps(window_outputs: list[tuple[int, np.ndarray]], n_frames: int,
@@ -275,7 +336,7 @@ def _extract_peak(heatmap: np.ndarray, orig_w: int, orig_h: int) -> tuple[float,
 
 
 def _accept_detection_candidate(
-    candidate: tuple[float, float, float] | None,
+    candidate: tuple[float, float, float, int] | tuple[float, float, float] | None,
     prev_accepted: tuple[float, float, float] | None,
     *,
     min_conf: float,
@@ -290,7 +351,7 @@ def _accept_detection_candidate(
     """
     if candidate is None:
         return False
-    x, y, conf = candidate
+    x, y, conf = candidate[:3]
     if conf < min_conf:
         return False
     if prev_accepted is None or conf >= trust_min_conf:
@@ -474,6 +535,7 @@ class TrackNetV3:
         pending_heatmaps: dict[int, np.ndarray] = {}
         pending_weights: dict[int, float] = {}
         prev_accepted: tuple[float, float, float] | None = None
+        prev_prev_accepted: tuple[float, float, float] | None = None
 
         # Starts -7 through n-1 ensure every real frame is present at every
         # temporal output offset while boundary frames are edge-padded.
@@ -507,8 +569,20 @@ class TrackNetV3:
                 # frame ``start``. Decode and release it immediately.
                 if start >= 0:
                     aggregate = pending_heatmaps.pop(start) / pending_weights.pop(start)
-                    candidate = _extract_largest_component(
-                        aggregate, orig_w, orig_h, threshold=settings.shuttle_min_conf
+                    candidates = _extract_component_candidates(
+                        aggregate,
+                        orig_w,
+                        orig_h,
+                        threshold=settings.shuttle_min_conf,
+                        max_components=settings.tracknet_candidate_components,
+                    )
+                    candidate = _select_detection_candidate(
+                        candidates,
+                        prev_accepted,
+                        prev_prev_accepted,
+                        motion_weight=settings.tracknet_component_motion_weight,
+                        confidence_weight=settings.tracknet_component_confidence_weight,
+                        distance_scale_px=settings.tracknet_component_distance_scale_px,
                     )
                     if _accept_detection_candidate(
                         candidate,
@@ -517,8 +591,10 @@ class TrackNetV3:
                         trust_min_conf=settings.tracknet_detection_min_conf,
                         low_conf_max_jump_px=settings.tracknet_low_conf_max_jump_px,
                     ):
-                        all_raw[start] = candidate
-                        prev_accepted = candidate
+                        accepted = candidate[:3]
+                        all_raw[start] = accepted
+                        prev_prev_accepted = prev_accepted
+                        prev_accepted = accepted
                     else:
                         all_raw[start] = None
 

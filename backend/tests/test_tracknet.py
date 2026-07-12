@@ -57,6 +57,46 @@ def test_extract_largest_component_ignores_higher_isolated_pixel():
 
 
 @pytest.mark.cpu_only
+def test_extract_component_candidates_returns_multiple_sorted_blobs():
+    from app.models.tracknet import _extract_component_candidates
+
+    probabilities = np.zeros((8, 8), dtype=np.float32)
+    probabilities[0:3, 0:3] = 0.72  # area 9
+    probabilities[5:7, 5:8] = 0.91  # area 6
+
+    candidates = _extract_component_candidates(
+        probabilities, orig_w=80, orig_h=80, threshold=0.50, max_components=3
+    )
+
+    assert len(candidates) == 2
+    assert candidates[0][3] == 9
+    assert candidates[1][3] == 6
+    assert candidates[0][2] == pytest.approx(0.72)
+    assert candidates[1][2] == pytest.approx(0.91)
+
+
+@pytest.mark.cpu_only
+def test_select_detection_candidate_prefers_motion_consistent_blob_over_larger_area():
+    from app.models.tracknet import _select_detection_candidate
+
+    candidates = [
+        (75.0, 75.0, 0.90, 12),  # larger / stronger distractor
+        (22.0, 20.0, 0.70, 4),   # smaller but on the expected path
+    ]
+
+    selected = _select_detection_candidate(
+        candidates,
+        prev_accepted=(14.0, 20.0, 0.85),
+        prev_prev_accepted=(6.0, 20.0, 0.80),
+        motion_weight=0.75,
+        confidence_weight=0.25,
+        distance_scale_px=25.0,
+    )
+
+    assert selected == candidates[1]
+
+
+@pytest.mark.cpu_only
 def test_triangular_overlap_aggregation_weights_central_predictions_more():
     """Overlapping eight-channel outputs are combined per frame with triangular weights."""
     from app.models.tracknet import _aggregate_overlapping_heatmaps
@@ -201,8 +241,8 @@ def test_predict_batch_repairs_low_confidence_peak_without_changing_high_confide
             assert torch.equal(mask[0, :, 0], torch.tensor([0.0, 1.0]))
             return torch.tensor([[[0.1, 0.2], [0.5, 0.25]]])
 
-    peaks = iter([(10.0, 20.0, 0.90), (90.0, 80.0, 0.10)])
-    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
+    candidates = iter([[(10.0, 20.0, 0.90, 5)], [(90.0, 80.0, 0.10, 5)]])
+    monkeypatch.setattr("app.models.tracknet._extract_component_candidates", lambda *_args, **_kwargs: next(candidates))
     tracker = TrackNetV3(model_path=None, device="cpu")
     tracker.model = StubBackbone()
     tracker.inpaintnet = ConstantRepairNet()
@@ -240,8 +280,8 @@ def test_predict_batch_drops_low_confidence_large_jump_before_repair(monkeypatch
             assert torch.equal(mask[0, :, 0], torch.tensor([0.0, 1.0, 0.0]))
             return torch.tensor([[[0.1, 0.2], [0.5, 0.25], [0.9, 0.8]]])
 
-    peaks = iter([(10.0, 20.0, 0.90), (90.0, 80.0, 0.35), (95.0, 82.0, 0.90)])
-    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
+    candidates = iter([[(10.0, 20.0, 0.90, 5)], [(90.0, 80.0, 0.35, 5)], [(95.0, 82.0, 0.90, 5)]])
+    monkeypatch.setattr("app.models.tracknet._extract_component_candidates", lambda *_args, **_kwargs: next(candidates))
     monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
     monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
     tracker = TrackNetV3(model_path=None, device="cpu")
@@ -269,8 +309,8 @@ def test_predict_batch_keeps_low_confidence_continuous_peak(monkeypatch):
         def forward(self, batch):
             return torch.zeros((len(batch), 8, 1, 1))
 
-    peaks = iter([(10.0, 20.0, 0.90), (18.0, 24.0, 0.35)])
-    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
+    candidates = iter([[(10.0, 20.0, 0.90, 5)], [(18.0, 24.0, 0.35, 5)]])
+    monkeypatch.setattr("app.models.tracknet._extract_component_candidates", lambda *_args, **_kwargs: next(candidates))
     monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
     monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
     tracker = TrackNetV3(model_path=None, device="cpu")

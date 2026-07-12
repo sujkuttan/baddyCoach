@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     shuttle_max_speed_mps: float = 80.0  # reject consecutive court-space detections above this speed
     tracknet_detection_min_conf: float = 0.45  # low-confidence detections below this need temporal support
     tracknet_low_conf_max_jump_px: float = 120.0  # weak detections jumping farther than this are dropped pre-cleaning
+    tracknet_candidate_components: int = 3  # top connected components to score per frame
+    tracknet_component_motion_weight: float = 0.70  # continuity weight when selecting among candidate blobs
+    tracknet_component_confidence_weight: float = 0.30  # confidence weight when selecting among candidate blobs
+    tracknet_component_distance_scale_px: float = 120.0  # px scale for continuity penalty normalization
 
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280

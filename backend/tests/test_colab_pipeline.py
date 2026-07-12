@@ -114,3 +114,11 @@ def test_colab_preserves_aim_alpha_quality_fields_in_outputs():
 
     assert '"aim_alpha_reliable"' in source
     assert '"aim_alpha_route"' in source
+
+
+def test_colab_uses_continuity_aware_tracknet_candidate_selection():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert "_extract_component_candidates" in source
+    assert "_select_detection_candidate" in source
+    assert "tracknet_component_motion_weight" in source

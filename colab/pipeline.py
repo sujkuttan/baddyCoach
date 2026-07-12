@@ -59,6 +59,69 @@ BST_PATH = MODEL_REGISTRY["bst_colab"][0]
 HRNET_PATH = MODEL_REGISTRY["hrnet"][0]
 
 
+def _extract_component_candidates(probabilities: np.ndarray, orig_w: int, orig_h: int,
+                                  threshold: float, max_components: int) -> list[tuple[float, float, float, int]]:
+    binary = (probabilities >= threshold).astype(np.uint8)
+    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if n_labels <= 1:
+        return []
+    order = np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1]
+    candidates = []
+    for offset in order[:max_components]:
+        component = 1 + int(offset)
+        component_mask = labels == component
+        x_center, y_center = centroids[component]
+        confidence = float(probabilities[component_mask].max())
+        area = int(stats[component, cv2.CC_STAT_AREA])
+        candidates.append((
+            float(x_center * orig_w / 512),
+            float(y_center * orig_h / 288),
+            confidence,
+            area,
+        ))
+    return candidates
+
+
+def _select_detection_candidate(candidates, prev_accepted, prev_prev_accepted,
+                                *, motion_weight: float, confidence_weight: float,
+                                distance_scale_px: float):
+    if not candidates:
+        return None
+    if prev_accepted is None:
+        return candidates[0]
+    if prev_prev_accepted is None:
+        pred_x, pred_y = float(prev_accepted[0]), float(prev_accepted[1])
+    else:
+        pred_x = float(prev_accepted[0] + (prev_accepted[0] - prev_prev_accepted[0]))
+        pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
+    scale = max(float(distance_scale_px), 1.0)
+    best = None
+    best_score = -np.inf
+    for candidate in candidates:
+        x, y, conf, _area = candidate
+        dist = float(np.hypot(x - pred_x, y - pred_y))
+        motion_score = 1.0 / (1.0 + dist / scale)
+        score = float(motion_weight) * motion_score + float(confidence_weight) * float(conf)
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
+
+
+def _accept_detection_candidate(candidate, prev_accepted, *, min_conf: float,
+                                trust_min_conf: float, low_conf_max_jump_px: float) -> bool:
+    if candidate is None:
+        return False
+    x, y, conf = candidate[:3]
+    if conf < min_conf:
+        return False
+    if prev_accepted is None or conf >= trust_min_conf:
+        return True
+    dx = float(x - prev_accepted[0])
+    dy = float(y - prev_accepted[1])
+    return float(np.hypot(dx, dy)) <= float(low_conf_max_jump_px)
+
+
 
 
 def setup_models(device: str, pose_model: str = "rtmpose"):
@@ -352,6 +415,8 @@ class TrackNetV3:
 
         CHUNK = self._tracknet_chunk
         raw_results = [None for _ in range(len(preprocessed))]
+        prev_accepted = None
+        prev_prev_accepted = None
 
         for chunk_start in range(0, len(preprocessed), CHUNK):
             chunk_end = min(chunk_start + CHUNK, len(preprocessed))
@@ -373,15 +438,30 @@ class TrackNetV3:
             heatmaps = 1 / (1 + np.exp(-out.cpu().numpy()[:, 0]))
             for j in range(len(windows)):
                 hm = heatmaps[j]
-                y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
-                detection = (
-                    float(x_idx * ow / self.input_width),
-                    float(y_idx * oh / self.input_height),
-                    float(hm.max()),
+                candidates = _extract_component_candidates(
+                    hm, ow, oh, settings.shuttle_min_conf, settings.tracknet_candidate_components
                 )
-                raw_results[chunk_start + j] = (
-                    detection if detection[2] >= settings.shuttle_min_conf else None
+                detection = _select_detection_candidate(
+                    candidates,
+                    prev_accepted,
+                    prev_prev_accepted,
+                    motion_weight=settings.tracknet_component_motion_weight,
+                    confidence_weight=settings.tracknet_component_confidence_weight,
+                    distance_scale_px=settings.tracknet_component_distance_scale_px,
                 )
+                if _accept_detection_candidate(
+                    detection,
+                    prev_accepted,
+                    min_conf=settings.shuttle_min_conf,
+                    trust_min_conf=settings.tracknet_detection_min_conf,
+                    low_conf_max_jump_px=settings.tracknet_low_conf_max_jump_px,
+                ):
+                    accepted = detection[:3]
+                    raw_results[chunk_start + j] = accepted
+                    prev_prev_accepted = prev_accepted
+                    prev_accepted = accepted
+                else:
+                    raw_results[chunk_start + j] = None
             del tensor, out, heatmaps, batch, windows
 
         original_missing = [item is None for item in raw_results]
