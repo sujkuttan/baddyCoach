@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     shuttle_smooth_window: int = 3  # moving median window (0=off, 3=de-jitter)
     shuttle_oob_margin_meters: float = 1.0  # allowed court-space overshoot before rejection
     shuttle_max_speed_mps: float = 80.0  # reject consecutive court-space detections above this speed
+    tracknet_detection_min_conf: float = 0.45  # low-confidence detections below this need temporal support
+    tracknet_low_conf_max_jump_px: float = 120.0  # weak detections jumping farther than this are dropped pre-cleaning
 
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280
@@ -160,6 +162,7 @@ class Settings(BaseSettings):
     bst_max_raw_shuttle_gap_frames: int = 7
     bst_max_repaired_shuttle_fraction: float = 0.50
     bst_max_interpolated_shuttle_fraction: float = 0.25
+    bst_max_court_rejected_shuttle_fraction: float = 0.25
     bst_min_pose_coverage: float = 0.70
     bst_min_keypoint_confidence: float = 0.35
     bst_max_bbox_interp_gap: int = 10

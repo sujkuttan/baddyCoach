@@ -227,6 +227,66 @@ def test_predict_batch_repairs_low_confidence_peak_without_changing_high_confide
 
 
 @pytest.mark.cpu_only
+def test_predict_batch_drops_low_confidence_large_jump_before_repair(monkeypatch):
+    """A weak, discontinuous candidate should become a repair target, not a real point."""
+    from app.models.tracknet import TrackNetV3
+
+    class StubBackbone(nn.Module):
+        def forward(self, batch):
+            return torch.zeros((len(batch), 8, 1, 1))
+
+    class ConstantRepairNet(nn.Module):
+        def forward(self, coords, mask):
+            assert torch.equal(mask[0, :, 0], torch.tensor([0.0, 1.0, 0.0]))
+            return torch.tensor([[[0.1, 0.2], [0.5, 0.25], [0.9, 0.8]]])
+
+    peaks = iter([(10.0, 20.0, 0.90), (90.0, 80.0, 0.35), (95.0, 82.0, 0.90)])
+    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
+    monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
+    monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
+    tracker = TrackNetV3(model_path=None, device="cpu")
+    tracker.model = StubBackbone()
+    tracker.inpaintnet = ConstantRepairNet()
+    tracker._preprocess = lambda frames: [np.zeros((1, 1, 3), dtype=np.float32) for _ in frames]
+
+    results = tracker.predict_batch(
+        [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)], batch_size=3
+    )
+
+    assert results[0] == {"x": 10.0, "y": 20.0, "confidence": 0.90}
+    assert results[1]["x"] == 50.0
+    assert results[1]["y"] == 25.0
+    assert results[1]["was_repaired"] is True
+    assert results[2] == {"x": 95.0, "y": 82.0, "confidence": 0.90}
+
+
+@pytest.mark.cpu_only
+def test_predict_batch_keeps_low_confidence_continuous_peak(monkeypatch):
+    """A weak but temporally consistent candidate should stay observed."""
+    from app.models.tracknet import TrackNetV3
+
+    class StubBackbone(nn.Module):
+        def forward(self, batch):
+            return torch.zeros((len(batch), 8, 1, 1))
+
+    peaks = iter([(10.0, 20.0, 0.90), (18.0, 24.0, 0.35)])
+    monkeypatch.setattr("app.models.tracknet._extract_largest_component", lambda *_args, **_kwargs: next(peaks))
+    monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
+    monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
+    tracker = TrackNetV3(model_path=None, device="cpu")
+    tracker.model = StubBackbone()
+    tracker.inpaintnet = None
+    tracker._preprocess = lambda frames: [np.zeros((1, 1, 3), dtype=np.float32) for _ in frames]
+
+    results = tracker.predict_batch(
+        [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(2)], batch_size=2
+    )
+
+    assert results[0] == {"x": 10.0, "y": 20.0, "confidence": 0.90}
+    assert results[1] == {"x": 18.0, "y": 24.0, "confidence": 0.35}
+
+
+@pytest.mark.cpu_only
 def test_inpaintnet_incompatible_checkpoint_is_disabled_and_recorded(tmp_path):
     """Key/shape incompatibility must disable repair rather than partially loading it."""
     from app.models.tracknet import TrackNetV3

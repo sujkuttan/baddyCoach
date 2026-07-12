@@ -206,7 +206,7 @@ def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tm
     store.set_parquet("shuttle", pd.DataFrame({
         "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
         "confidence": [0.9] * 50, "was_interpolated": [False] * 50,
-        "court_rejected": [False] * 30 + [True] + [False] * 19,
+        "court_rejected": [False] * 30 + [True] * 10 + [False] * 10,
     }))
     store.set_parquet("shuttle_raw", pd.DataFrame({
         "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
@@ -310,7 +310,7 @@ def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monk
     store.set_parquet("shuttle", pd.DataFrame({
         "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,
         "confidence": [0.9] * 80, "was_interpolated": [False] * 80,
-        "court_rejected": [False] * 30 + [True] + [False] * 49,
+        "court_rejected": [False] * 30 + [True] * 10 + [False] * 40,
     }))
     store.set_parquet("shuttle_raw", pd.DataFrame({
         "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,

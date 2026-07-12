@@ -274,6 +274,32 @@ def _extract_peak(heatmap: np.ndarray, orig_w: int, orig_h: int) -> tuple[float,
     return x, y, conf
 
 
+def _accept_detection_candidate(
+    candidate: tuple[float, float, float] | None,
+    prev_accepted: tuple[float, float, float] | None,
+    *,
+    min_conf: float,
+    trust_min_conf: float,
+    low_conf_max_jump_px: float,
+) -> bool:
+    """Decide whether a decoded shuttle point is trustworthy enough to keep.
+
+    Low-confidence detections are only accepted when they remain temporally
+    consistent with the previous accepted point. This keeps weak blob flips
+    from entering the track as observed shuttle positions.
+    """
+    if candidate is None:
+        return False
+    x, y, conf = candidate
+    if conf < min_conf:
+        return False
+    if prev_accepted is None or conf >= trust_min_conf:
+        return True
+    dx = float(x - prev_accepted[0])
+    dy = float(y - prev_accepted[1])
+    return float(np.hypot(dx, dy)) <= float(low_conf_max_jump_px)
+
+
 class TrackNetV3:
     """TrackNetV3 — custom UNet backbone + optional InpaintNet.
 
@@ -447,6 +473,7 @@ class TrackNetV3:
         temporal_weights = _triangular_weights(TRACKNET_SEQUENCE_LENGTH)
         pending_heatmaps: dict[int, np.ndarray] = {}
         pending_weights: dict[int, float] = {}
+        prev_accepted: tuple[float, float, float] | None = None
 
         # Starts -7 through n-1 ensure every real frame is present at every
         # temporal output offset while boundary frames are edge-padded.
@@ -480,10 +507,20 @@ class TrackNetV3:
                 # frame ``start``. Decode and release it immediately.
                 if start >= 0:
                     aggregate = pending_heatmaps.pop(start) / pending_weights.pop(start)
-                    x, y, conf = _extract_largest_component(
+                    candidate = _extract_largest_component(
                         aggregate, orig_w, orig_h, threshold=settings.shuttle_min_conf
                     )
-                    all_raw[start] = (x, y, conf) if conf >= settings.shuttle_min_conf else None
+                    if _accept_detection_candidate(
+                        candidate,
+                        prev_accepted,
+                        min_conf=settings.shuttle_min_conf,
+                        trust_min_conf=settings.tracknet_detection_min_conf,
+                        low_conf_max_jump_px=settings.tracknet_low_conf_max_jump_px,
+                    ):
+                        all_raw[start] = candidate
+                        prev_accepted = candidate
+                    else:
+                        all_raw[start] = None
 
             del batch_tensor
             if self.device != "cpu":

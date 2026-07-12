@@ -29,9 +29,19 @@ def test_quality_accepts_clip_with_sufficient_observed_shuttle_and_pose():
     assert result["max_shuttle_gap_frames"] == 7
 
 
-def test_quality_rejects_court_rejected_point_even_when_other_coverage_is_good():
+def test_quality_penalizes_single_court_rejected_point_without_hard_rejecting_clip():
     rejected = [False] * 20
     rejected[3] = True
+
+    result = evaluate_bst_clip_quality(_provenance(shuttle_court_rejected=rejected))
+
+    assert result["eligible"] is True
+    assert result["score"] == 0.8
+    assert result["reasons"] == []
+
+
+def test_quality_rejects_clip_with_too_many_court_rejected_points():
+    rejected = [True] * 6 + [False] * 14
 
     result = evaluate_bst_clip_quality(_provenance(shuttle_court_rejected=rejected))
 
@@ -46,7 +56,7 @@ def test_quality_accumulates_all_failed_hard_checks_and_clamps_score():
         shuttle_observed=[False] * 10,
         shuttle_repaired=[False] * 10,
         shuttle_interpolated=[True] * 10,
-        shuttle_court_rejected=[True] + [False] * 9,
+        shuttle_court_rejected=[True] * 3 + [False] * 7,
         pose_present_far=[False] * 10,
         pose_present_near=[False] * 10,
         pose_keypoint_confidence_far=[0.1] * 10,

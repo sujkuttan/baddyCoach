@@ -46,6 +46,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     observed_fraction = _coverage(observed)
     repaired_fraction = _coverage(repaired)
     interpolated_fraction = _coverage(interpolated)
+    rejected_fraction = _coverage(rejected)
     max_shuttle_gap = _longest_false_run(observed)
     far_coverage = _coverage(far_present)
     near_coverage = _coverage(near_present)
@@ -65,8 +66,9 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         hard_reasons.append("long_shuttle_gap")
         score -= 0.25
     if rejected.any():
-        hard_reasons.append("court_rejected_shuttle")
         score -= 0.20
+    if rejected_fraction > settings.bst_max_court_rejected_shuttle_fraction:
+        hard_reasons.append("court_rejected_shuttle")
     if min(far_coverage, near_coverage) < settings.bst_min_pose_coverage:
         hard_reasons.append("low_pose_coverage")
         score -= 0.20
@@ -100,6 +102,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "observed_shuttle_fraction": observed_fraction,
         "repaired_shuttle_fraction": repaired_fraction,
         "interpolated_shuttle_fraction": interpolated_fraction,
+        "court_rejected_shuttle_fraction": rejected_fraction,
         "max_shuttle_gap_frames": max_shuttle_gap,
         "far_pose_coverage": far_coverage,
         "near_pose_coverage": near_coverage,
