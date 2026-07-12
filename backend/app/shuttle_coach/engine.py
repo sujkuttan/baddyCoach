@@ -11,6 +11,7 @@ from app.shuttle_coach.metrics.base import MetricResult
 from app.shuttle_coach.feedback import derive_findings, prioritize_findings
 from app.shuttle_coach.feedback.rules import evaluate_yaml_rules
 from app.shuttle_coach.feedback.report import render_report, render_report_json
+from app.pipeline.shared.ownership_quality import confident_owner_shots
 
 
 def analyze(data_dir: str) -> dict[str, Any]:
@@ -181,7 +182,7 @@ def analyze_from_pipeline(
 
 def _compute_rally_stats(analytics: dict, player_id: str) -> dict:
     rallies_df = analytics.get("_rallies_df")
-    shots_df = analytics.get("_shots_df")
+    shots_df = confident_owner_shots(analytics.get("_shots_df"))
     if rallies_df is None or shots_df is None:
         return {"avg_length": 0, "max_length": 0, "min_length": 0,
                 "first_shot_win_rate": 0, "long_rally_pct": 0}

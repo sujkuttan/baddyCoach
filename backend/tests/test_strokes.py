@@ -191,6 +191,24 @@ class _QualityGateClassifier:
         return results, probs
 
 
+class _AimAlphaProbeClassifier:
+    seq_len = 20
+
+    def __init__(self):
+        self.received = []
+
+    def predict_from_clips(self, clips, **kwargs):
+        self.received.extend(clips)
+        results = []
+        probs = np.zeros((len(clips), 25), dtype=np.float32)
+        for clip in clips:
+            offset = clip.get("_alpha_probe_offset", 0)
+            alpha = 0.8 if offset >= 0 else 0.2
+            results.append(("smash", 0.9, 3, alpha, alpha, 1.0 - alpha))
+            probs[len(results) - 1, 3] = 1.0
+        return results, probs
+
+
 def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tmp_job_dir):
     from app.pipeline.shared import models
 
@@ -338,3 +356,63 @@ def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monk
     assert shots.loc[1, "bst_input_route"] == "downstream_override"
     assert shots.loc[1, "stroke_source"] == "temporal_smoothing"
     assert shots.loc[1, "bst_input_override_source"] == "temporal_smoothing"
+
+
+def test_stroke_stage_marks_aim_alpha_unreliable_when_probe_offsets_flip(monkeypatch, tmp_job_dir):
+    from app.pipeline.shared import models
+
+    classifier = _AimAlphaProbeClassifier()
+    monkeypatch.setattr(models, "get_bst", lambda: classifier)
+    monkeypatch.setattr("app.pipeline.strokes.settings.fusion_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.hierarchical_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.confusion_pair_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
+    monkeypatch.setattr(
+        "app.pipeline.strokes.evaluate_aim_alpha_quality",
+        lambda provenance: {
+            "reliable": True,
+            "score": 1.0,
+            "reasons": [],
+            "contact_window_valid": True,
+            "pose_balance_score": 1.0,
+            "identity_stable": True,
+            "contact_separation": 0.5,
+        },
+    )
+
+    store = ArtifactStore(tmp_job_dir)
+    store.set_parquet("hits", pd.DataFrame({"frame": [10], "confidence": [0.9]}))
+    store.set_parquet("shuttle", pd.DataFrame({
+        "frame": list(range(40)),
+        "x": [100.0] * 40,
+        "y": [100.0] * 40,
+        "confidence": [0.9] * 40,
+        "was_interpolated": [False] * 40,
+        "court_rejected": [False] * 40,
+    }))
+    store.set_parquet("shuttle_raw", pd.DataFrame({
+        "frame": list(range(40)),
+        "x": [100.0] * 40,
+        "y": [100.0] * 40,
+        "confidence": [0.9] * 40,
+        "was_repaired": [False] * 40,
+    }))
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    store.set_parquet("pose", pd.DataFrame([
+        {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
+        for f in range(40) for p in ("player_1", "player_2")
+    ]))
+    store.set("court", {"court_length": 13.4, "court_width": 6.1})
+    store.set("players", {"players": [
+        {"id": "player_1", "side": "near", "detections": [{"frame": f, "bbox": [0, 0, 100, 100]} for f in range(40)]},
+        {"id": "player_2", "side": "far", "detections": [{"frame": f, "bbox": [200, 0, 300, 100]} for f in range(40)]},
+    ]})
+
+    StrokeClassificationStage().run(store, StageConfig(debug_level=1))
+    shots = store.get_parquet("shots").sort_values("frame").reset_index(drop=True)
+
+    assert len(classifier.received) == 3
+    assert bool(shots.loc[0, "aim_alpha_reliable"]) is False
+    assert shots.loc[0, "aim_alpha_route"] == "alpha_abstain_instability"
+    assert shots.loc[0, "aim_alpha_stability_span"] == pytest.approx(0.6)
+    assert "probe_direction_flip" in shots.loc[0, "aim_alpha_quality_reasons"]

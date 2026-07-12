@@ -7,7 +7,8 @@ from app.pipeline.shared.court import (
     image_to_court, foot_midpoint_from_pose,
     COURT_LENGTH, COURT_WIDTH,
 )
-from app.pipeline.shared.ownership_scorer import OwnershipScorer, ViterbiConfig, assign_hit_owners_viterbi
+from app.pipeline.shared.ownership_quality import assign_rally_owners
+from app.pipeline.shared.ownership_scorer import OwnershipScorer
 from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
@@ -52,94 +53,63 @@ class PlayerAttributionStage:
         if "player_id" not in shots_df.columns:
             shots_df["player_id"] = None
         shots_df["owner_uncertain"] = False
+        shots_df["owner_confident"] = False
+        shots_df["owner_source"] = "unknown"
+        shots_df["owner_reason"] = "unassigned"
+        shots_df["side"] = "unknown"
         if config.debug_level >= 1:
             shots_df["attribution_tier"] = "none"
 
-        # ── OwnershipScorer emissions + Viterbi rally-level assignment ──
-        # Replaces old threshold-based + greedy-alternation + fallback cascade.
         scorer = OwnershipScorer.from_settings()
-        viterbi_config = ViterbiConfig.from_settings()
 
-        # Build frame-order list of shots per rally to track prev_owner for turn prior
-        rally_shots_order: dict[int, list[int]] = {}
-        if rallies_df is not None and len(rallies_df) > 0:
-            for _, rally in rallies_df.iterrows():
-                r_id = int(rally["rally_id"])
-                r_mask = (shots_df["frame"] >= int(rally["start_frame"])) & \
-                         (shots_df["frame"] <= int(rally["end_frame"]))
-                r_order = shots_df[r_mask].sort_values("frame").index.tolist()
-                if r_order:
-                    rally_shots_order[r_id] = r_order
-
-        # Collect emissions per rally for unassigned shots
-        rally_emissions: dict[int, list[dict[str, float]]] = {}
-        rally_candidates: dict[int, list[tuple]] = {}
+        rally_scores: dict[int, list[dict[str, float]]] = {}
+        rally_candidates: dict[int, list[int]] = {}
+        players_by_side = {
+            p["side"]: p["id"]
+            for p in players_data.get("players", [])
+            if p.get("side") in {"near", "far"} and p.get("id")
+        }
 
         for idx, shot in shots_df.iterrows():
             frame = int(shot["frame"])
-
-            # Determine prev_owner for turn prior
-            prev_owner = None
             rid = shot.get("rally_id")
-            if pd.notna(rid) and int(rid) in rally_shots_order:
-                order = rally_shots_order[int(rid)]
-                pos = order.index(idx) if idx in order else -1
-                if pos > 0:
-                    prev_idx = order[pos - 1]
-                    prev_owner = shots_df.at[prev_idx, "player_id"]
 
-            # Run the scorer (BST aimplayer_alpha/class_id is a weak 7th sub-score)
             score_result = scorer.score(
                 shuttle_df=shuttle_df, pose_df=pose_df,
                 players_data=players_data, court_data=court,
-                frame=frame, prev_owner=prev_owner,
+                frame=frame, prev_owner=None,
                 shot=shot,
             )
 
-            ns = score_result["near_score"]
-            fs = score_result["far_score"]
-
             rally_id = int(rid) if pd.notna(rid) else -1
-            if rally_id not in rally_emissions:
-                rally_emissions[rally_id] = []
+            if rally_id not in rally_scores:
+                rally_scores[rally_id] = []
                 rally_candidates[rally_id] = []
-            rally_emissions[rally_id].append({"near": ns, "far": fs})
+            rally_scores[rally_id].append(score_result)
             rally_candidates[rally_id].append(idx)
 
-            # Store ownership scores unconditionally (needed for uncertainty check)
             for key in ("near_score", "far_score", "trajectory_near", "trajectory_far",
                         "court_side_near", "court_side_far", "proximity_near", "proximity_far",
                         "motion_near", "motion_far", "pose_near", "pose_far",
-                        "turn_near", "turn_far", "bst_near", "bst_far"):
+                        "turn_near", "turn_far", "bst_diag_near", "bst_diag_far"):
                 if key in score_result:
                     shots_df.at[idx, f"ownership_{key}"] = score_result[key]
 
-        # Run Viterbi per rally to assign owners globally
-        min_conf = settings.confidence_min_owner_confidence
-        uncert_margin = settings.confidence_uncertain_margin
-        for rally_id, emissions_list in rally_emissions.items():
+        for rally_id, score_list in rally_scores.items():
             indices = rally_candidates[rally_id]
-            if len(indices) == 0:
+            if not indices:
                 continue
-            owners = assign_hit_owners_viterbi(
-                candidates=indices,
-                emissions=emissions_list,
-                config=viterbi_config,
-            )
-            for idx, owner, emission in zip(indices, owners, emissions_list):
-                for p in players_data.get("players", []):
-                    if p.get("side") == owner:
-                        shots_df.at[idx, "player_id"] = p["id"]
-                        shots_df.at[idx, "side"] = owner
-                        if config.debug_level >= 1:
-                            shots_df.at[idx, "attribution_tier"] = "viterbi"
-                        break
-                # Uncertainty flag: low max-score or near-far gap too small
-                owner_score = emission[owner]
-                other_score = emission["near" if owner == "far" else "far"]
-                uncertain = (owner_score < min_conf) or \
-                            (abs(owner_score - other_score) < uncert_margin)
-                shots_df.at[idx, "owner_uncertain"] = uncertain
+            decisions = assign_rally_owners(indices, score_list, players_by_side, settings)
+            for idx in indices:
+                decision = decisions[idx]
+                shots_df.at[idx, "player_id"] = decision.player_id
+                shots_df.at[idx, "side"] = decision.side
+                shots_df.at[idx, "owner_confident"] = decision.confident
+                shots_df.at[idx, "owner_source"] = decision.source
+                shots_df.at[idx, "owner_reason"] = decision.reason
+                shots_df.at[idx, "owner_uncertain"] = not decision.confident
+                if config.debug_level >= 1:
+                    shots_df.at[idx, "attribution_tier"] = decision.source
 
         # ── Post-attribution consistency: BST AimPlayer vs external owner ──
         # After Viterbi assigns final owners, check if BST's internal AimPlayer
@@ -147,7 +117,8 @@ class PlayerAttributionStage:
         for idx, shot in shots_df.iterrows():
             alpha = shot.get("aimplayer_alpha")
             side = shot.get("side")
-            if alpha is None or side is None:
+            alpha_reliable = bool(shot.get("aim_alpha_reliable", False))
+            if alpha is None or side not in {"near", "far"} or not alpha_reliable:
                 shots_df.at[idx, "attention_owner_match"] = None
                 shots_df.at[idx, "attention_alpha_owner"] = None
                 continue
@@ -163,15 +134,6 @@ class PlayerAttributionStage:
             matches = shots_df["attention_owner_match"].value_counts().to_dict()
             logger.info("Attention-owner consistency", matches=str(matches))
 
-        # ── Derive side from player_id ──
-        _side_lookup = {}
-        for _p in players_data.get("players", []):
-            _side_lookup[_p["id"]] = _p.get("side", "near")
-        if "side" not in shots_df.columns:
-            shots_df["side"] = shots_df["player_id"].map(_side_lookup).fillna("near")
-        else:
-            shots_df["side"] = shots_df["side"].fillna(shots_df["player_id"].map(_side_lookup).fillna("near"))
-
         if config.debug_level >= 1:
             tier_counts = shots_df["attribution_tier"].value_counts().to_dict()
             logger.info("Attribution tiers", tiers=str(tier_counts))
@@ -180,7 +142,9 @@ class PlayerAttributionStage:
         if H is not None and pose_df is not None:
             for idx, shot in shots_df.iterrows():
                 frame = int(shot["frame"])
-                pid = shot.get("player_id", "player_1")
+                pid = shot.get("player_id")
+                if not pid:
+                    continue
                 row_matches = pose_df[(pose_df["frame"] == frame) & (pose_df["player_id"] == pid)]
                 if len(row_matches) > 0:
                     row = row_matches.iloc[0]

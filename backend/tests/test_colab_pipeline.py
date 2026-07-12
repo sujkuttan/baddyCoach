@@ -107,3 +107,10 @@ def test_colab_pose_fallback_does_not_cross_player_sides():
     )
 
     assert bbox is None
+
+
+def test_colab_preserves_aim_alpha_quality_fields_in_outputs():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert '"aim_alpha_reliable"' in source
+    assert '"aim_alpha_route"' in source

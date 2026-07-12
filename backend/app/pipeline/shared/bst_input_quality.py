@@ -25,6 +25,12 @@ def _median_confidence(values: np.ndarray, present: np.ndarray) -> float:
     return float(np.median(usable)) if len(usable) else 0.0
 
 
+def _window_slice(video_len: int, center: int, radius: int) -> slice:
+    start = max(0, center - radius)
+    stop = min(video_len, center + radius + 1)
+    return slice(start, stop)
+
+
 def evaluate_bst_clip_quality(provenance: dict) -> dict:
     """Return deterministic admission evidence for one unpadded BST clip."""
     video_len = int(provenance["video_len"])
@@ -109,4 +115,85 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "far_pose_median_confidence": far_median_conf,
         "near_pose_median_confidence": near_median_conf,
         "max_bbox_gap_frames": max_bbox_gap,
+    }
+
+
+def evaluate_aim_alpha_quality(provenance: dict) -> dict:
+    """Return stricter quality evidence for using AimPlayer alpha."""
+    video_len = int(provenance["video_len"])
+
+    def values(name: str, dtype) -> np.ndarray:
+        return np.asarray(provenance[name][:video_len], dtype=dtype)
+
+    contact_center = int(provenance.get("contact_frame_index", 0))
+    contact_window = _window_slice(video_len, contact_center, settings.aim_alpha_contact_window)
+
+    observed = values("shuttle_observed", bool)[contact_window]
+    repaired = values("shuttle_repaired", bool)[contact_window]
+    interpolated = values("shuttle_interpolated", bool)[contact_window]
+    rejected = values("shuttle_court_rejected", bool)[contact_window]
+    far_present = values("pose_present_far", bool)[contact_window]
+    near_present = values("pose_present_near", bool)[contact_window]
+    far_conf = values("pose_keypoint_confidence_far", float)[contact_window]
+    near_conf = values("pose_keypoint_confidence_near", float)[contact_window]
+    far_ids = values("resolved_far_pid", object)[contact_window]
+    near_ids = values("resolved_near_pid", object)[contact_window]
+    far_dist = values("wrist_shuttle_distance_far", float)[contact_window]
+    near_dist = values("wrist_shuttle_distance_near", float)[contact_window]
+
+    contact_window_valid = len(observed) > 0
+    far_cov = _coverage(far_present)
+    near_cov = _coverage(near_present)
+    far_med = _median_confidence(far_conf, far_present)
+    near_med = _median_confidence(near_conf, near_present)
+    pose_coverage_gap = abs(far_cov - near_cov)
+    pose_conf_gap = abs(far_med - near_med)
+
+    coverage_ratio = pose_coverage_gap / max(settings.aim_alpha_max_pose_coverage_gap, 1e-6)
+    conf_ratio = pose_conf_gap / max(settings.aim_alpha_max_pose_conf_gap, 1e-6)
+    pose_balance_score = float(np.clip(1.0 - max(coverage_ratio, conf_ratio), 0.0, 1.0))
+
+    unique_far = {pid for pid in far_ids.tolist() if pid}
+    unique_near = {pid for pid in near_ids.tolist() if pid}
+    identity_stable = len(unique_far) == 1 and len(unique_near) == 1 and unique_far != unique_near
+
+    valid_distance = np.isfinite(far_dist) & np.isfinite(near_dist)
+    if valid_distance.any():
+        contact_separation = float(np.max(np.abs(far_dist[valid_distance] - near_dist[valid_distance])))
+    else:
+        contact_separation = 0.0
+
+    reasons = []
+    score = 1.0
+    if not contact_window_valid:
+        reasons.append("contact_window_missing")
+        score -= 1.0
+    if not observed.any():
+        reasons.append("contact_shuttle_missing")
+        score -= 0.35
+    if repaired.any() or interpolated.any() or rejected.any():
+        reasons.append("contact_shuttle_unstable")
+        score -= 0.30
+    if pose_coverage_gap > settings.aim_alpha_max_pose_coverage_gap or pose_conf_gap > settings.aim_alpha_max_pose_conf_gap:
+        reasons.append("contact_pose_imbalance")
+        score -= 0.25
+    if not identity_stable:
+        reasons.append("identity_unstable")
+        score -= 0.20
+    if contact_separation < settings.aim_alpha_min_contact_separation:
+        reasons.append("contact_separation_too_small")
+        score -= 0.20
+
+    score = float(np.clip(score, 0.0, 1.0))
+    reliable = not reasons and score >= settings.aim_alpha_min_quality_score
+    return {
+        "reliable": reliable,
+        "score": score,
+        "reasons": reasons,
+        "contact_window_valid": contact_window_valid,
+        "pose_balance_score": pose_balance_score,
+        "identity_stable": identity_stable,
+        "contact_separation": contact_separation,
+        "pose_coverage_gap": pose_coverage_gap,
+        "pose_conf_gap": pose_conf_gap,
     }

@@ -90,10 +90,19 @@ class Settings(BaseSettings):
     ownership_proximity_weight: float = 0.18
     ownership_motion_weight: float = 0.18
     ownership_pose_feasibility_weight: float = 0.12
-    ownership_turn_prior_weight: float = 0.06
-    ownership_bst_weight: float = 0.07
+    ownership_turn_prior_weight: float = 0.0
+    ownership_bst_weight: float = 0.0
     ownership_bst_alpha_threshold: float = 0.15
     ownership_bst_conf_min: float = 0.3
+    ownership_min_anchor_confidence: float = 0.68
+    ownership_min_anchor_margin: float = 0.18
+    ownership_min_anchor_signals: int = 2
+    ownership_signal_neutral_epsilon: float = 0.08
+    ownership_viterbi_bridge_enabled: bool = True
+    ownership_viterbi_max_bridge_shots: int = 2
+    ownership_calibration_match_tolerance_frames: int = 15
+    ownership_calibration_min_accuracy_lift: float = 0.03
+    ownership_calibration_min_coverage_lift: float = 0.05
     ownership_window_frames: int = 3         # ±window for trajectory vector
     ownership_net_margin: float = 0.75       # metres — ambiguous zone around net
     ownership_prox_sigma_norm: float = 0.15  # normalised proximity scaling
@@ -167,6 +176,15 @@ class Settings(BaseSettings):
     bst_min_keypoint_confidence: float = 0.35
     bst_max_bbox_interp_gap: int = 10
     bst_quality_score_min: float = 0.70
+    aim_alpha_enabled: bool = True
+    aim_alpha_min_quality_score: float = 0.75
+    aim_alpha_contact_window: int = 2
+    aim_alpha_max_pose_coverage_gap: float = 0.25
+    aim_alpha_max_pose_conf_gap: float = 0.20
+    aim_alpha_max_anchor_shift: int = 1
+    aim_alpha_max_stability_span: float = 0.45
+    aim_alpha_min_contact_separation: float = 0.12
+    aim_alpha_probe_offsets: list[int] = [-1, 0, 1]
 
     # Attributed player lookback
     attribution_lookback_frames: int = 5

@@ -846,37 +846,29 @@ class OwnershipScorer:
         w_prox = self.proximity_weight
         w_mot = self.motion_weight
         w_pose = self.pose_feasibility_weight
-        w_turn = self.turn_prior_weight
-        w_bst = self.bst_weight
-        total_w = w_traj + w_court + w_prox + w_mot + w_pose + w_turn + w_bst
+        total_w = w_traj + w_court + w_prox + w_mot + w_pose
         if total_w > 0:
             w_traj /= total_w
             w_court /= total_w
             w_prox /= total_w
             w_mot /= total_w
             w_pose /= total_w
-            w_turn /= total_w
-            w_bst /= total_w
         else:
-            w_traj = w_court = w_prox = w_mot = w_pose = w_turn = w_bst = 1.0 / 7.0
+            w_traj = w_court = w_prox = w_mot = w_pose = 1.0 / 5.0
 
         near_score = (
             w_traj * traj_n +
             w_court * court_n +
             w_prox * prox_n +
             w_mot * mot_n +
-            w_pose * pose_n +
-            w_turn * turn_n +
-            w_bst * bst_n
+            w_pose * pose_n
         )
         far_score = (
             w_traj * traj_f +
             w_court * court_f +
             w_prox * prox_f +
             w_mot * mot_f +
-            w_pose * pose_f +
-            w_turn * turn_f +
-            w_bst * bst_f
+            w_pose * pose_f
         )
 
         # Side-specific z-score calibration (spec §18)
@@ -904,7 +896,7 @@ class OwnershipScorer:
             "pose_far": round(pose_f, 4),
             "turn_near": round(turn_n, 4),
             "turn_far": round(turn_f, 4),
-            "bst_near": round(bst_n, 4),
-            "bst_far": round(bst_f, 4),
+            "bst_diag_near": round(bst_n, 4),
+            "bst_diag_far": round(bst_f, 4),
         })
         return result
