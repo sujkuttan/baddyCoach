@@ -65,3 +65,45 @@ def test_colab_exports_bst_input_quality_debug_artifact():
     source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
 
     assert '"debug_bst_input_quality"' in source
+
+
+def test_colab_pose_fallback_interpolates_same_side_bboxes():
+    import colab.pipeline as pipeline
+
+    bbox = pipeline._interpolate_pose_bbox(
+        1,
+        "near",
+        [0, 1, 2],
+        {
+            0: [{"side": "near", "bbox": [0.0, 0.0, 10.0, 10.0]}],
+            2: [{"side": "near", "bbox": [10.0, 10.0, 20.0, 20.0]}],
+        },
+    )
+
+    assert bbox == [5.0, 5.0, 15.0, 15.0]
+
+
+def test_colab_pose_fallback_uses_same_side_detection_from_previous_batch():
+    import colab.pipeline as pipeline
+
+    bbox = pipeline._interpolate_pose_bbox(
+        100,
+        "near",
+        [100, 101],
+        {99: [{"side": "near", "bbox": [10.0, 20.0, 30.0, 40.0]}]},
+    )
+
+    assert bbox == [10.0, 20.0, 30.0, 40.0]
+
+
+def test_colab_pose_fallback_does_not_cross_player_sides():
+    import colab.pipeline as pipeline
+
+    bbox = pipeline._interpolate_pose_bbox(
+        100,
+        "near",
+        [100, 101],
+        {99: [{"side": "far", "bbox": [10.0, 20.0, 30.0, 40.0]}]},
+    )
+
+    assert bbox is None
