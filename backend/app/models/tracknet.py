@@ -338,10 +338,12 @@ def _extract_peak(heatmap: np.ndarray, orig_w: int, orig_h: int) -> tuple[float,
 def _accept_detection_candidate(
     candidate: tuple[float, float, float, int] | tuple[float, float, float] | None,
     prev_accepted: tuple[float, float, float] | None,
+    prev_prev_accepted: tuple[float, float, float] | None,
     *,
     min_conf: float,
     trust_min_conf: float,
     low_conf_max_jump_px: float,
+    distance_scale_px: float,
 ) -> bool:
     """Decide whether a decoded shuttle point is trustworthy enough to keep.
 
@@ -356,9 +358,19 @@ def _accept_detection_candidate(
         return False
     if prev_accepted is None or conf >= trust_min_conf:
         return True
-    dx = float(x - prev_accepted[0])
-    dy = float(y - prev_accepted[1])
-    return float(np.hypot(dx, dy)) <= float(low_conf_max_jump_px)
+    direct_dx = float(x - prev_accepted[0])
+    direct_dy = float(y - prev_accepted[1])
+    direct_jump = float(np.hypot(direct_dx, direct_dy))
+    if direct_jump <= float(low_conf_max_jump_px):
+        return True
+
+    if prev_prev_accepted is None:
+        pred_x, pred_y = float(prev_accepted[0]), float(prev_accepted[1])
+    else:
+        pred_x = float(prev_accepted[0] + (prev_accepted[0] - prev_prev_accepted[0]))
+        pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
+    motion_dist = float(np.hypot(x - pred_x, y - pred_y))
+    return motion_dist <= max(float(distance_scale_px), 1.0)
 
 
 class TrackNetV3:
@@ -587,9 +599,11 @@ class TrackNetV3:
                     if _accept_detection_candidate(
                         candidate,
                         prev_accepted,
+                        prev_prev_accepted,
                         min_conf=settings.shuttle_min_conf,
                         trust_min_conf=settings.tracknet_detection_min_conf,
                         low_conf_max_jump_px=settings.tracknet_low_conf_max_jump_px,
+                        distance_scale_px=settings.tracknet_component_distance_scale_px,
                     ):
                         accepted = candidate[:3]
                         all_raw[start] = accepted

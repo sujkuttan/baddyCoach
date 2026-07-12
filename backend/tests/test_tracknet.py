@@ -284,6 +284,7 @@ def test_predict_batch_drops_low_confidence_large_jump_before_repair(monkeypatch
     monkeypatch.setattr("app.models.tracknet._extract_component_candidates", lambda *_args, **_kwargs: next(candidates))
     monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
     monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
+    monkeypatch.setattr(settings, "tracknet_component_distance_scale_px", 25.0, raising=False)
     tracker = TrackNetV3(model_path=None, device="cpu")
     tracker.model = StubBackbone()
     tracker.inpaintnet = ConstantRepairNet()
@@ -324,6 +325,38 @@ def test_predict_batch_keeps_low_confidence_continuous_peak(monkeypatch):
 
     assert results[0] == {"x": 10.0, "y": 20.0, "confidence": 0.90}
     assert results[1] == {"x": 18.0, "y": 24.0, "confidence": 0.35}
+
+
+@pytest.mark.cpu_only
+def test_predict_batch_keeps_low_confidence_motion_consistent_fast_point(monkeypatch):
+    """A weak point on the predicted fast-flight path should stay observed."""
+    from app.models.tracknet import TrackNetV3
+
+    class StubBackbone(nn.Module):
+        def forward(self, batch):
+            return torch.zeros((len(batch), 8, 1, 1))
+
+    candidates = iter([
+        [(10.0, 20.0, 0.90, 5)],
+        [(40.0, 20.0, 0.90, 5)],
+        [(70.0, 20.0, 0.35, 5)],
+    ])
+    monkeypatch.setattr("app.models.tracknet._extract_component_candidates", lambda *_args, **_kwargs: next(candidates))
+    monkeypatch.setattr(settings, "tracknet_detection_min_conf", 0.45, raising=False)
+    monkeypatch.setattr(settings, "tracknet_low_conf_max_jump_px", 25.0, raising=False)
+    monkeypatch.setattr(settings, "tracknet_component_distance_scale_px", 25.0, raising=False)
+    tracker = TrackNetV3(model_path=None, device="cpu")
+    tracker.model = StubBackbone()
+    tracker.inpaintnet = None
+    tracker._preprocess = lambda frames: [np.zeros((1, 1, 3), dtype=np.float32) for _ in frames]
+
+    results = tracker.predict_batch(
+        [np.zeros((100, 100, 3), dtype=np.uint8) for _ in range(3)], batch_size=3
+    )
+
+    assert results[0] == {"x": 10.0, "y": 20.0, "confidence": 0.90}
+    assert results[1] == {"x": 40.0, "y": 20.0, "confidence": 0.90}
+    assert results[2] == {"x": 70.0, "y": 20.0, "confidence": 0.35}
 
 
 @pytest.mark.cpu_only
