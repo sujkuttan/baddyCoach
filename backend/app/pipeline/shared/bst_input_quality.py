@@ -42,6 +42,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     repaired = values("shuttle_repaired", bool)
     interpolated = values("shuttle_interpolated", bool)
     rejected = values("shuttle_court_rejected", bool)
+    observed_rejected = rejected & observed
     far_present = values("pose_present_far", bool)
     near_present = values("pose_present_near", bool)
     far_conf = values("pose_keypoint_confidence_far", float)
@@ -52,7 +53,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     observed_fraction = _coverage(observed)
     repaired_fraction = _coverage(repaired)
     interpolated_fraction = _coverage(interpolated)
-    rejected_fraction = _coverage(rejected)
+    rejected_fraction = _coverage(observed_rejected)
     max_shuttle_gap = _longest_false_run(observed)
     far_coverage = _coverage(far_present)
     near_coverage = _coverage(near_present)
@@ -71,7 +72,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     if max_shuttle_gap > settings.bst_max_raw_shuttle_gap_frames:
         hard_reasons.append("long_shuttle_gap")
         score -= 0.25
-    if rejected.any():
+    if observed_rejected.any():
         score -= 0.20
     if rejected_fraction > settings.bst_max_court_rejected_shuttle_fraction:
         hard_reasons.append("court_rejected_shuttle")
@@ -104,7 +105,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "observed_shuttle_frames": int(observed.sum()),
         "repaired_shuttle_frames": int(repaired.sum()),
         "interpolated_shuttle_frames": int(interpolated.sum()),
-        "court_rejected_shuttle_frames": int(rejected.sum()),
+        "court_rejected_shuttle_frames": int(observed_rejected.sum()),
         "observed_shuttle_fraction": observed_fraction,
         "repaired_shuttle_fraction": repaired_fraction,
         "interpolated_shuttle_fraction": interpolated_fraction,
@@ -132,6 +133,7 @@ def evaluate_aim_alpha_quality(provenance: dict) -> dict:
     repaired = values("shuttle_repaired", bool)[contact_window]
     interpolated = values("shuttle_interpolated", bool)[contact_window]
     rejected = values("shuttle_court_rejected", bool)[contact_window]
+    observed_rejected = rejected & observed
     far_present = values("pose_present_far", bool)[contact_window]
     near_present = values("pose_present_near", bool)[contact_window]
     far_conf = values("pose_keypoint_confidence_far", float)[contact_window]
@@ -171,7 +173,7 @@ def evaluate_aim_alpha_quality(provenance: dict) -> dict:
     if not observed.any():
         reasons.append("contact_shuttle_missing")
         score -= 0.35
-    if repaired.any() or interpolated.any() or rejected.any():
+    if interpolated.any() or observed_rejected.any():
         reasons.append("contact_shuttle_unstable")
         score -= 0.30
     if pose_coverage_gap > settings.aim_alpha_max_pose_coverage_gap or pose_conf_gap > settings.aim_alpha_max_pose_conf_gap:

@@ -57,19 +57,37 @@ def test_quality_rejects_clip_with_too_many_court_rejected_points():
     assert result["reasons"] == ["court_rejected_shuttle"]
 
 
+def test_quality_does_not_hard_reject_repaired_court_rejected_points():
+    observed = [True] * 8 + [False] * 4 + [True] * 8
+    repaired = [False] * 8 + [True] * 4 + [False] * 8
+    rejected = [False] * 8 + [True] * 4 + [False] * 8
+
+    result = evaluate_bst_clip_quality(
+        _provenance(
+            shuttle_observed=observed,
+            shuttle_repaired=repaired,
+            shuttle_court_rejected=rejected,
+        )
+    )
+
+    assert result["eligible"] is True
+    assert result["score"] == pytest.approx(0.9)
+    assert result["reasons"] == []
+
+
 def test_quality_accumulates_all_failed_hard_checks_and_clamps_score():
     result = evaluate_bst_clip_quality(_provenance(
-        video_len=10,
-        shuttle_observed=[False] * 10,
-        shuttle_repaired=[False] * 10,
-        shuttle_interpolated=[True] * 10,
-        shuttle_court_rejected=[True] * 3 + [False] * 7,
-        pose_present_far=[False] * 10,
-        pose_present_near=[False] * 10,
-        pose_keypoint_confidence_far=[0.1] * 10,
-        pose_keypoint_confidence_near=[0.1] * 10,
-        bbox_gap_far=[11] * 10,
-        bbox_gap_near=[11] * 10,
+        video_len=11,
+        shuttle_observed=[True] * 3 + [False] * 8,
+        shuttle_repaired=[False] * 11,
+        shuttle_interpolated=[True] * 11,
+        shuttle_court_rejected=[True] * 3 + [False] * 8,
+        pose_present_far=[False] * 11,
+        pose_present_near=[False] * 11,
+        pose_keypoint_confidence_far=[0.1] * 11,
+        pose_keypoint_confidence_near=[0.1] * 11,
+        bbox_gap_far=[11] * 11,
+        bbox_gap_near=[11] * 11,
     ))
 
     assert result["eligible"] is False
@@ -128,3 +146,20 @@ def test_aim_alpha_quality_rejects_asymmetric_pose_and_identity_instability():
     assert "contact_pose_imbalance" in result["reasons"]
     assert "identity_unstable" in result["reasons"]
     assert "contact_separation_too_small" in result["reasons"]
+
+
+def test_aim_alpha_quality_does_not_flag_repaired_contact_as_court_instability():
+    observed = [True] * 10 + [False] + [True] * 9
+    repaired = [False] * 10 + [True] + [False] * 9
+    rejected = [False] * 10 + [True] + [False] * 9
+
+    result = evaluate_aim_alpha_quality(
+        _provenance(
+            shuttle_observed=observed,
+            shuttle_repaired=repaired,
+            shuttle_court_rejected=rejected,
+        )
+    )
+
+    assert result["reliable"] is True
+    assert "contact_shuttle_unstable" not in result["reasons"]
