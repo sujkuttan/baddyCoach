@@ -96,6 +96,11 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     if interpolated_fraction > settings.bst_max_interpolated_shuttle_fraction:
         hard_reasons.append("too_many_interpolated_shuttle")
 
+    joint_abs_mean = float(provenance.get("joint_abs_mean", 0.0))
+    if joint_abs_mean > settings.bst_joint_abs_mean_soft_max:
+        score -= 0.10
+        reasons.append("extreme_joint_mean")  # soft — not a hard_reason
+
     score = float(np.clip(score, 0.0, 1.0))
     reasons.extend(hard_reasons)
     if score < settings.bst_quality_score_min:
@@ -119,6 +124,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "far_pose_median_confidence": far_median_conf,
         "near_pose_median_confidence": near_median_conf,
         "max_bbox_gap_frames": max_bbox_gap,
+        "joint_abs_mean": joint_abs_mean,
     }
 
 

@@ -26,6 +26,15 @@ def _provenance(**overrides):
     return value
 
 
+def test_quality_soft_penalizes_extreme_joint_mean():
+    base = evaluate_bst_clip_quality(_provenance(joint_abs_mean=0.0))
+    extreme = evaluate_bst_clip_quality(_provenance(joint_abs_mean=1.5))
+    assert base["score"] == 1.0
+    assert extreme["score"] == pytest.approx(0.9)
+    assert "extreme_joint_mean" in extreme["reasons"]
+    assert "extreme_joint_mean" not in base["reasons"]
+
+
 def test_quality_accepts_clip_with_sufficient_observed_shuttle_and_pose():
     result = evaluate_bst_clip_quality(_provenance())
 

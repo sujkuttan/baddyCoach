@@ -182,6 +182,7 @@ class Settings(BaseSettings):
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
     bst_shuttle_require_raw_observation: bool = True  # only feed BST shuttle coords for frames with a confidence-qualified raw TrackNet detection (not repaired/interpolated)
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
+    bst_joint_abs_mean_soft_max: float = 1.0  # soft penalty when abs mean of finite post-norm joint coords exceeds this
     bst_bbox_margin: float = 0.15  # expand keypoint bbox by this fraction per side; compensates for keypoint bboxes being ~30% tighter than detection bboxes
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)

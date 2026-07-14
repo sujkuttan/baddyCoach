@@ -399,6 +399,10 @@ def _build_clip(
                 provenance[f"pose_keypoint_confidence_{side}"].append(0.0)
             provenance[f"wrist_shuttle_distance_{side}"].append(wrist_distance)
 
+    video_len = min(len(frames), seq_len)
+    finite = joints[:video_len][np.isfinite(joints[:video_len])]
+    provenance["joint_abs_mean"] = float(np.mean(np.abs(finite))) if finite.size else 0.0
+
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     amp = settings.joint_velocity_amplification
     if amp > 0:
