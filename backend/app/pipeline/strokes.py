@@ -269,7 +269,15 @@ def _build_clip(
         provenance["shuttle_interpolated"].append(interpolated)
         provenance["shuttle_court_rejected"].append(court_rejected)
 
-        if clean_row is not None and not court_rejected:
+        # Provenance always records court_rejected. Resolution/pixel BST
+        # inputs keep image-space coords even when court projection is OOB
+        # (homography mismatch must not blank the only channel BST was
+        # trained to see in resolution mode). Court-normalized mode still
+        # blanks rejected points.
+        use_for_tensor = clean_row is not None and (
+            not court_rejected or settings.bst_shuttle_norm != "court"
+        )
+        if use_for_tensor:
             s_conf = float(clean_row.get('confidence', 1.0))
             if s_conf >= settings.shuttle_min_conf:
                 sx = float(clean_row['x'])
@@ -363,9 +371,10 @@ def _build_clip(
 
                 clean_row = shuttle_lookup.get(frame)
                 bbox = interpolated_bboxes.get(pid, {}).get(frame)
+                cr = bool(clean_row.get("court_rejected", False)) if clean_row is not None else False
                 if (
                     clean_row is not None
-                    and not bool(clean_row.get("court_rejected", False))
+                    and (not cr or settings.bst_shuttle_norm != "court")
                     and float(clean_row.get("confidence", 0.0)) >= settings.shuttle_min_conf
                     and kps.shape[1] >= 3
                     and float(kps[10, 2]) >= settings.bst_min_keypoint_confidence

@@ -33,7 +33,7 @@ These conditions can produce a structurally valid tensor that does not describe 
 - `pose_keypoint_confidence_far` and `pose_keypoint_confidence_near`: median COCO keypoint confidence across meaningful pose frames;
 - `bbox_gap_far` and `bbox_gap_near`: frame distance to the source detection used for bbox normalization.
 
-For initial rollout, court-rejected shuttle points are encoded as missing (`[0, 0]`) in BST input. Existing cleaned/repaired points retain current tensor semantics; their provenance affects admission, not the tensor shape. This preserves BST’s fixed input contract.
+In resolution (pixel) mode, court-rejected shuttle points still enter the BST shuttle tensor using their image-space coordinates (homography OOB is a court-projection signal, not missing pixels). In court-normalized mode, court-rejected points are encoded as missing (`[0, 0]`). Existing cleaned/repaired points retain current tensor semantics; their provenance affects admission, not the tensor shape. This preserves BST’s fixed input contract.
 
 ### Quality evaluation
 
@@ -80,7 +80,7 @@ Before joint and bone construction, keypoints with confidence below `settings.bs
 
 The stroke stage builds every clip and quality record before model batching.
 
-- Eligible clips are batched through `BSTClassifier.predict_from_clips()` unchanged except for court-rejected shuttle zeroing.
+- Eligible clips are batched through `BSTClassifier.predict_from_clips()` unchanged. In court-normalized mode, court-rejected shuttle points are zeroed (`[0, 0]`); in resolution mode they retain their image-space coordinates.
 - Ineligible clips do not reach BST. They produce `stroke_type="unknown"`, `stroke_confidence=0.0`, `shuttleset_class_id=0`, and `is_bst_fallback=True`.
 - The existing context/physics stages may still turn an `unknown` into a class only when their own existing evidence permits it. The shot retains its original quality reasons regardless of downstream override.
 
