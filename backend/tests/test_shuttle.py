@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import ShuttleTrackingStage
 from app.pipeline.shuttle import _add_court_space_columns
@@ -62,3 +63,17 @@ def test_court_enrichment_rejects_out_of_bounds_and_impossible_speed(monkeypatch
     assert np.isnan(enriched.loc[1, ["x_court", "y_court", "speed_court", "direction_x", "direction_y"]]).all()
     assert np.isnan(enriched.loc[3, ["x_court", "y_court", "speed_court", "direction_x", "direction_y"]]).all()
     assert enriched.loc[2, "x_court"] == 1.2
+
+
+def test_shuttle_in_court_fraction_and_reliability_flag():
+    from app.pipeline.shuttle import compute_shuttle_in_court_fraction
+
+    # Identity H: pixel == court metres. Points at x=20 are OOB for length 13.4.
+    df = pd.DataFrame({
+        "x": [1.0, 2.0, 20.0, 3.0],
+        "y": [1.0, 1.0, 1.0, 1.0],
+        "confidence": [0.9, 0.9, 0.9, 0.2],  # last ignored by conf gate
+    })
+    frac = compute_shuttle_in_court_fraction(df, np.eye(3), min_conf=0.5, oob_margin=1.0)
+    # 2 of 3 high-conf points in bounds
+    assert frac == pytest.approx(2 / 3, abs=1e-6)

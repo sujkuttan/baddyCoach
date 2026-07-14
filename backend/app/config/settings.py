@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     shuttle_max_interp_gap: int = 7  # max frames to linearly interpolate across gaps
     shuttle_smooth_window: int = 3  # moving median window (0=off, 3=de-jitter)
     shuttle_oob_margin_meters: float = 1.0  # allowed court-space overshoot before rejection
+    court_shuttle_in_bounds_min_fraction: float = 0.60  # min fraction of in-bounds shuttle points for reliability
+    court_shuttle_reliability_min_conf: float = 0.50  # min confidence to count a point toward reliability
     shuttle_max_speed_mps: float = 80.0  # reject consecutive court-space detections above this speed
     tracknet_detection_min_conf: float = 0.45  # low-confidence detections below this need temporal support
     tracknet_low_conf_max_jump_px: float = 120.0  # weak detections jumping farther than this are dropped pre-cleaning

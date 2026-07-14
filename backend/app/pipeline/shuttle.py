@@ -259,3 +259,33 @@ class ShuttleTrackingStage:
                 "width": int(frames[0].shape[1]),
                 "height": int(frames[0].shape[0]),
             })
+
+
+def compute_shuttle_in_court_fraction(
+    df: pd.DataFrame,
+    H: np.ndarray,
+    *,
+    min_conf: float,
+    oob_margin: float,
+) -> float:
+    from app.pipeline.shared.court import image_to_court, COURT_LENGTH, COURT_WIDTH
+
+    considered = 0
+    inside = 0
+    for _, row in df.iterrows():
+        if float(row.get("confidence", 0.0)) < min_conf:
+            continue
+        x, y = row.get("x"), row.get("y")
+        if not (np.isfinite(x) and np.isfinite(y)):
+            continue
+        considered += 1
+        cx, cy = image_to_court(H, (float(x), float(y)))
+        oob = (
+            not np.isfinite(cx)
+            or not np.isfinite(cy)
+            or cx < -oob_margin or cx > COURT_LENGTH + oob_margin
+            or cy < -oob_margin or cy > COURT_WIDTH + oob_margin
+        )
+        if not oob:
+            inside += 1
+    return float(inside / considered) if considered else 0.0
