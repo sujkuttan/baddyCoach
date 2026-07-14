@@ -228,6 +228,37 @@ def _direction_reversal_angle(
     return float(np.arccos(cos_angle))
 
 
+def _contact_y_frac(
+    shuttle_df: pd.DataFrame,
+    frame: int,
+    window: int = 15,
+) -> float | None:
+    """Return ``frame``'s y position as a fraction of the local trajectory y-range.
+
+    Computes ``(y_frame - y_min) / (y_max - y_min)`` over the window
+    ``[frame - window, frame + window]``, ignoring NaN. Returns ``None`` if the
+    window has fewer than 2 finite points or a near-zero y range.
+    """
+    lo = frame - window
+    hi = frame + window
+    sub = shuttle_df[(shuttle_df["frame"] >= lo) & (shuttle_df["frame"] <= hi)]
+    y = sub["y"].to_numpy(dtype=np.float64)
+    y = y[np.isfinite(y)]
+    if len(y) < 2:
+        return None
+    y_min = float(np.min(y))
+    y_max = float(np.max(y))
+    if y_max - y_min < 1e-9:
+        return None
+    row = shuttle_df[shuttle_df["frame"] == frame]
+    if len(row) == 0:
+        return None
+    yf = float(row.iloc[0]["y"])
+    if not np.isfinite(yf):
+        return None
+    return (yf - y_min) / (y_max - y_min)
+
+
 def _find_nearest_wrist_frame(
     candidate_frame: int,
     pose_df: pd.DataFrame,
@@ -787,6 +818,31 @@ class HitFrameLocalizationStage:
         for c in candidates:
             c["frame"] = max(0, c["frame"] - calib_offset)
             c["_calib_offset"] = calib_offset
+
+        # ── Phase 4: contact y_frac sanity nudge ──
+        # After refine + calibration, a candidate may still sit at a trajectory
+        # y-extreme (mis-aligned clip anchor). Re-search the refine window for a
+        # frame with stronger direction reversal / wrist contact.
+        if getattr(settings, "hit_contact_sanity_enabled", True) and refine_window > 0:
+            nudged = 0
+            for c in candidates:
+                yf = _contact_y_frac(shuttle_df, c["frame"])
+                if yf is None:
+                    continue
+                if settings.hit_contact_yfrac_min <= yf <= settings.hit_contact_yfrac_max:
+                    continue
+                better = _find_nearest_wrist_frame(
+                    c["frame"], pose_df, shuttle_df,
+                    search_window=refine_window,
+                    min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
+                )
+                if better != c["frame"]:
+                    c["_sanity_offset"] = better - c["frame"]
+                    c["frame"] = better
+                    nudged += 1
+            if nudged:
+                candidates = non_max_suppression(candidates, detector.min_gap_frames)
+                logger.info("Contact y_frac sanity nudges", count=nudged)
 
         # Write debug hit scores if debug_level >= 2
         if config.debug_level >= 2:

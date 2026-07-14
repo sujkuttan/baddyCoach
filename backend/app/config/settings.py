@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     # Subtract this offset to center the distribution: median error 8→0, ±8 accuracy 51→66%.
     hit_frame_calibration_offset: int = 8
 
+    # Contact y_frac sanity nudge (Task 8): after refine + calibration, if the
+    # candidate frame still sits at a trajectory y-extreme (likely a mis-aligned
+    # clip anchor), re-search the refine window for a frame with stronger
+    # direction reversal / wrist contact.
+    hit_contact_yfrac_min: float = 0.15
+    hit_contact_yfrac_max: float = 0.85
+    hit_contact_sanity_enabled: bool = True
+
     # Audio-visual fusion hit detection (from Ryan-z-Feng-ccsf/badminton-coach)
     audio_hit_enabled: bool = True       # use audio onset detection when video has audio track
     audio_onset_delta: float = 0.5       # onset peak-picking delta threshold (higher = fewer peaks)
