@@ -196,7 +196,7 @@ class Settings(BaseSettings):
     bst_input_quality_enabled: bool = True
     bst_min_clip_video_frames: int = 15
     bst_min_observed_shuttle_fraction: float = 0.35
-    bst_max_raw_shuttle_gap_frames: int = 7
+    bst_max_raw_shuttle_gap_frames: int = 12  # raised 7->12 (plan Phase-6 override): phone footage has TrackNet dropouts; 12 frames (0.4s) holes are tolerable for BST
     bst_max_repaired_shuttle_fraction: float = 0.50
     bst_max_interpolated_shuttle_fraction: float = 0.25
     bst_max_court_rejected_shuttle_fraction: float = 0.25

@@ -109,23 +109,22 @@ def test_quality_accumulates_all_failed_hard_checks_and_clamps_score(monkeypatch
 
     monkeypatch.setattr(settings_mod.settings, "bst_shuttle_norm", "court")
     result = evaluate_bst_clip_quality(_provenance(
-        video_len=11,
-        shuttle_observed=[True] * 3 + [False] * 8,
-        shuttle_repaired=[False] * 11,
-        shuttle_interpolated=[True] * 11,
-        shuttle_court_rejected=[True] * 3 + [False] * 8,
-        pose_present_far=[False] * 11,
-        pose_present_near=[False] * 11,
-        pose_keypoint_confidence_far=[0.1] * 11,
-        pose_keypoint_confidence_near=[0.1] * 11,
-        bbox_gap_far=[11] * 11,
-        bbox_gap_near=[11] * 11,
+        video_len=20,
+        shuttle_observed=[True] * 6 + [False] * 14,
+        shuttle_repaired=[False] * 20,
+        shuttle_interpolated=[True] * 20,
+        shuttle_court_rejected=[True] * 6 + [False] * 14,
+        pose_present_far=[False] * 20,
+        pose_present_near=[False] * 20,
+        pose_keypoint_confidence_far=[0.1] * 20,
+        pose_keypoint_confidence_near=[0.1] * 20,
+        bbox_gap_far=[11] * 20,
+        bbox_gap_near=[11] * 20,
     ))
 
     assert result["eligible"] is False
     assert result["score"] == 0.0
     assert result["reasons"] == [
-        "clip_too_short",
         "low_observed_shuttle",
         "long_shuttle_gap",
         "court_rejected_shuttle",
