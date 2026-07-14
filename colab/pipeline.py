@@ -1051,7 +1051,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                         print("  WARNING: using repo default_corners.json for court geometry.")
                         print("  This geometry may NOT match your video and produces unreliable")
                         print("  homography-based cues (zones, contact height, physics).")
-                        print("  Prefer CourtCornerSetup or {output_dir}/manual_corners.json instead.")
+                        print(f"  Prefer CourtCornerSetup or {Path(output_path).parent}/manual_corners.json instead.")
                         print(f"  Loaded default corners: {corners}")
                         print("!" * 60)
                 except Exception as e:
