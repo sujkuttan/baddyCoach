@@ -1286,7 +1286,11 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             store.set("pose_secondary", all_pose_secondary)
 
         pd.DataFrame(all_player_detections).to_parquet(debug_dir / "player_detections.parquet", index=False)
-        pd.DataFrame(all_shuttle).to_parquet(debug_dir / "shuttle.parquet", index=False)
+        # Dump the same enriched artifacts the stage uses — not the pre-clean all_shuttle list.
+        store.get_parquet("shuttle").to_parquet(debug_dir / "shuttle.parquet", index=False)
+        raw_dbg = store.get_parquet("shuttle_raw")
+        if raw_dbg is not None:
+            raw_dbg.to_parquet(debug_dir / "shuttle_raw.parquet", index=False)
         pd.DataFrame(all_pose).to_parquet(debug_dir / "pose.parquet", index=False)
 
         # ── CPU stages via backend ──
