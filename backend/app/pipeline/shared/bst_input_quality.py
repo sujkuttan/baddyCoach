@@ -74,7 +74,10 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         score -= 0.25
     if observed_rejected.any():
         score -= 0.20
-    if rejected_fraction > settings.bst_max_court_rejected_shuttle_fraction:
+    if (
+        settings.bst_shuttle_norm == "court"
+        and rejected_fraction > settings.bst_max_court_rejected_shuttle_fraction
+    ):
         hard_reasons.append("court_rejected_shuttle")
     if min(far_coverage, near_coverage) < settings.bst_min_pose_coverage:
         hard_reasons.append("low_pose_coverage")

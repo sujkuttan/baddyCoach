@@ -47,14 +47,34 @@ def test_quality_penalizes_single_court_rejected_point_without_hard_rejecting_cl
     assert result["reasons"] == []
 
 
-def test_quality_rejects_clip_with_too_many_court_rejected_points():
+def test_quality_rejects_clip_with_too_many_court_rejected_points(monkeypatch):
+    from app.config import settings as settings_mod
+
     rejected = [True] * 6 + [False] * 14
 
+    monkeypatch.setattr(settings_mod.settings, "bst_shuttle_norm", "court")
     result = evaluate_bst_clip_quality(_provenance(shuttle_court_rejected=rejected))
 
     assert result["eligible"] is False
     assert result["score"] == 0.8
     assert result["reasons"] == ["court_rejected_shuttle"]
+
+
+def test_quality_hard_rejects_court_rejected_only_in_court_norm_mode(monkeypatch):
+    from app.config import settings as settings_mod
+
+    rejected = [True] * 6 + [False] * 14  # 0.30 > 0.25
+
+    monkeypatch.setattr(settings_mod.settings, "bst_shuttle_norm", "resolution")
+    result_res = evaluate_bst_clip_quality(_provenance(shuttle_court_rejected=rejected))
+    assert result_res["eligible"] is True or "court_rejected_shuttle" not in result_res["reasons"]
+    assert result_res["score"] == pytest.approx(0.8)  # soft −0.20 only
+    assert "court_rejected_shuttle" not in result_res["reasons"]
+
+    monkeypatch.setattr(settings_mod.settings, "bst_shuttle_norm", "court")
+    result_court = evaluate_bst_clip_quality(_provenance(shuttle_court_rejected=rejected))
+    assert result_court["eligible"] is False
+    assert "court_rejected_shuttle" in result_court["reasons"]
 
 
 def test_quality_does_not_hard_reject_repaired_court_rejected_points():
@@ -75,7 +95,10 @@ def test_quality_does_not_hard_reject_repaired_court_rejected_points():
     assert result["reasons"] == []
 
 
-def test_quality_accumulates_all_failed_hard_checks_and_clamps_score():
+def test_quality_accumulates_all_failed_hard_checks_and_clamps_score(monkeypatch):
+    from app.config import settings as settings_mod
+
+    monkeypatch.setattr(settings_mod.settings, "bst_shuttle_norm", "court")
     result = evaluate_bst_clip_quality(_provenance(
         video_len=11,
         shuttle_observed=[True] * 3 + [False] * 8,
