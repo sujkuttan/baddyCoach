@@ -77,3 +77,20 @@ def test_shuttle_in_court_fraction_and_reliability_flag():
     frac = compute_shuttle_in_court_fraction(df, np.eye(3), min_conf=0.5, oob_margin=1.0)
     # 2 of 3 high-conf points in bounds
     assert frac == pytest.approx(2 / 3, abs=1e-6)
+
+
+def test_add_court_space_skips_rejection_when_geometry_unreliable(monkeypatch):
+    from app.pipeline import shuttle
+
+    monkeypatch.setattr(shuttle.settings, "shuttle_oob_margin_meters", 0.25, raising=False)
+    df = pd.DataFrame({
+        "frame": [0, 1],
+        "x": [20.0, 21.0],  # OOB under identity H
+        "y": [1.0, 1.0],
+        "confidence": [0.9, 0.9],
+    })
+    enriched = _add_court_space_columns(
+        df, np.eye(3), fps=30.0, geometry_reliable=False
+    )
+    assert enriched["court_rejected"].tolist() == [False, False]
+    assert enriched["x"].tolist() == [20.0, 21.0]

@@ -52,7 +52,7 @@ from app.pipeline.shared.utils import (
 )
 from app.pipeline.shared.core import STROKE_CLASSES, _get_gpu_batch_config
 from app.pipeline.shared.models import ensure_model, MODEL_REGISTRY
-from app.pipeline.shuttle import _add_court_space_columns
+from app.pipeline.shuttle import _add_court_space_columns, compute_shuttle_in_court_fraction
 from app.pipeline.shared.shuttle_utils import clean_trajectory
 
 CKPT_DIR = Path("ckpts")
@@ -1274,8 +1274,24 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             store.set_parquet("shuttle_raw", shuttle_df.copy())
 
         if court and court.get("valid", False) and court.get("homography") is not None:
-            shuttle_df = _add_court_space_columns(shuttle_df, np.array(court["homography"]), float(video_fps))
-            print("  Added court-space columns to shuttle data")
+            from app.pipeline.shared.court import court_geometry_reliable
+
+            H = np.array(court["homography"])
+            frac = compute_shuttle_in_court_fraction(
+                shuttle_df, H,
+                min_conf=settings.court_shuttle_reliability_min_conf,
+                oob_margin=settings.shuttle_oob_margin_meters,
+            )
+            geom_ok = bool(court.get("valid")) and court_geometry_reliable(
+                court.get("corners_pixel") or court.get("corners")
+            )
+            geom_ok = geom_ok and frac >= settings.court_shuttle_in_bounds_min_fraction
+            court["geometry_reliable"] = geom_ok
+            court["shuttle_in_court_fraction"] = frac
+            shuttle_df = _add_court_space_columns(
+                shuttle_df, H, float(video_fps), geometry_reliable=geom_ok
+            )
+            print(f"  Added court-space columns to shuttle data (reliable={geom_ok}, frac={frac:.2f})")
 
         store.set_parquet("shuttle", shuttle_df)
 

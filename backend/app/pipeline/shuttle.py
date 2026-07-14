@@ -9,13 +9,20 @@ from app.pipeline.shared.shuttle_utils import clean_trajectory, ShuttleSmoother
 from app.config.settings import settings
 
 
-def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.DataFrame:
+def _add_court_space_columns(
+    df: pd.DataFrame, H: np.ndarray, fps: float, *, geometry_reliable: bool = True
+) -> pd.DataFrame:
     """Add court-space coordinates, speed, and direction to shuttle dataframe.
 
     Computes x_court, y_court (metres via homography), speed_court (m/s),
     and direction_x, direction_y (normalised) for each valid detection. Points
     beyond the configured court margin or with an impossible consecutive speed
     are marked ``court_rejected`` and retain their raw pixel coordinates.
+
+    When ``geometry_reliable`` is False (e.g. a low-quality homography), court
+    coordinates are still written for diagnostics but neither the out-of-bounds
+    nor the speed-veto rejection paths fire — the raw pixel coordinates are
+    preserved and ``court_rejected`` stays False.
     """
     from app.pipeline.shared.court import image_to_court, COURT_LENGTH, COURT_WIDTH
 
@@ -39,7 +46,9 @@ def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.
                 or cy < -settings.shuttle_oob_margin_meters
                 or cy > COURT_WIDTH + settings.shuttle_oob_margin_meters
             )
-            if out_of_bounds:
+            # When geometry is unreliable (bad homography), never reject on
+            # out-of-bounds — still record court coords for diagnostics.
+            if out_of_bounds and geometry_reliable:
                 court_rejected[i] = True
                 prev_cx, prev_cy = None, None
                 continue
@@ -51,7 +60,8 @@ def _add_court_space_columns(df: pd.DataFrame, H: np.ndarray, fps: float) -> pd.
                 dx = cx - prev_cx
                 dy = cy - prev_cy
                 speed = np.sqrt(dx * dx + dy * dy) * fps
-                if speed > settings.shuttle_max_speed_mps:
+                # Speed veto only applies when geometry is trustworthy.
+                if speed > settings.shuttle_max_speed_mps and geometry_reliable:
                     court_rejected[i] = True
                     court_xs[i] = np.nan
                     court_ys[i] = np.nan
@@ -227,9 +237,22 @@ class ShuttleTrackingStage:
         metadata = artifacts.get("video_metadata") or {}
         fps = metadata.get("fps", settings.fps)
         if court and court.get("valid", False) and court.get("homography") is not None:
+            from app.pipeline.shared.court import court_geometry_reliable
+
             H = np.array(court["homography"])
-            df = _add_court_space_columns(df, H, float(fps))
-            logger.info("Added court-space columns to shuttle data")
+            frac = compute_shuttle_in_court_fraction(
+                df, H,
+                min_conf=settings.court_shuttle_reliability_min_conf,
+                oob_margin=settings.shuttle_oob_margin_meters,
+            )
+            geom_ok = bool(court.get("valid")) and court_geometry_reliable(
+                court.get("corners_pixel") or court.get("corners")
+            )
+            geom_ok = geom_ok and frac >= settings.court_shuttle_in_bounds_min_fraction
+            court["geometry_reliable"] = geom_ok
+            court["shuttle_in_court_fraction"] = frac
+            df = _add_court_space_columns(df, H, float(fps), geometry_reliable=geom_ok)
+            logger.info("Court shuttle reliability", fraction=frac, reliable=geom_ok)
 
         # Compute derived kinematics (velocity, acceleration, curvature)
         smoother = ShuttleSmoother(settings)
