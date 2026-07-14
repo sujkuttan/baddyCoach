@@ -134,6 +134,7 @@ def test_build_clip_resolution_mode_keeps_court_rejected_pixel_shuttle(monkeypat
     from app.pipeline.strokes import _build_clip, settings
 
     monkeypatch.setattr(settings, "bst_shuttle_norm", "resolution")
+    monkeypatch.setattr(settings, "bst_shuttle_require_raw_observation", False)
     frames = [0, 1, 2]
     shuttle = pd.DataFrame({
         "frame": frames,
@@ -211,6 +212,56 @@ def test_build_clip_court_mode_zeros_court_rejected_shuttle(monkeypatch):
 
     np.testing.assert_array_equal(clip["shuttle"][1], [0.0, 0.0])
     assert clip["_bst_provenance"]["shuttle_court_rejected"][1] is True
+
+
+def test_build_clip_skips_repaired_and_interpolated_when_require_raw(monkeypatch):
+    from app.pipeline.strokes import _build_clip, settings
+
+    monkeypatch.setattr(settings, "bst_shuttle_norm", "resolution")
+    monkeypatch.setattr(settings, "bst_shuttle_require_raw_observation", True)
+    frames = [0, 1, 2]
+    # Frame 1: cleaned has xy + interpolated, raw repaired -> tensor stays 0
+    shuttle = pd.DataFrame({
+        "frame": frames,
+        "x": [100.0, 200.0, 300.0],
+        "y": [100.0, 200.0, 300.0],
+        "confidence": [0.9, 0.9, 0.9],
+        "was_interpolated": [False, True, False],
+        "court_rejected": [False, False, False],
+    })
+    shuttle_raw = pd.DataFrame({
+        "frame": frames,
+        "x": [100.0, 200.0, 300.0],
+        "y": [100.0, 200.0, 300.0],
+        "confidence": [0.9, 0.0, 0.9],
+        "was_repaired": [False, True, False],
+    })
+    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    pose = pd.DataFrame([
+        {"frame": frame, "player_id": player, "keypoints": keypoints.tolist()}
+        for frame in frames for player in ("player_1", "player_2")
+    ])
+    players = [
+        {"id": "player_1", "side": "near", "detections": [
+            {"frame": frame, "bbox": [0, 0, 100, 100]} for frame in frames
+        ]},
+        {"id": "player_2", "side": "far", "detections": [
+            {"frame": frame, "bbox": [200, 0, 300, 100]} for frame in frames
+        ]},
+    ]
+
+    clip = _build_clip(
+        frames, shuttle, pose, 640, 480, 13.4, 6.1, 3,
+        player_detections=players, player_ids=["player_1", "player_2"],
+        shuttle_raw=shuttle_raw,
+    )
+
+    # Frame 1: raw repaired -> no tensor written, provenance still records it
+    np.testing.assert_array_equal(clip["shuttle"][1], [0.0, 0.0])
+    assert clip["_bst_provenance"]["shuttle_repaired"][1] is True
+    # Frames 0 and 2: raw observed -> tensor written
+    np.testing.assert_allclose(clip["shuttle"][0], [100.0 / 640.0, 100.0 / 480.0], atol=1e-6)
+    np.testing.assert_allclose(clip["shuttle"][2], [300.0 / 640.0, 300.0 / 480.0], atol=1e-6)
 
 
 class _QualityGateClassifier:

@@ -278,6 +278,8 @@ def _build_clip(
             not court_rejected or settings.bst_shuttle_norm != "court"
         )
         if use_for_tensor:
+            if settings.bst_shuttle_require_raw_observation and not raw_observed:
+                continue  # leave zeros; provenance already recorded
             s_conf = float(clean_row.get('confidence', 1.0))
             if s_conf >= settings.shuttle_min_conf:
                 sx = float(clean_row['x'])
