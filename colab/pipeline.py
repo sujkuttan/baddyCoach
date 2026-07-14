@@ -1036,32 +1036,33 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     if detected_corners is not None:
         corners = detected_corners
     else:
-        margin_x = int(vid_w * 0.08)
-        court_top = int(vid_h * 0.28)
-        court_bottom = int(vid_h * 0.72)
-        corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
-                   (margin_x, court_top), (vid_w - margin_x, court_top)]
-        print(f"  Using proportional corners: {corners}")
-
-    # Last-resort default corners — only when explicitly enabled, since they
-    # are often wrong for arbitrary phone framing.
-    if corners is None and use_default_corners:
-        default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
-        if default_corners_path.exists():
-            try:
-                raw = json.loads(default_corners_path.read_text())
-                if raw and len(raw) == 4:
-                    corners = [(int(pt[0]), int(pt[1])) for pt in raw]
-                    detection_method = "manual (default_corners.json)"
-                    print("!" * 60)
-                    print("  WARNING: using repo default_corners.json for court geometry.")
-                    print("  This geometry may NOT match your video and produces unreliable")
-                    print("  homography-based cues (zones, contact height, physics).")
-                    print("  Prefer CourtCornerSetup or {output_dir}/manual_corners.json instead.")
-                    print(f"  Loaded default corners: {corners}")
-                    print("!" * 60)
-            except Exception as e:
-                print(f"  Warning: failed to load default_corners.json: {e}")
+        # Only when the user explicitly opts in: try repo default corners
+        # before the generic proportional rectangle. default_corners.json is
+        # often wrong for arbitrary phone framing, so it is NOT applied silently.
+        if use_default_corners:
+            default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
+            if default_corners_path.exists():
+                try:
+                    raw = json.loads(default_corners_path.read_text())
+                    if raw and len(raw) == 4:
+                        corners = [(int(pt[0]), int(pt[1])) for pt in raw]
+                        detection_method = "manual (default_corners.json)"
+                        print("!" * 60)
+                        print("  WARNING: using repo default_corners.json for court geometry.")
+                        print("  This geometry may NOT match your video and produces unreliable")
+                        print("  homography-based cues (zones, contact height, physics).")
+                        print("  Prefer CourtCornerSetup or {output_dir}/manual_corners.json instead.")
+                        print(f"  Loaded default corners: {corners}")
+                        print("!" * 60)
+                except Exception as e:
+                    print(f"  Warning: failed to load default_corners.json: {e}")
+        if corners is None:
+            margin_x = int(vid_w * 0.08)
+            court_top = int(vid_h * 0.28)
+            court_bottom = int(vid_h * 0.72)
+            corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
+                       (margin_x, court_top), (vid_w - margin_x, court_top)]
+            print(f"  Using proportional corners: {corners}")
 
     corrected_corners = _correct_court_points(corners)
     court = stage_court_detection(corrected_corners)
