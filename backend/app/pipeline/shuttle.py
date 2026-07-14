@@ -253,6 +253,7 @@ class ShuttleTrackingStage:
             court["shuttle_in_court_fraction"] = frac
             df = _add_court_space_columns(df, H, float(fps), geometry_reliable=geom_ok)
             logger.info("Court shuttle reliability", fraction=frac, reliable=geom_ok)
+            artifacts.set("court", court)
 
         # Compute derived kinematics (velocity, acceleration, curvature)
         smoother = ShuttleSmoother(settings)

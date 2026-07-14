@@ -1291,6 +1291,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             shuttle_df = _add_court_space_columns(
                 shuttle_df, H, float(video_fps), geometry_reliable=geom_ok
             )
+            store.set("court", court)
             print(f"  Added court-space columns to shuttle data (reliable={geom_ok}, frac={frac:.2f})")
 
         store.set_parquet("shuttle", shuttle_df)
