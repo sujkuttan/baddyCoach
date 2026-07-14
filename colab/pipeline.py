@@ -32,6 +32,16 @@ if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
 from app.config.settings import settings
+from app.models.tracknet import (
+    InpaintNet,
+    _accept_detection_candidate,
+    _clamp_crop_rect,
+    _court_crop_rect,
+    _extract_component_candidates,
+    _gate_tracknet_spikes,
+    _merge_far_tile_tracks,
+    _select_detection_candidate,
+)
 from app.pipeline.shared.court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT,
     _correct_court_points, compute_homography, image_to_court, HomographySmoother,
@@ -57,82 +67,6 @@ COURT_KP_MODEL_PATH = MODEL_REGISTRY["court_kprcnn"][0]
 RTMOPOSE_PATH_ALT = MODEL_REGISTRY["rtmpose"][0]
 BST_PATH = MODEL_REGISTRY["bst_colab"][0]
 HRNET_PATH = MODEL_REGISTRY["hrnet"][0]
-
-
-def _extract_component_candidates(probabilities: np.ndarray, orig_w: int, orig_h: int,
-                                  threshold: float, max_components: int) -> list[tuple[float, float, float, int]]:
-    binary = (probabilities >= threshold).astype(np.uint8)
-    n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(binary, connectivity=8)
-    if n_labels <= 1:
-        return []
-    order = np.argsort(stats[1:, cv2.CC_STAT_AREA])[::-1]
-    candidates = []
-    for offset in order[:max_components]:
-        component = 1 + int(offset)
-        component_mask = labels == component
-        x_center, y_center = centroids[component]
-        confidence = float(probabilities[component_mask].max())
-        area = int(stats[component, cv2.CC_STAT_AREA])
-        candidates.append((
-            float(x_center * orig_w / 512),
-            float(y_center * orig_h / 288),
-            confidence,
-            area,
-        ))
-    return candidates
-
-
-def _select_detection_candidate(candidates, prev_accepted, prev_prev_accepted,
-                                *, motion_weight: float, confidence_weight: float,
-                                distance_scale_px: float):
-    if not candidates:
-        return None
-    if prev_accepted is None:
-        return candidates[0]
-    if prev_prev_accepted is None:
-        pred_x, pred_y = float(prev_accepted[0]), float(prev_accepted[1])
-    else:
-        pred_x = float(prev_accepted[0] + (prev_accepted[0] - prev_prev_accepted[0]))
-        pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
-    scale = max(float(distance_scale_px), 1.0)
-    best = None
-    best_score = -np.inf
-    for candidate in candidates:
-        x, y, conf, _area = candidate
-        dist = float(np.hypot(x - pred_x, y - pred_y))
-        motion_score = 1.0 / (1.0 + dist / scale)
-        score = float(motion_weight) * motion_score + float(confidence_weight) * float(conf)
-        if score > best_score:
-            best = candidate
-            best_score = score
-    return best
-
-
-def _accept_detection_candidate(candidate, prev_accepted, prev_prev_accepted, *, min_conf: float,
-                                trust_min_conf: float, low_conf_max_jump_px: float,
-                                distance_scale_px: float) -> bool:
-    if candidate is None:
-        return False
-    x, y, conf = candidate[:3]
-    if conf < min_conf:
-        return False
-    if prev_accepted is None or conf >= trust_min_conf:
-        return True
-    direct_dx = float(x - prev_accepted[0])
-    direct_dy = float(y - prev_accepted[1])
-    direct_jump = float(np.hypot(direct_dx, direct_dy))
-    if direct_jump <= float(low_conf_max_jump_px):
-        return True
-    if prev_prev_accepted is None:
-        pred_x, pred_y = float(prev_accepted[0]), float(prev_accepted[1])
-    else:
-        pred_x = float(prev_accepted[0] + (prev_accepted[0] - prev_prev_accepted[0]))
-        pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
-    motion_dist = float(np.hypot(x - pred_x, y - pred_y))
-    return motion_dist <= max(float(distance_scale_px), 1.0)
-
-
-
 
 def setup_models(device: str, pose_model: str = "rtmpose"):
     import os as _os
@@ -260,7 +194,6 @@ class TrackNetV3:
 
         if inpaintnet_path and Path(inpaintnet_path).exists():
             try:
-                from app.models.tracknet import InpaintNet
                 checkpoint = torch.load(inpaintnet_path, map_location=device, weights_only=False)
                 state_dict = checkpoint
                 while isinstance(state_dict, dict):
@@ -408,16 +341,20 @@ class TrackNetV3:
                                float(np.clip(point[1], 0.0, 1.0) * orig_h), 0.0)
         return repaired
 
-    def predict_batch(self, frames, original_size=None):
+    def _predict_raw_detections(self, frames, *, original_size=None, crop_rect=None, heat_threshold=None):
         import torch
-        if self.model is None or len(frames) < 3:
-            return [{"x": 0, "y": 0, "confidence": 0} for _ in frames]
+        if self.model is None or len(frames) < 1:
+            return [None for _ in frames]
 
         ow = original_size[0] if original_size else frames[0].shape[1]
         oh = original_size[1] if original_size else frames[0].shape[0]
+        clamped_crop = _clamp_crop_rect(crop_rect, ow, oh) if crop_rect is not None else None
 
         preprocessed = np.empty((len(frames), self.input_height, self.input_width, 3), dtype=np.float32)
         for i, f in enumerate(frames):
+            if clamped_crop is not None:
+                x0, y0, x1, y1 = clamped_crop
+                f = f[y0:y1, x0:x1]
             r = cv2.resize(f, (self.input_width, self.input_height))
             r = cv2.cvtColor(r, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
             preprocessed[i] = r
@@ -449,7 +386,12 @@ class TrackNetV3:
             for j in range(len(windows)):
                 hm = heatmaps[j]
                 candidates = _extract_component_candidates(
-                    hm, ow, oh, settings.shuttle_min_conf, settings.tracknet_candidate_components
+                    hm,
+                    ow,
+                    oh,
+                    float(heat_threshold if heat_threshold is not None else settings.shuttle_min_conf),
+                    settings.tracknet_candidate_components,
+                    crop_rect=clamped_crop,
                 )
                 detection = _select_detection_candidate(
                     candidates,
@@ -475,6 +417,65 @@ class TrackNetV3:
                 else:
                     raw_results[chunk_start + j] = None
             del tensor, out, heatmaps, batch, windows
+        return raw_results
+
+    def predict_batch(self, frames, original_size=None, crop_rect=None, far_crop_rect=None,
+                      far_threshold=None, net_y=None):
+        if self.model is None or len(frames) < 1:
+            return [{"x": 0, "y": 0, "confidence": 0} for _ in frames]
+
+        ow = original_size[0] if original_size else frames[0].shape[1]
+        oh = original_size[1] if original_size else frames[0].shape[0]
+
+        primary_raw = self._predict_raw_detections(
+            list(frames),
+            original_size=(ow, oh),
+            crop_rect=crop_rect,
+            heat_threshold=settings.shuttle_min_conf,
+        )
+        primary_points = np.array([
+            (item[0], item[1]) if item is not None else (np.nan, np.nan)
+            for item in primary_raw
+        ], dtype=np.float64)
+        primary_points, primary_removed = _gate_tracknet_spikes(
+            primary_points,
+            max_step_px=settings.tracknet_pre_rectify_max_image_step_px,
+        )
+        raw_results = [
+            item if np.isfinite(primary_points[index]).all() else None
+            for index, item in enumerate(primary_raw)
+        ]
+
+        far_removed = 0
+        far_filled = 0
+        if far_crop_rect is not None and net_y is not None:
+            far_raw = self._predict_raw_detections(
+                list(frames),
+                original_size=(ow, oh),
+                crop_rect=far_crop_rect,
+                heat_threshold=float(far_threshold if far_threshold is not None else settings.tracknet_far_heat_threshold),
+            )
+            far_points = np.array([
+                (item[0], item[1]) if item is not None else (np.nan, np.nan)
+                for item in far_raw
+            ], dtype=np.float64)
+            far_points, far_removed = _gate_tracknet_spikes(
+                far_points,
+                max_step_px=settings.tracknet_pre_rectify_max_image_step_px,
+            )
+            merged_points, far_filled = _merge_far_tile_tracks(
+                primary_points,
+                far_points,
+                net_y=float(net_y),
+            )
+            for index in range(len(raw_results)):
+                if np.isnan(merged_points[index]).any():
+                    raw_results[index] = None
+                elif np.isnan(primary_points[index]).any() and np.isfinite(far_points[index]).all():
+                    raw_results[index] = far_raw[index]
+        if primary_removed or far_removed or far_filled:
+            print(f"  TrackNet pre-rectify gating: primary_removed={primary_removed} "
+                  f"far_removed={far_removed} far_filled={far_filled}")
 
         original_missing = [item is None for item in raw_results]
         rectified = self._rectify_trajectory(raw_results, ow, oh)
@@ -1062,6 +1063,33 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     tracker = YOLOv8Tracker(conf_threshold=0.5, device=device, yolo_chunk=gpu_cfg["yolo_chunk"], yolo_batch=gpu_cfg["yolo_batch"])
     tracknet = TrackNetV3(str(TRACKNET_PATH), device=device, chunk_size=gpu_cfg["tracknet_chunk"],
                           inpaintnet_path=str(INPAINTNET_PATH) if INPAINTNET_PATH.exists() else None)
+    tracknet_aspect = float(tracknet.input_width) / float(tracknet.input_height)
+    tracknet_crop_rect = None
+    tracknet_far_crop_rect = None
+    if settings.tracknet_court_crop_enabled and corners and len(corners) >= 4:
+        tracknet_crop_rect = _court_crop_rect(
+            corners,
+            {
+                "left": settings.tracknet_crop_margin_left,
+                "right": settings.tracknet_crop_margin_right,
+                "top": settings.tracknet_crop_margin_top,
+                "bottom": settings.tracknet_crop_margin_bottom,
+            },
+            aspect=tracknet_aspect,
+        )
+        print(f"  TrackNet court crop: {tuple(round(v) for v in tracknet_crop_rect)}")
+    if settings.tracknet_far_tile_enabled and valid and corners and len(corners) >= 4:
+        tracknet_far_crop_rect = _court_crop_rect(
+            corners,
+            {
+                "left": settings.tracknet_far_margin_left,
+                "right": settings.tracknet_far_margin_right,
+                "top": settings.tracknet_far_margin_top,
+                "bottom": settings.tracknet_far_margin_bottom,
+            },
+            aspect=tracknet_aspect,
+        )
+        print(f"  TrackNet far tile: {tuple(round(v) for v in tracknet_far_crop_rect)}")
     pose_estimator = None
     pose_estimator_secondary = None
 
@@ -1134,7 +1162,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                                batch_count, total_batches,
                                pose_estimator_secondary=pose_estimator_secondary,
                                all_pose_secondary=all_pose_secondary,
-                               pose_model_name=pose_display_name, corners=corners)
+                               pose_model_name=pose_display_name, corners=corners,
+                               crop_rect=tracknet_crop_rect, far_crop_rect=tracknet_far_crop_rect)
                 batch_frames = []
                 batch_global_indices = []
                 gc.collect()
@@ -1154,7 +1183,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                        batch_count, total_batches,
                        pose_estimator_secondary=pose_estimator_secondary,
                        all_pose_secondary=all_pose_secondary,
-                       pose_model_name=pose_display_name, corners=corners)
+                       pose_model_name=pose_display_name, corners=corners,
+                       crop_rect=tracknet_crop_rect, far_crop_rect=tracknet_far_crop_rect)
         gc.collect()
 
     cap.release()
@@ -1487,7 +1517,8 @@ def _process_batch(frames, global_indices, batch_start_offset,
                    tracker, tracknet, pose_estimator, device,
                    all_shuttle, all_det, all_pose, all_player_detections, batch_num=0, total_batches=0,
                    pose_estimator_secondary=None, all_pose_secondary=None,
-                   pose_model_name="rtmpose", corners=None):
+                   pose_model_name="rtmpose", corners=None,
+                   crop_rect=None, far_crop_rect=None):
     """Run ML stages on one batch of frames, append results to accumulators."""
     if not frames:
         return
@@ -1550,7 +1581,15 @@ def _process_batch(frames, global_indices, batch_start_offset,
     # 2. Shuttle tracking (TrackNet)
     tqdm.write(f"{tag} | TrackNet shuttle tracking...")
     ow, oh = frames[0].shape[1], frames[0].shape[0]
-    shuttle_preds = tracknet.predict_batch(frames, original_size=(ow, oh))
+    net_y = float(np.mean([corner[1] for corner in corners])) if corners and len(corners) >= 4 else None
+    shuttle_preds = tracknet.predict_batch(
+        frames,
+        original_size=(ow, oh),
+        crop_rect=crop_rect,
+        far_crop_rect=far_crop_rect,
+        far_threshold=settings.tracknet_far_heat_threshold,
+        net_y=net_y,
+    )
     try:
         import torch; torch.cuda.empty_cache()
     except Exception:

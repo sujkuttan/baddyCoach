@@ -122,3 +122,12 @@ def test_colab_uses_continuity_aware_tracknet_candidate_selection():
     assert "_extract_component_candidates" in source
     assert "_select_detection_candidate" in source
     assert "tracknet_component_motion_weight" in source
+
+
+def test_colab_reuses_backend_tracknet_crop_and_merge_helpers():
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    assert "from app.models.tracknet import (" in source
+    assert "_court_crop_rect" in source
+    assert "_gate_tracknet_spikes" in source
+    assert "_merge_far_tile_tracks" in source

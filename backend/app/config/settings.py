@@ -48,6 +48,18 @@ class Settings(BaseSettings):
     tracknet_component_motion_weight: float = 0.70  # continuity weight when selecting among candidate blobs
     tracknet_component_confidence_weight: float = 0.30  # confidence weight when selecting among candidate blobs
     tracknet_component_distance_scale_px: float = 120.0  # px scale for continuity penalty normalization
+    tracknet_court_crop_enabled: bool = True
+    tracknet_crop_margin_left: float = 0.15
+    tracknet_crop_margin_right: float = 0.15
+    tracknet_crop_margin_top: float = 0.25
+    tracknet_crop_margin_bottom: float = 0.10
+    tracknet_far_tile_enabled: bool = True
+    tracknet_far_margin_left: float = 0.15
+    tracknet_far_margin_right: float = 0.15
+    tracknet_far_margin_top: float = 0.60
+    tracknet_far_margin_bottom: float = -0.30
+    tracknet_far_heat_threshold: float = 0.50
+    tracknet_pre_rectify_max_image_step_px: float = 250.0
 
     # Frame defaults (used when real video resolution is unavailable)
     default_frame_width: int = 1280

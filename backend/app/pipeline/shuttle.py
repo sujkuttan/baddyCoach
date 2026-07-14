@@ -106,7 +106,7 @@ class ShuttleTrackingStage:
             return self._store_data(artifacts, shuttle_data)
 
         if frames:
-            shuttle_data = self._run_tracknet(frames)
+            shuttle_data = self._run_tracknet(frames, artifacts)
             if shuttle_data is None:
                 return StageResult.from_error("TrackNet model not available, cannot perform shuttle tracking")
             self._store_resolution(artifacts, frames)
@@ -114,13 +114,14 @@ class ShuttleTrackingStage:
 
         return StageResult.from_error("No frames or shuttle data provided")
 
-    def _run_tracknet(self, frames: list[np.ndarray]) -> list[dict]:
+    def _run_tracknet(self, frames: list[np.ndarray], artifacts: ArtifactStore | None = None) -> list[dict]:
         """Run TrackNetV3 on video frames with InpaintNet trajectory rectification.
 
         Model loading stays local to this stage (not via shared.models.setup_models)
         to keep the colab pipeline's self-contained model loading approach intact.
         """
         from app.pipeline.shared.models import get_tracknet
+        from app.models.tracknet import _court_crop_rect
 
         model = get_tracknet()
         if model is None:
@@ -128,7 +129,50 @@ class ShuttleTrackingStage:
             return None
 
         original_size = (frames[0].shape[1], frames[0].shape[0]) if frames else (settings.default_frame_width, settings.default_frame_height)
-        predictions = model.predict_batch(frames, original_size=original_size)
+        court = artifacts.get("court") if artifacts is not None else None
+        corners = court.get("corners_pixel") if court else None
+        aspect = float(model.input_width) / float(model.input_height)
+        crop_rect = None
+        far_crop_rect = None
+        net_y = None
+        if settings.tracknet_court_crop_enabled and corners and len(corners) >= 4:
+            crop_rect = _court_crop_rect(
+                corners,
+                margins={
+                    "left": settings.tracknet_crop_margin_left,
+                    "right": settings.tracknet_crop_margin_right,
+                    "top": settings.tracknet_crop_margin_top,
+                    "bottom": settings.tracknet_crop_margin_bottom,
+                },
+                aspect=aspect,
+            )
+        if (
+            settings.tracknet_far_tile_enabled
+            and court
+            and court.get("valid", False)
+            and corners
+            and len(corners) >= 4
+        ):
+            far_crop_rect = _court_crop_rect(
+                corners,
+                margins={
+                    "left": settings.tracknet_far_margin_left,
+                    "right": settings.tracknet_far_margin_right,
+                    "top": settings.tracknet_far_margin_top,
+                    "bottom": settings.tracknet_far_margin_bottom,
+                },
+                aspect=aspect,
+            )
+            net_y = float(np.mean([corner[1] for corner in corners]))
+
+        predictions = model.predict_batch(
+            frames,
+            original_size=original_size,
+            crop_rect=crop_rect,
+            far_crop_rect=far_crop_rect,
+            far_threshold=settings.tracknet_far_heat_threshold,
+            net_y=net_y,
+        )
 
         shuttle_data = []
         for i, pred in enumerate(predictions):

@@ -115,6 +115,105 @@ def test_triangular_overlap_aggregation_weights_central_predictions_more():
     assert aggregate.shape == (11, 1, 1)
     assert aggregate[4, 0, 0] == pytest.approx(4 / 6)
 
+
+@pytest.mark.cpu_only
+def test_court_crop_rect_expands_bbox_and_preserves_tracknet_aspect():
+    from app.models.tracknet import _court_crop_rect
+
+    corners = [(100, 620), (1180, 620), (300, 180), (980, 180)]
+    crop = _court_crop_rect(
+        corners,
+        margins={"left": 0.10, "right": 0.05, "top": 0.20, "bottom": 0.10},
+        aspect=512.0 / 288.0,
+    )
+
+    x0, y0, x1, y1 = crop
+    assert x0 < 100.0
+    assert x1 > 1180.0
+    assert y0 < 180.0
+    assert y1 > 620.0
+    assert ((x1 - x0) / (y1 - y0)) == pytest.approx(512.0 / 288.0)
+
+
+@pytest.mark.cpu_only
+def test_map_detection_to_full_frame_undoes_crop_resize():
+    from app.models.tracknet import _map_detection_to_full_frame
+
+    crop_rect = (100.0, 50.0, 900.0, 500.0)
+    full_x, full_y = _map_detection_to_full_frame(256.0, 144.0, crop_rect)
+
+    assert full_x == pytest.approx(500.0)
+    assert full_y == pytest.approx(275.0)
+
+
+@pytest.mark.cpu_only
+def test_gate_tracknet_spikes_removes_out_and_back_teleport():
+    from app.models.tracknet import _gate_tracknet_spikes
+
+    points = np.array([
+        [10.0, 10.0],
+        [20.0, 20.0],
+        [300.0, 300.0],
+        [30.0, 30.0],
+        [40.0, 40.0],
+    ], dtype=np.float64)
+
+    gated, removed = _gate_tracknet_spikes(points, max_step_px=100.0)
+
+    assert removed == 1
+    assert np.isnan(gated[2]).all()
+    assert np.allclose(gated[[0, 1, 3, 4]], points[[0, 1, 3, 4]])
+
+
+@pytest.mark.cpu_only
+def test_gate_tracknet_spikes_keeps_fast_monotonic_motion_and_edge_singletons():
+    from app.models.tracknet import _gate_tracknet_spikes
+
+    monotonic = np.array([
+        [0.0, 0.0],
+        [90.0, 0.0],
+        [180.0, 0.0],
+    ], dtype=np.float64)
+    gated_monotonic, removed_monotonic = _gate_tracknet_spikes(monotonic, max_step_px=100.0)
+    assert removed_monotonic == 0
+    assert np.allclose(gated_monotonic, monotonic)
+
+    edge_singletons = np.array([
+        [300.0, 300.0],
+        [20.0, 20.0],
+        [30.0, 30.0],
+        [400.0, 400.0],
+    ], dtype=np.float64)
+    gated_edges, removed_edges = _gate_tracknet_spikes(edge_singletons, max_step_px=100.0)
+    assert removed_edges == 0
+    assert np.allclose(gated_edges, edge_singletons)
+
+
+@pytest.mark.cpu_only
+def test_merge_far_tile_tracks_only_fills_missing_far_half_frames():
+    from app.models.tracknet import _merge_far_tile_tracks
+
+    primary = np.array([
+        [100.0, 100.0],
+        [np.nan, np.nan],
+        [500.0, 500.0],
+        [np.nan, np.nan],
+    ], dtype=np.float64)
+    far = np.array([
+        [150.0, 120.0],
+        [200.0, 140.0],
+        [550.0, 160.0],
+        [250.0, 420.0],
+    ], dtype=np.float64)
+
+    merged, filled = _merge_far_tile_tracks(primary, far, net_y=300.0)
+
+    assert filled == 1
+    assert np.allclose(merged[0], primary[0])
+    assert np.allclose(merged[1], far[1])
+    assert np.allclose(merged[2], primary[2])
+    assert np.isnan(merged[3]).all()
+
 @pytest.mark.cpu_only
 def test_tracknet_model_forward():
     """Verify custom UNet backbone produces correct output shape."""

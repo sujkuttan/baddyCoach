@@ -182,6 +182,79 @@ TRACKNET_SEQUENCE_LENGTH = 8
 TRACKNET_BACKGROUND_MODE = "concat"
 
 
+def _court_crop_rect(
+    corners: list[tuple[int, int]] | list[list[int]],
+    margins: dict[str, float],
+    aspect: float = INPUT_WIDTH / INPUT_HEIGHT,
+) -> tuple[float, float, float, float]:
+    """Expand the detected court box and grow it to the TrackNet aspect ratio."""
+    pts = np.asarray(corners, dtype=np.float64)
+    x0, y0 = float(pts[:, 0].min()), float(pts[:, 1].min())
+    x1, y1 = float(pts[:, 0].max()), float(pts[:, 1].max())
+    court_w = max(x1 - x0, 1.0)
+    court_h = max(y1 - y0, 1.0)
+
+    x0 -= float(margins.get("left", 0.0)) * court_w
+    x1 += float(margins.get("right", 0.0)) * court_w
+    y0 -= float(margins.get("top", 0.0)) * court_h
+    y1 += float(margins.get("bottom", 0.0)) * court_h
+
+    width = max(x1 - x0, 1.0)
+    height = max(y1 - y0, 1.0)
+    if width / height < aspect:
+        target_width = aspect * height
+        center_x = (x0 + x1) * 0.5
+        x0 = center_x - target_width * 0.5
+        x1 = center_x + target_width * 0.5
+    else:
+        target_height = width / aspect
+        center_y = (y0 + y1) * 0.5
+        y0 = center_y - target_height * 0.5
+        y1 = center_y + target_height * 0.5
+
+    return x0, y0, x1, y1
+
+
+def _clamp_crop_rect(
+    crop_rect: tuple[float, float, float, float] | None,
+    frame_width: int,
+    frame_height: int,
+) -> tuple[int, int, int, int]:
+    """Clamp a crop rectangle to a concrete frame and ensure non-zero size."""
+    if crop_rect is None:
+        return 0, 0, int(frame_width), int(frame_height)
+
+    x0, y0, x1, y1 = crop_rect
+    x0_i = int(np.floor(max(0.0, min(float(x0), max(frame_width - 1, 0)))))
+    y0_i = int(np.floor(max(0.0, min(float(y0), max(frame_height - 1, 0)))))
+    x1_i = int(np.ceil(max(float(x1), x0_i + 1.0)))
+    y1_i = int(np.ceil(max(float(y1), y0_i + 1.0)))
+    x1_i = min(x1_i, int(frame_width))
+    y1_i = min(y1_i, int(frame_height))
+    if x1_i <= x0_i:
+        x1_i = min(int(frame_width), x0_i + 1)
+    if y1_i <= y0_i:
+        y1_i = min(int(frame_height), y0_i + 1)
+    return x0_i, y0_i, x1_i, y1_i
+
+
+def _map_detection_to_full_frame(
+    x: float,
+    y: float,
+    crop_rect: tuple[float, float, float, float],
+    *,
+    input_width: int = INPUT_WIDTH,
+    input_height: int = INPUT_HEIGHT,
+) -> tuple[float, float]:
+    """Map a TrackNet-space point back into full-frame image coordinates."""
+    x0, y0, x1, y1 = crop_rect
+    crop_w = max(float(x1 - x0), 1.0)
+    crop_h = max(float(y1 - y0), 1.0)
+    full_x = float(x0 + (float(x) / float(input_width)) * crop_w)
+    full_y = float(y0 + (float(y) / float(input_height)) * crop_h)
+    return full_x, full_y
+
+
 def _build_input(frames: list[np.ndarray], background: np.ndarray) -> np.ndarray:
     """Build checkpoint input: background RGB followed by eight RGB frames."""
     if len(frames) != TRACKNET_SEQUENCE_LENGTH:
@@ -241,6 +314,7 @@ def _extract_component_candidates(
     orig_h: int,
     threshold: float,
     max_components: int,
+    crop_rect: tuple[float, float, float, float] | None = None,
 ) -> list[tuple[float, float, float, int]]:
     """Return top thresholded shuttle blobs as (x, y, confidence, area)."""
     import cv2
@@ -258,9 +332,14 @@ def _extract_component_candidates(
         x_center, y_center = centroids[component]
         confidence = float(probabilities[component_mask].max())
         area = int(stats[component, cv2.CC_STAT_AREA])
+        if crop_rect is None:
+            mapped_x = float(x_center * orig_w / INPUT_WIDTH)
+            mapped_y = float(y_center * orig_h / INPUT_HEIGHT)
+        else:
+            mapped_x, mapped_y = _map_detection_to_full_frame(x_center, y_center, crop_rect)
         candidates.append((
-            float(x_center * orig_w / INPUT_WIDTH),
-            float(y_center * orig_h / INPUT_HEIGHT),
+            mapped_x,
+            mapped_y,
             confidence,
             area,
         ))
@@ -371,6 +450,49 @@ def _accept_detection_candidate(
         pred_y = float(prev_accepted[1] + (prev_accepted[1] - prev_prev_accepted[1]))
     motion_dist = float(np.hypot(x - pred_x, y - pred_y))
     return motion_dist <= max(float(distance_scale_px), 1.0)
+
+
+def _gate_tracknet_spikes(
+    shuttle_points: np.ndarray,
+    *,
+    max_step_px: float,
+) -> tuple[np.ndarray, int]:
+    """Null image-space out-and-back teleports before trajectory rectification."""
+    src = np.asarray(shuttle_points, dtype=np.float64)
+    out = src.copy()
+    valid_indices = [index for index in range(len(src)) if np.isfinite(src[index]).all()]
+    to_remove: list[int] = []
+    for offset in range(1, len(valid_indices) - 1):
+        index = valid_indices[offset]
+        prev_point = src[valid_indices[offset - 1]]
+        next_point = src[valid_indices[offset + 1]]
+        dist_prev = float(np.linalg.norm(src[index] - prev_point))
+        dist_next = float(np.linalg.norm(src[index] - next_point))
+        if dist_prev > max_step_px and dist_next > max_step_px:
+            to_remove.append(index)
+    for index in to_remove:
+        out[index] = np.nan
+    return out, len(to_remove)
+
+
+def _merge_far_tile_tracks(
+    primary_points: np.ndarray,
+    far_points: np.ndarray,
+    *,
+    net_y: float,
+) -> tuple[np.ndarray, int]:
+    """Use far-court detections only to fill missing primary detections above the net."""
+    primary = np.asarray(primary_points, dtype=np.float64)
+    far = np.asarray(far_points, dtype=np.float64)
+    if primary.shape != far.shape:
+        return primary.copy(), 0
+    out = primary.copy()
+    primary_missing = np.isnan(primary).any(axis=1)
+    far_valid = np.isfinite(far).all(axis=1)
+    far_half = far[:, 1] < float(net_y)
+    fill_mask = primary_missing & far_valid & far_half
+    out[fill_mask] = far[fill_mask]
+    return out, int(fill_mask.sum())
 
 
 class TrackNetV3:
@@ -495,47 +617,50 @@ class TrackNetV3:
             self.inpaintnet = None
             record_model_health("inpaintnet", {"loaded": False, "error": str(e)})
 
-    def _preprocess(self, frames: list[np.ndarray]) -> list[np.ndarray]:
+    def _preprocess(
+        self,
+        frames: list[np.ndarray],
+        crop_rect: tuple[float, float, float, float] | None = None,
+    ) -> list[np.ndarray]:
         """Preprocess each frame: resize → RGB → normalize.
 
         Returns list of (H, W, 3) float32 arrays in [0, 1].
         """
         import cv2
         processed = []
+        clamped_crop = _clamp_crop_rect(crop_rect, frames[0].shape[1], frames[0].shape[0]) if frames else None
         for frame in frames:
+            if clamped_crop is not None:
+                x0, y0, x1, y1 = clamped_crop
+                frame = frame[y0:y1, x0:x1]
             resized = cv2.resize(frame, (self.input_width, self.input_height))
             rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
             normalized = rgb.astype(np.float32) / 255.0
             processed.append(normalized)
         return processed
 
-    def predict_batch(self, frames: list[np.ndarray], batch_size: int | None = None,
-                      original_size: tuple | None = None) -> list[dict]:
-        """Run TrackNetV3 + InpaintNet on a batch of frames.
-
-        Args:
-            frames: List of video frames (H, W, 3) BGR.
-            batch_size: Max frames per inference batch.
-            original_size: (width, height) of original video for coordinate scaling.
-
-        Returns:
-            List of dicts with keys 'x', 'y', 'confidence' per frame.
-        """
+    def _predict_raw_detections(
+        self,
+        frames: list[np.ndarray],
+        *,
+        batch_size: int,
+        original_size: tuple[int, int],
+        crop_rect: tuple[float, float, float, float] | None,
+        heat_threshold: float,
+    ) -> list[tuple[float, float, float] | None]:
+        """Run TrackNet once and return raw per-frame detections before rectification."""
         if self.model is None:
             raise RuntimeError("TrackNetV3 backbone not loaded")
-
         if len(frames) < 1:
             raise RuntimeError("Need at least 1 frame")
-
-        if batch_size is None:
-            from app.config.gpu_batch import get_gpu_batch_config
-            batch_size = get_gpu_batch_config(self.device)["tracknet_chunk"]
-
-        orig_w, orig_h = original_size if original_size else (frames[0].shape[1], frames[0].shape[0])
-
-        preprocessed = self._preprocess(frames)
-        n_frames = len(preprocessed)
         from app.config.settings import settings
+        orig_w, orig_h = original_size
+        clamped_crop = _clamp_crop_rect(crop_rect, orig_w, orig_h) if crop_rect is not None else None
+        if clamped_crop is None:
+            preprocessed = self._preprocess(frames)
+        else:
+            preprocessed = self._preprocess(frames, crop_rect=clamped_crop)
+        n_frames = len(preprocessed)
 
         # A running mean produces the static background without materialising a
         # video-sized (frames, height, width, channels) temporary array.
@@ -585,8 +710,9 @@ class TrackNetV3:
                         aggregate,
                         orig_w,
                         orig_h,
-                        threshold=settings.shuttle_min_conf,
+                        threshold=heat_threshold,
                         max_components=settings.tracknet_candidate_components,
+                        crop_rect=clamped_crop,
                     )
                     candidate = _select_detection_candidate(
                         candidates,
@@ -615,11 +741,94 @@ class TrackNetV3:
             del batch_tensor
             if self.device != "cpu":
                 torch.cuda.empty_cache()
+        return all_raw
+
+    def predict_batch(self, frames: list[np.ndarray], batch_size: int | None = None,
+                      original_size: tuple | None = None,
+                      crop_rect: tuple[float, float, float, float] | None = None,
+                      far_crop_rect: tuple[float, float, float, float] | None = None,
+                      far_threshold: float | None = None,
+                      net_y: float | None = None) -> list[dict]:
+        """Run TrackNetV3 + optional far-tile fill + InpaintNet on a batch of frames."""
+        if self.model is None:
+            raise RuntimeError("TrackNetV3 backbone not loaded")
+
+        if len(frames) < 1:
+            raise RuntimeError("Need at least 1 frame")
+
+        if batch_size is None:
+            from app.config.gpu_batch import get_gpu_batch_config
+            batch_size = get_gpu_batch_config(self.device)["tracknet_chunk"]
+
+        orig_w, orig_h = original_size if original_size else (frames[0].shape[1], frames[0].shape[0])
+        from app.config.settings import settings
+
+        primary_raw = self._predict_raw_detections(
+            frames,
+            batch_size=batch_size,
+            original_size=(orig_w, orig_h),
+            crop_rect=crop_rect,
+            heat_threshold=settings.shuttle_min_conf,
+        )
+
+        primary_points = np.array([
+            (item[0], item[1]) if item is not None else (np.nan, np.nan)
+            for item in primary_raw
+        ], dtype=np.float64)
+        primary_points, primary_removed = _gate_tracknet_spikes(
+            primary_points,
+            max_step_px=settings.tracknet_pre_rectify_max_image_step_px,
+        )
+        all_raw = [
+            item if np.isfinite(primary_points[index]).all() else None
+            for index, item in enumerate(primary_raw)
+        ]
+
+        if far_crop_rect is not None and net_y is not None:
+            far_raw = self._predict_raw_detections(
+                frames,
+                batch_size=batch_size,
+                original_size=(orig_w, orig_h),
+                crop_rect=far_crop_rect,
+                heat_threshold=float(far_threshold if far_threshold is not None else settings.tracknet_far_heat_threshold),
+            )
+            far_points = np.array([
+                (item[0], item[1]) if item is not None else (np.nan, np.nan)
+                for item in far_raw
+            ], dtype=np.float64)
+            far_points, far_removed = _gate_tracknet_spikes(
+                far_points,
+                max_step_px=settings.tracknet_pre_rectify_max_image_step_px,
+            )
+            merged_points, far_filled = _merge_far_tile_tracks(
+                primary_points,
+                far_points,
+                net_y=float(net_y),
+            )
+            for index in range(len(all_raw)):
+                if np.isnan(merged_points[index]).any():
+                    all_raw[index] = None
+                elif np.isnan(primary_points[index]).any() and np.isfinite(far_points[index]).all():
+                    all_raw[index] = far_raw[index]
+            from app.pipeline.shared.logging import logger
+            logger.info(
+                "TrackNet pre-rectify gating",
+                primary_removed=str(primary_removed),
+                far_removed=str(far_removed),
+                far_filled=str(far_filled),
+            )
+        else:
+            from app.pipeline.shared.logging import logger
+            logger.info(
+                "TrackNet pre-rectify gating",
+                primary_removed=str(primary_removed),
+                far_removed="0",
+                far_filled="0",
+            )
 
         original_missing = [item is None for item in all_raw]
         if self.inpaintnet is not None:
             all_raw = self._rectify_trajectory(all_raw, orig_w, orig_h)
-
         results = []
         repaired_confidence = max(settings.shuttle_clean_min_conf, settings.shuttle_min_conf + 0.05)
         for frame, item in enumerate(all_raw):
