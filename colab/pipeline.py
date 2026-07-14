@@ -928,7 +928,7 @@ def _generate_report(court, players_data, shots, rallies, coach,
     }
 
 
-def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose", sample_rate: int = 0, court_corners: list[tuple[int, int]] | None = None):
+def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_model: str = "rtmpose", sample_rate: int = 0, court_corners: list[tuple[int, int]] | None = None, use_default_corners: bool = False):
     """Run the full BMCA pipeline.
 
     Keeps the GPU ML batch loop for memory efficiency (YOLO/TrackNet/RTMPose),
@@ -999,7 +999,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     ret, sample_frame = cap.read()
     cap.release()
 
-    # Fallback chain: CLI arg → manual_corners.json from output → default_corners.json in repo → auto-detect
+    # Fallback chain:
+    #   1. CLI `--court-corners` arg
+    #   2. {output_dir}/manual_corners.json
+    #   3. Auto-detect (court_kpRCNN / color+line)
+    #   4. Proportional rectangle fallback
+    #   5. ONLY if `--use-default-corners`: repo default_corners.json
     detected_corners = None
     detection_method = "none"
 
@@ -1021,25 +1026,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
             except Exception as e:
                 print(f"  Warning: failed to load {corners_path}: {e}")
 
-    if detected_corners is None:
-        default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
-        if default_corners_path.exists():
-            try:
-                raw = json.loads(default_corners_path.read_text())
-                if raw and len(raw) == 4:
-                    detected_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
-                    detection_method = "manual (default_corners.json)"
-                    print(f"  Using default corners from {default_corners_path}: {detected_corners}")
-            except Exception as e:
-                print(f"  Warning: failed to load default_corners.json: {e}")
-
     if detected_corners is None and ret and sample_frame is not None:
         detected_corners = court_kp_detector.detect_with_fallback(sample_frame)
         if detected_corners is not None:
             detection_method = "court_kpRCNN" if court_kp_detector.model is not None else "color+line"
             print(f"  Auto-detected court ({detection_method}): {detected_corners}")
 
-    if detected_corners:
+    corners = None
+    if detected_corners is not None:
         corners = detected_corners
     else:
         margin_x = int(vid_w * 0.08)
@@ -1048,6 +1042,26 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
                    (margin_x, court_top), (vid_w - margin_x, court_top)]
         print(f"  Using proportional corners: {corners}")
+
+    # Last-resort default corners — only when explicitly enabled, since they
+    # are often wrong for arbitrary phone framing.
+    if corners is None and use_default_corners:
+        default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
+        if default_corners_path.exists():
+            try:
+                raw = json.loads(default_corners_path.read_text())
+                if raw and len(raw) == 4:
+                    corners = [(int(pt[0]), int(pt[1])) for pt in raw]
+                    detection_method = "manual (default_corners.json)"
+                    print("!" * 60)
+                    print("  WARNING: using repo default_corners.json for court geometry.")
+                    print("  This geometry may NOT match your video and produces unreliable")
+                    print("  homography-based cues (zones, contact height, physics).")
+                    print("  Prefer CourtCornerSetup or {output_dir}/manual_corners.json instead.")
+                    print(f"  Loaded default corners: {corners}")
+                    print("!" * 60)
+            except Exception as e:
+                print(f"  Warning: failed to load default_corners.json: {e}")
 
     corrected_corners = _correct_court_points(corners)
     court = stage_court_detection(corrected_corners)
@@ -1706,6 +1720,8 @@ if __name__ == "__main__":
     parser.add_argument("--log", default=None, help="Log file path (writes both console and file)")
     parser.add_argument("--court-corners", default=None,
                         help="Manual court corners as 8 ints: x1,y1,x2,y2,x3,y3,x4,y4 (order: BL,BR,TL,TR)")
+    parser.add_argument("--use-default-corners", action="store_true", default=False,
+                        help="Allow repo default_corners.json (disabled by default; often wrong for phone framing)")
     parser.add_argument("--mmaction2", action="store_true", default=False,
                         help="Enable MMAction2 ensemble (PoseC3D or SlowFast) alongside BST")
     parser.add_argument("--mmaction2-mode", default="posec3d",
@@ -1761,7 +1777,8 @@ if __name__ == "__main__":
         print(f"Joint normalization mode: {args.joint_norm}")
 
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
-                 sample_rate=args.sample_rate, court_corners=court_corners)
+                 sample_rate=args.sample_rate, court_corners=court_corners,
+                 use_default_corners=args.use_default_corners)
 
     if log_file:
         log_file.close()
