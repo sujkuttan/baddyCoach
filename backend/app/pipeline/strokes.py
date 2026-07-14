@@ -361,9 +361,14 @@ def _build_clip(
                         masked_coords, vid_w=vid_w, vid_h=vid_h, conf=conf,
                     )
                 else:
-                    bbox = interpolated_bboxes.get(pid, {}).get(frame)
+                    # Use keypoint-derived bbox (det_bbox=None) so the bounding
+                    # box is always the extent of the keypoints themselves.
+                    # This guarantees normalized joints stay in ~[-0.5, 0.5].
+                    # The YOLO det_bbox path (interpolated_bboxes) produced
+                    # out-of-range joints when the detection bbox did not
+                    # contain the keypoints (player/bbox association drift).
                     joints[t, p_idx] = normalize_joints(
-                        masked_coords, det_bbox=bbox, bbox_margin=settings.bst_bbox_margin,
+                        masked_coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin,
                         conf=conf, min_confidence=settings.bst_min_keypoint_confidence,
                     )
 
