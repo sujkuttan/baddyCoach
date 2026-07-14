@@ -693,13 +693,16 @@ class HitFrameLocalizationStage:
     output_keys = ["hits"]
 
     def run(self, artifacts: ArtifactStore, config: StageConfig) -> StageResult:
-        shuttle_df = artifacts.get_parquet("shuttle")
-        if shuttle_df is None or len(shuttle_df) == 0:
-            shuttle_df = artifacts.get_parquet("shuttle_raw")
-            if shuttle_df is None or len(shuttle_df) == 0:
-                return StageResult.from_error("Shuttle tracking data required")
-            shuttle_df["x"] = shuttle_df["x"].ffill().bfill()
-            shuttle_df["y"] = shuttle_df["y"].ffill().bfill()
+        shuttle_raw_df = artifacts.get_parquet("shuttle_raw")
+        shuttle_clean_df = artifacts.get_parquet("shuttle")
+        if shuttle_raw_df is not None and len(shuttle_raw_df) > 0:
+            shuttle_df = shuttle_raw_df.copy()
+            # Keep NaNs — do not ffill for hit detection (preserves gaps/reversals)
+        elif shuttle_clean_df is not None and len(shuttle_clean_df) > 0:
+            shuttle_df = shuttle_clean_df
+            logger.warning("Hit detection falling back to cleaned shuttle; shuttle_raw missing")
+        else:
+            return StageResult.from_error("Shuttle tracking data required")
 
         pose_df = artifacts.get_parquet("pose")
         video_path: str | None = config.extra.get("video_path", "")
