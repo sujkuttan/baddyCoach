@@ -399,6 +399,38 @@ def test_build_clip_masks_low_confidence_joints_in_court_mode(monkeypatch):
     np.testing.assert_array_equal(clip["JnB"][0, 1, 20:22], [0.0, 0.0])
 
 
+def test_build_clip_marks_sparse_keypoints_absent(monkeypatch):
+    from app.pipeline.strokes import _build_clip
+
+    frames = [0]
+    shuttle = pd.DataFrame({"frame": frames, "x": [100.0], "y": [100.0], "confidence": [0.9]})
+
+    # Far player (player_2, p_idx=0): only 2 of 17 keypoints valid.
+    far_kps = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    far_kps[2:, 0] = np.nan
+    far_kps[2:, 1] = np.nan
+    far_kps[2:, 2] = 0.0
+    # Near player (player_1, p_idx=1): all 17 joints valid.
+    near_kps = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+
+    pose = pd.DataFrame([
+        {"frame": 0, "player_id": "player_2", "keypoints": far_kps.tolist()},
+        {"frame": 0, "player_id": "player_1", "keypoints": near_kps.tolist()},
+    ])
+    players = [
+        {"id": "player_1", "side": "near", "detections": [{"frame": 0, "bbox": [0, 0, 100, 100]}]},
+        {"id": "player_2", "side": "far", "detections": [{"frame": 0, "bbox": [200, 0, 300, 100]}]},
+    ]
+
+    clip = _build_clip(
+        frames, shuttle, pose, 640, 480, 13.4, 6.1, 1,
+        player_detections=players, player_ids=["player_1", "player_2"],
+    )
+
+    assert clip["_bst_provenance"]["pose_present_far"][0] is False
+    assert np.allclose(clip["JnB"][0, 0, :17], 0.0)
+
+
 def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monkeypatch, tmp_job_dir):
     from app.pipeline.shared import models
 

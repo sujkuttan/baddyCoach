@@ -336,6 +336,14 @@ def _build_clip(
                     & (conf >= settings.bst_min_keypoint_confidence)
                     & ~np.all(coords == 0.0, axis=1)
                 )
+                n_valid = int(valid_keypoints.sum())
+                dense_enough = n_valid >= int(17 * settings.bst_min_valid_keypoints_fraction)
+                if not dense_enough:
+                    provenance[f"pose_present_{side}"].append(False)
+                    provenance[f"pose_keypoint_confidence_{side}"].append(0.0)
+                    provenance[f"wrist_shuttle_distance_{side}"].append(np.nan)
+                    joints[t, p_idx] = 0.0
+                    continue
                 masked_coords = coords.copy()
                 masked_coords[~valid_keypoints] = 0.0
                 provenance[f"pose_present_{side}"].append(bool(valid_keypoints.any()))

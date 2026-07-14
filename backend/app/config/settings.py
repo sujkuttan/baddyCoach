@@ -201,6 +201,7 @@ class Settings(BaseSettings):
     bst_max_court_rejected_shuttle_fraction: float = 0.25
     bst_min_pose_coverage: float = 0.70
     bst_min_keypoint_confidence: float = 0.35
+    bst_min_valid_keypoints_fraction: float = 0.5  # fraction of the 17 COCO joints that must be valid per frame/side
     bst_max_bbox_interp_gap: int = 10
     bst_quality_score_min: float = 0.70
     aim_alpha_enabled: bool = True
