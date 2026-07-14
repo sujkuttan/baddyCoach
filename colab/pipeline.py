@@ -975,6 +975,17 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         else:
             store.set_parquet("shuttle_raw", shuttle_df.copy())
 
+        # TrackNet acceptance diagnostic (visible severity — tuning signal for Task 15)
+        try:
+            raw_src = store.get_parquet("shuttle_raw") if store.get_parquet("shuttle_raw") is not None else shuttle_df
+            if raw_src is not None and "was_repaired" in raw_src.columns:
+                n_rep = int(raw_src.get("was_repaired", pd.Series(dtype=bool)).fillna(False).sum())
+                print(f"  Shuttle repaired frames: {n_rep}/{len(raw_src)} (TrackNet accepted+repaired)")
+            else:
+                print("  Shuttle repaired frames: unknown (was_repaired column absent)")
+        except Exception as e:
+            print(f"  Shuttle diagnostics error: {e}")
+
         if court and court.get("valid", False) and court.get("homography") is not None:
             from app.pipeline.shared.court import court_geometry_reliable
 
