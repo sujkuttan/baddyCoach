@@ -213,6 +213,18 @@ class Settings(BaseSettings):
     bst_max_raw_shuttle_gap_frames: int = 12  # raised 7->12 (plan Phase-6 override): phone footage has TrackNet dropouts; 12 frames (0.4s) holes are tolerable for BST
     bst_repaired_shuttle_penalty: float = 0.50  # soft score penalty per repaired-shuttle fraction (InpaintNet output: reliable, mild penalty)
     bst_interpolated_shuttle_penalty: float = 0.80  # soft score penalty per interpolated-shuttle fraction (linear fill: less reliable, heavier penalty)
+
+    # ── Batch-size overrides (advanced) ──────────────────────────────
+    # When set, these OVERRIDE the auto-detected GPU-VRAM tier in
+    # app/config/gpu_batch.py. Useful on multi-GPU hosts (e.g. 2×T4) where
+    # auto-detect only sees one GPU's VRAM, or to push past the conservative
+    # tier defaults. Leave as None to use auto-detection. Env-var equivalents
+    # (uppercased field name) also work, e.g. BST_BATCH_SIZE=256.
+    bst_batch_size: int | None = None            # BST clip inference batch (env BST_BATCH_SIZE)
+    yolo_batch_size: int | None = None           # YOLO detect/track batch (env YOLO_BATCH_SIZE)
+    tracknet_batch_size: int | None = None       # TrackNet chunk size (env TRACKNET_BATCH_SIZE)
+    rtmpose_batch_size: int | None = None        # RTMPose chunk size (env RTMPOSE_BATCH_SIZE)
+    ml_frame_batch_size: int | None = None       # Colab frame-loop batch (env ML_FRAME_BATCH_SIZE)
     bst_max_interpolated_shuttle_fraction: float = 0.50  # raised 0.25->0.50: repaired coords now count as present, so the residual linear-interp gate is the only hard shuttle gate
     bst_contact_gap_window: int = 15  # measure max shuttle gap within +-this many frames of the contact frame (shuttle matters most at contact)
     bst_max_court_rejected_shuttle_fraction: float = 0.25

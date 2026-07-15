@@ -23,24 +23,50 @@ def get_gpu_batch_config(device: str = "cpu") -> dict:
 
     Returns a dict with keys:
         yolo_chunk, yolo_batch, tracknet_chunk, rtmpose_chunk, bst_batch
+
+    Explicit overrides from ``settings`` (env-configurable) are applied on top
+    of the auto-detected tier in every branch, so users on multi-GPU hosts
+    (e.g. 2×T4, where auto-detect only sees one GPU's VRAM) or wanting to push
+    past the conservative tier defaults can raise batch sizes directly.
     """
     if "cuda" not in device.lower():
-        return dict(_CPU_CONFIG)
+        cfg = dict(_CPU_CONFIG)
+    else:
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                cfg = dict(_CPU_CONFIG)
+            else:
+                vram_bytes = torch.cuda.get_device_properties(0).total_mem
+                vram_gb = vram_bytes / (1024 ** 3)
+                for min_gb, tier in _TIER_TABLE:
+                    if vram_gb >= min_gb:
+                        cfg = dict(tier)
+                        break
+                else:
+                    cfg = dict(_CPU_CONFIG)
+        except Exception:
+            cfg = dict(_CPU_CONFIG)
 
+    # Apply explicit overrides from settings (env-configurable).
     try:
-        import torch
-        if not torch.cuda.is_available():
-            return dict(_CPU_CONFIG)
-        vram_bytes = torch.cuda.get_device_properties(0).total_mem
-        vram_gb = vram_bytes / (1024 ** 3)
+        from app.config.settings import settings
+        overrides = {
+            k: v
+            for k, v in {
+                "yolo_batch": settings.yolo_batch_size,
+                "tracknet_chunk": settings.tracknet_batch_size,
+                "rtmpose_chunk": settings.rtmpose_batch_size,
+                "bst_batch": settings.bst_batch_size,
+            }.items()
+            if v is not None
+        }
+        if overrides:
+            cfg.update(overrides)
     except Exception:
-        return dict(_CPU_CONFIG)
+        pass
 
-    for min_gb, cfg in _TIER_TABLE:
-        if vram_gb >= min_gb:
-            return dict(cfg)
-
-    return dict(_CPU_CONFIG)
+    return cfg
 
 
 def get_gpu_tier(device: str = "cpu") -> str:

@@ -1460,6 +1460,16 @@ if __name__ == "__main__":
                         help="MMAction2 model mode: posec3d (skeleton, default), slowfast (RGB), pytorchvideo (light RGB)")
     parser.add_argument("--mmaction2-weight", type=float, default=0.3,
                         help="Ensemble weight for MMAction2: (1-w)*BST + w*MMAction (default: 0.3)")
+    parser.add_argument("--bst-batch-size", type=int, default=None,
+                        help="BST clip inference batch size (overrides auto-detect). Env: BST_BATCH_SIZE")
+    parser.add_argument("--yolo-batch-size", type=int, default=None,
+                        help="YOLO detect/track batch size (overrides auto-detect). Env: YOLO_BATCH_SIZE")
+    parser.add_argument("--tracknet-batch-size", type=int, default=None,
+                        help="TrackNet chunk size (overrides auto-detect). Env: TRACKNET_BATCH_SIZE")
+    parser.add_argument("--rtmpose-batch-size", type=int, default=None,
+                        help="RTMPose chunk size (overrides auto-detect). Env: RTMPOSE_BATCH_SIZE")
+    parser.add_argument("--ml-batch-size", type=int, default=None,
+                        help="Colab frame-loop batch size (default 300). Env: ML_FRAME_BATCH_SIZE")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
@@ -1499,6 +1509,23 @@ if __name__ == "__main__":
         settings.mmaction2_mode = args.mmaction2_mode
         settings.mmaction2_ensemble_weight = args.mmaction2_weight
         print(f"MMAction2 ensemble enabled: mode={args.mmaction2_mode}, weight={args.mmaction2_weight}")
+
+    # Batch-size overrides (env-configurable via settings; see gpu_batch.py).
+    # Lets multi-GPU hosts (e.g. 2×T4) or power users push past auto-detect tiers.
+    _batch_overrides = [
+        ("bst_batch_size", args.bst_batch_size),
+        ("yolo_batch_size", args.yolo_batch_size),
+        ("tracknet_batch_size", args.tracknet_batch_size),
+        ("rtmpose_batch_size", args.rtmpose_batch_size),
+        ("ml_frame_batch_size", args.ml_batch_size),
+    ]
+    _applied = {name: val for name, val in _batch_overrides if val is not None}
+    if _applied:
+        for name, val in _applied.items():
+            setattr(settings, name, val)
+        print(f"Batch-size overrides applied: {_applied}")
+    if args.ml_batch_size is not None:
+        globals()["BATCH_SIZE"] = args.ml_batch_size
 
     # Joint normalization mode
     settings.bst_joint_norm = args.joint_norm

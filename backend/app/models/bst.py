@@ -92,10 +92,10 @@ class BSTClassifier:
 
     @staticmethod
     def _default_batch_size() -> int:
+        # get_gpu_batch_config() already honors settings.bst_batch_size when set.
         try:
             from app.config.gpu_batch import get_gpu_batch_config
-            cfg = get_gpu_batch_config()
-            return int(cfg.get("bst_batch", 32))
+            return int(get_gpu_batch_config().get("bst_batch", 32))
         except Exception:
             return 32
 
