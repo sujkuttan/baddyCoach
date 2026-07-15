@@ -278,7 +278,17 @@ def _build_clip(
             not court_rejected or settings.bst_shuttle_norm != "court"
         )
         if use_for_tensor:
-            if settings.bst_shuttle_require_raw_observation and not raw_observed:
+            # Feed a coord to BST when it is raw-observed, OR InpaintNet-repaired
+            # (real model estimate, enabled by default), OR linear-interpolated
+            # (fabric, disabled by default). When require_raw_observation is off,
+            # any clean coord is fed regardless of provenance.
+            feed = (
+                (not settings.bst_shuttle_require_raw_observation)
+                or raw_observed
+                or (raw_repaired and settings.bst_shuttle_use_repaired)
+                or (interpolated and settings.bst_shuttle_use_interpolated)
+            )
+            if not feed:
                 continue  # leave zeros; provenance already recorded
             s_conf = float(clean_row.get('confidence', 1.0))
             if s_conf >= settings.shuttle_min_conf:

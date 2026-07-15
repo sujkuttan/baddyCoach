@@ -138,17 +138,82 @@ def test_quality_accumulates_all_failed_hard_checks_and_clamps_score(monkeypatch
 
 def test_quality_scores_and_rejects_repaired_or_interpolated_shuttle_heavily():
     observed = [True] * 7 + [False] * 6 + [True] * 7
+    # Middle 6 frames are repaired (InpaintNet) AND interpolated (linear fill).
+    repaired = [False] * 7 + [True] * 6 + [False] * 7
+    interpolated = [False] * 7 + [True] * 6 + [False] * 7
     result = evaluate_bst_clip_quality(_provenance(
         shuttle_observed=observed,
-        shuttle_repaired=[False] * 7 + [True] * 6 + [False] * 7,
-        shuttle_interpolated=[False] * 7 + [True] * 6 + [False] * 7,
+        shuttle_repaired=repaired,
+        shuttle_interpolated=interpolated,
     ))
 
+    # Repaired coords now count as present, so the clip is fully present and
+    # has no shuttle gap — it is rejected only by the soft quality-score floor.
     assert result["repaired_shuttle_fraction"] == 0.3
     assert result["interpolated_shuttle_fraction"] == 0.3
+    assert result["present_shuttle_fraction"] == 1.0
+    assert result["max_shuttle_gap_frames"] == 0
     assert result["eligible"] is False
-    assert "too_many_interpolated_shuttle" in result["reasons"]
+    assert "too_many_interpolated_shuttle" not in result["reasons"]
+    assert "long_shuttle_gap" not in result["reasons"]
     assert "low_quality_score" in result["reasons"]
+
+
+def test_quality_counts_repaired_as_present_and_admits_clip():
+    # A clip that was 100% interpolated before, but fully repaired by InpaintNet,
+    # must now be admitted (no gap, present == 1.0) and only mildly penalized.
+    result = evaluate_bst_clip_quality(_provenance(
+        shuttle_observed=[False] * 20,
+        shuttle_repaired=[True] * 20,
+        shuttle_interpolated=[False] * 20,
+    ))
+
+    assert result["present_shuttle_fraction"] == 1.0
+    assert result["max_shuttle_gap_frames"] == 0
+    assert "low_observed_shuttle" not in result["reasons"]
+    assert "long_shuttle_gap" not in result["reasons"]
+    # Mild repaired penalty (0.50 * 1.0) leaves score 0.50 < 0.70 -> rejected by floor.
+    assert result["score"] == pytest.approx(0.5)
+    assert result["eligible"] is False
+    assert "low_quality_score" in result["reasons"]
+
+
+def test_quality_contact_window_limits_shuttle_gap_measurement():
+    # A long gap far from contact (pre-serve tail, outside the contact window)
+    # must not disqualify a clip whose contact window is contiguous. Use a
+    # 40-frame clip so the window (contact +- 15) does not cover the whole clip.
+    observed = [False] * 15 + [True] * 25  # 15-frame gap at frames 0-14, before contact
+    result = evaluate_bst_clip_quality(_provenance(
+        video_len=40,
+        contact_frame_index=35,  # contact near the end -> gap is far away
+        shuttle_observed=observed,
+        shuttle_repaired=[False] * 40,
+        shuttle_interpolated=[False] * 40,
+        shuttle_court_rejected=[False] * 40,
+    ))
+
+    # Unbounded gap is 15 (> 12), but within the contact window (20-40) the
+    # shuttle is fully present, so the gap is NOT fatal.
+    assert "long_shuttle_gap" not in result["reasons"]
+    assert result["max_shuttle_gap_frames"] == 0
+    assert result["full_shuttle_gap_frames"] == 15
+    assert result["present_shuttle_fraction"] == pytest.approx(25 / 40)
+
+
+def test_quality_long_gap_inside_contact_window_still_rejects():
+    # A gap that straddles the contact frame (inside the window) is still fatal.
+    # 3 present + 13-gap + 4 present -> present 0.35 (no low_observed), but the
+    # 13-frame gap (> 12) around contact idx 10 triggers long_shuttle_gap.
+    observed = [True] * 3 + [False] * 13 + [True] * 4
+    result = evaluate_bst_clip_quality(_provenance(
+        shuttle_observed=observed,
+        shuttle_repaired=[False] * 20,
+        shuttle_interpolated=[False] * 20,
+    ))
+
+    assert "long_shuttle_gap" in result["reasons"]
+    assert "low_observed_shuttle" not in result["reasons"]
+    assert result["eligible"] is False
 
 
 def test_aim_alpha_quality_accepts_balanced_contact_window():

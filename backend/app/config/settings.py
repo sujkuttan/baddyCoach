@@ -182,7 +182,9 @@ class Settings(BaseSettings):
     bst_temperature_far: float = 1.0   # softmax temperature for far-player strokes; >1 = softer
     bst_temperature_near: float = 1.0  # softmax temperature for near-player strokes; >1 = softer
     bst_shuttle_norm: str = "resolution"  # "resolution" (x/vid_w, y/vid_h) or "court" (x/court_length, y/court_width)
-    bst_shuttle_require_raw_observation: bool = True  # only feed BST shuttle coords for frames with a confidence-qualified raw TrackNet detection (not repaired/interpolated)
+    bst_shuttle_require_raw_observation: bool = True  # when True, a shuttle coord is fed to BST only if it is raw-observed OR (per the toggles below) repaired/interpolated
+    bst_shuttle_use_repaired: bool = True  # feed InpaintNet-repaired shuttle coords (real model estimates) to BST instead of zeroing them
+    bst_shuttle_use_interpolated: bool = False  # do NOT feed linearly-interpolated shuttle (fabricated) coords to BST
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
     bst_joint_abs_mean_soft_max: float = 1.0  # soft penalty when abs mean of finite post-norm joint coords exceeds this
     bst_bbox_margin: float = 0.15  # expand keypoint bbox by this fraction per side; compensates for keypoint bboxes being ~30% tighter than detection bboxes
@@ -199,8 +201,10 @@ class Settings(BaseSettings):
     bst_min_clip_video_frames: int = 15
     bst_min_observed_shuttle_fraction: float = 0.35
     bst_max_raw_shuttle_gap_frames: int = 12  # raised 7->12 (plan Phase-6 override): phone footage has TrackNet dropouts; 12 frames (0.4s) holes are tolerable for BST
-    bst_max_repaired_shuttle_fraction: float = 0.50
-    bst_max_interpolated_shuttle_fraction: float = 0.25
+    bst_repaired_shuttle_penalty: float = 0.50  # soft score penalty per repaired-shuttle fraction (InpaintNet output: reliable, mild penalty)
+    bst_interpolated_shuttle_penalty: float = 0.80  # soft score penalty per interpolated-shuttle fraction (linear fill: less reliable, heavier penalty)
+    bst_max_interpolated_shuttle_fraction: float = 0.50  # raised 0.25->0.50: repaired coords now count as present, so the residual linear-interp gate is the only hard shuttle gate
+    bst_contact_gap_window: int = 15  # measure max shuttle gap within +-this many frames of the contact frame (shuttle matters most at contact)
     bst_max_court_rejected_shuttle_fraction: float = 0.25
     bst_min_pose_coverage: float = 0.70
     bst_min_keypoint_confidence: float = 0.35

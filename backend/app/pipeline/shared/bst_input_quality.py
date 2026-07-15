@@ -32,7 +32,18 @@ def _window_slice(video_len: int, center: int, radius: int) -> slice:
 
 
 def evaluate_bst_clip_quality(provenance: dict) -> dict:
-    """Return deterministic admission evidence for one unpadded BST clip."""
+    """Return deterministic admission evidence for one unpadded BST clip.
+
+    Shuttle "presence" is the union of raw-observed detections and
+    InpaintNet-repaired estimates (``present = observed | repaired``). Purely
+    linear-interpolated fills are NOT counted as present in the scorer — they
+    remain a softer signal and are only admitted to the BST tensor when
+    explicitly enabled. Counting repaired coords as present is the key lever
+    that lets clips whose shuttles were reconstructed by InpaintNet (common on
+    phone footage with TrackNet dropouts) be admitted instead of being
+    triple-penalized (missing for observed_fraction, long_shuttle_gap, and
+    too_many_repaired) and zeroed out of the BST tensor.
+    """
     video_len = int(provenance["video_len"])
 
     def values(name: str, dtype) -> np.ndarray:
@@ -43,6 +54,8 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     interpolated = values("shuttle_interpolated", bool)
     rejected = values("shuttle_court_rejected", bool)
     observed_rejected = rejected & observed
+    # Present = real (observed) or model-repaired (InpaintNet) shuttle.
+    present = observed | repaired
     far_present = values("pose_present_far", bool)
     near_present = values("pose_present_near", bool)
     far_conf = values("pose_keypoint_confidence_far", float)
@@ -51,10 +64,18 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     near_gaps = values("bbox_gap_near", float)
 
     observed_fraction = _coverage(observed)
+    present_fraction = _coverage(present)
     repaired_fraction = _coverage(repaired)
     interpolated_fraction = _coverage(interpolated)
     rejected_fraction = _coverage(observed_rejected)
-    max_shuttle_gap = _longest_false_run(observed)
+    # The shuttle matters most at contact. A gap far from contact (e.g. the
+    # pre-serve tail) should not disqualify an otherwise-good clip, so the hard
+    # gap gate measures the longest absent run *within the contact window* only.
+    # The unbounded gap is reported for diagnostics.
+    contact_idx = int(provenance.get("contact_frame_index", 0))
+    gap_window = _window_slice(video_len, contact_idx, settings.bst_contact_gap_window)
+    full_shuttle_gap = _longest_false_run(present) if video_len else 0
+    max_shuttle_gap = _longest_false_run(present[gap_window]) if video_len else 0
     far_coverage = _coverage(far_present)
     near_coverage = _coverage(near_present)
     far_median_conf = _median_confidence(far_conf, far_present)
@@ -66,7 +87,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     score = 1.0
     if video_len < settings.bst_min_clip_video_frames:
         hard_reasons.append("clip_too_short")
-    if observed_fraction < settings.bst_min_observed_shuttle_fraction:
+    if present_fraction < settings.bst_min_observed_shuttle_fraction:
         hard_reasons.append("low_observed_shuttle")
         score -= 0.35
     if max_shuttle_gap > settings.bst_max_raw_shuttle_gap_frames:
@@ -89,10 +110,12 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         hard_reasons.append("long_bbox_gap")
         score -= 0.15
 
-    score -= 0.50 * repaired_fraction
-    score -= 0.80 * interpolated_fraction
-    if repaired_fraction > settings.bst_max_repaired_shuttle_fraction:
-        hard_reasons.append("too_many_repaired_shuttle")
+    # Repaired (InpaintNet) is a real model estimate -> mild penalty only (no
+    # hard gate; the soft penalty still rejects clips that are almost entirely
+    # repaired). Interpolated (linear fill) is fabric, so it is penalized more
+    # and still has a hard gate.
+    score -= settings.bst_repaired_shuttle_penalty * repaired_fraction
+    score -= settings.bst_interpolated_shuttle_penalty * interpolated_fraction
     if interpolated_fraction > settings.bst_max_interpolated_shuttle_fraction:
         hard_reasons.append("too_many_interpolated_shuttle")
 
@@ -113,12 +136,15 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "observed_shuttle_frames": int(observed.sum()),
         "repaired_shuttle_frames": int(repaired.sum()),
         "interpolated_shuttle_frames": int(interpolated.sum()),
+        "present_shuttle_frames": int(present.sum()),
         "court_rejected_shuttle_frames": int(observed_rejected.sum()),
         "observed_shuttle_fraction": observed_fraction,
+        "present_shuttle_fraction": present_fraction,
         "repaired_shuttle_fraction": repaired_fraction,
         "interpolated_shuttle_fraction": interpolated_fraction,
         "court_rejected_shuttle_fraction": rejected_fraction,
         "max_shuttle_gap_frames": max_shuttle_gap,
+        "full_shuttle_gap_frames": full_shuttle_gap,
         "far_pose_coverage": far_coverage,
         "near_pose_coverage": near_coverage,
         "far_pose_median_confidence": far_median_conf,
