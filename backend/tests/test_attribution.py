@@ -6,6 +6,7 @@ from pathlib import Path
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import PlayerAttributionStage
 from app.pipeline.shared.ownership_scorer import OwnershipScorer
+from app.config.settings import settings
 
 
 # ── Task 2.3: guard against an inverted near/far convention vs gold labels ──
@@ -422,7 +423,12 @@ def test_turn_prior_is_reported_but_not_used_in_local_score():
     assert after_near["turn_near"] != pytest.approx(after_near["turn_far"])
 
 
-def test_unanchored_rally_stays_unknown(tmp_job_dir):
+def test_unanchored_rally_stays_unknown(tmp_job_dir, monkeypatch):
+    # This test exercises the FALLBACK path (full-rally Viterbi disabled):
+    # when scores are degenerate and Viterbi is off, an unanchored rally
+    # must stay unknown. The default (Viterbi enabled) now assigns alternating
+    # owners even for unanchored rallies — covered by test_ownership_quality.py.
+    monkeypatch.setattr(settings, "ownership_viterbi_rally_enabled", False)
     store = ArtifactStore(tmp_job_dir)
     store.set("players", {"players": [{"id": "player_1", "side": "near"}, {"id": "player_2", "side": "far"}]})
     store.set("court", {"valid": False})
@@ -486,6 +492,12 @@ def test_short_compatible_gap_bridges_between_anchors(tmp_job_dir, monkeypatch):
             }
         ),
     )
+
+    # Exercise the FALLBACK path (full-rally Viterbi disabled): the bridge
+    # logic between anchors only runs when Viterbi is off. The default (Viterbi
+    # enabled) replaces bridges with a full-rally decode — covered by
+    # test_ownership_quality.py.
+    monkeypatch.setattr(settings, "ownership_viterbi_rally_enabled", False)
 
     scripted = iter(
         [
