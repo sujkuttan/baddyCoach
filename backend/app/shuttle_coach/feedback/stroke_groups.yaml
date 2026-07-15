@@ -1,0 +1,22 @@
+# Stroke family groups for the labels benchmark harness (Task 0.1).
+#
+# Two strokes are considered "similar" (partial credit) iff they share the same
+# group. Strokes not listed here are treated as their own singleton group
+# (no similar credit), per the benchmark brief.
+#
+# Families are coarse badminton stroke groupings chosen so that confusions within
+# a family are coaching-similar (e.g. lift/clear, drive/push, drop/net_shot).
+clear: clear_family
+lift: clear_family
+defensive_lift: clear_family
+smash: attack_family
+rush: attack_family
+drive: flat_family
+push: flat_family
+drop: soft_family
+net_shot: soft_family
+block: block_family
+short_serve: serve_family
+long_serve: serve_family
+serve: serve_family
+cross_court: cross_family
