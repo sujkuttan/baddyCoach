@@ -44,8 +44,8 @@ _SRC = {
     "seq_len_zeros": "backend/app/pipeline/strokes.py:57-59  np.zeros((seq_len, ...)) allocation",
 
     # Joint order
-    "pose_read": "backend/app/pipeline/strokes.py:13-24  _get_keypoints_for_frame reads pose_df",
-    "pose_apply": "backend/app/pipeline/strokes.py:245-251  normalize_joints(coords, det_bbox=bbox (from interpolated_bboxes), bbox_margin=..., conf=...)",
+    "pose_read": "backend/app/pipeline/strokes.py:90-101  _get_keypoints_for_frame reads pose_df",
+    "pose_apply": "backend/app/pipeline/strokes.py:380-383  normalize_joints(masked_coords, det_bbox=None, bbox_margin=settings.bst_bbox_margin, conf=...)",
 
     # Bone edges
     "bone_pairs_def": "backend/app/pipeline/shared/bst_preproc.py:10-16  BONE_PAIRS list",
@@ -57,14 +57,14 @@ _SRC = {
     "shuttle_norm_setting": "backend/app/config/settings.py:117  bst_shuttle_norm = 'resolution'|'court'",
 
     # Joint normalization
-    "joint_norm_bbox": "backend/app/pipeline/strokes.py:249  normalize_joints(coords, det_bbox=bbox (from interpolated_bboxes), bbox_margin=settings.bst_bbox_margin)",
-    "joint_norm_court": "backend/app/pipeline/strokes.py:246  normalize_joints_court(coords, homography)",
+    "joint_norm_bbox": "backend/app/pipeline/strokes.py:380-383  normalize_joints(masked_coords, det_bbox=None [keypoint-derived bbox], bbox_margin=settings.bst_bbox_margin, conf=...)",
+    "joint_norm_court": "backend/app/pipeline/strokes.py:367-368  normalize_joints_court(coords, homography)",
     "joint_norm_setting": "backend/app/config/settings.py:132  bst_joint_norm = 'bbox'|'court'",
-    "normalize_joints_fn": "backend/app/pipeline/shared/bst_preproc.py:19-71  normalize_joints() bbox diag + center_align + conf mask",
-    "normalize_joints_batched_fn": "backend/app/pipeline/shared/bst_preproc.py:52-81  normalize_joints_batched()",
+    "normalize_joints_fn": "backend/app/pipeline/shared/bst_preproc.py:19-77  normalize_joints() bbox diag + center_align + conf mask",
+    "normalize_joints_batched_fn": "backend/app/pipeline/shared/bst_preproc.py:80-109  normalize_joints_batched()",
 
     # Center align
-    "center_align_code": "backend/app/pipeline/shared/bst_preproc.py:97-101  center_align subtraction (batched)",
+    "center_align_code": "backend/app/pipeline/shared/bst_preproc.py:71-73  center_align subtraction (per-frame normalize_joints); batched at 103-107",
 
     # Player positions
     "pos_court": "backend/app/pipeline/strokes.py:193-198  pos[t] = image_to_court(feet) / court_dims",
@@ -72,7 +72,7 @@ _SRC = {
 
     # Missing joints
     "missing_pose": "backend/app/pipeline/strokes.py:202-203  kps None → debug_clip_stats n_missing_pose += 1",
-    "missing_bbox": "backend/app/pipeline/strokes.py:243-244  interpolated_bbox coverage (diagnostic; no longer affects normalization)",
+    "missing_bbox": "backend/app/pipeline/strokes.py:365-366  interpolated_bbox coverage (diagnostic; no longer affects normalization)",
     "interp_bbox": "backend/app/pipeline/strokes.py:83-109  _interpolate_bboxes() linear fill",
 
     # Hit frame alignment
@@ -107,6 +107,13 @@ _ANATOMY_CHECKS = [
     (12, 14, "R_hip should be above R_knee"),
     (14, 16, "R_knee should be above R_ankle"),
 ]
+
+# Fraction of a clip's valid frames for a (player, joint-pair) above which an
+# anatomical violation is treated as a SYSTEMATIC keypoint-order defect rather
+# than transient pose-estimation noise. Below this, a few flipped joints per
+# pair (e.g. a cocked racket or occlusion) is expected and not flagged as a
+# joint-order mismatch.
+_ANATOMY_SYSTEMATIC_FRAC = 0.3
 
 
 def _loc(check_name: str) -> str:
@@ -305,32 +312,54 @@ class BSTInputValidator:
         joints_xy = joints_flat.reshape(*joints_flat.shape[:2], 17, 2)
 
         n_violations = 0
+        n_systematic = 0
         for player_idx in range(2):
             player_joints = joints_xy[:, player_idx]
             non_zero_mask = (np.abs(player_joints).sum(axis=-1) > 1e-6)
             for high_j, low_j, desc in _ANATOMY_CHECKS:
                 both_valid = non_zero_mask[:, high_j] & non_zero_mask[:, low_j]
-                if both_valid.any():
-                    high_y = player_joints[both_valid, high_j, 1]
-                    low_y = player_joints[both_valid, low_j, 1]
-                    if (high_y > low_y).any():
-                        n_violations += 1
-                        if n_violations <= 3:
-                            r.warnings.append(
-                                f"Player {player_idx}: {desc} violated in "
-                                f"{(high_y > low_y).sum()}/{both_valid.sum()} frames. "
-                                "Joint order may not match COCO-17."
-                                + _loc("pose_read")
-                            )
-                            r.n_warnings += 1
+                n_both = int(both_valid.sum())
+                if n_both == 0:
+                    continue
+                high_y = player_joints[both_valid, high_j, 1]
+                low_y = player_joints[both_valid, low_j, 1]
+                violated = high_y > low_y
+                n_v = int(violated.sum())
+                if n_v == 0:
+                    continue
+                n_violations += 1
+                frac = n_v / n_both
+                if frac > _ANATOMY_SYSTEMATIC_FRAC:
+                    # Violations affect a large fraction of the clip's frames
+                    # for this pair → a real keypoint-order defect (e.g. the
+                    # pose model emitting a different ordering than COCO-17).
+                    n_systematic += 1
+                    r.warnings.append(
+                        f"Player {player_idx}: {desc} violated in {n_v}/{n_both} "
+                        f"frames ({frac:.0%}) — systematic. Joint order may not "
+                        "match COCO-17." + _loc("pose_read")
+                    )
+                    r.n_warnings += 1
+                elif n_violations <= 3:
+                    # A handful of frames per pair is normal pose-estimation
+                    # noise (cocked racket, occlusion) and does NOT indicate a
+                    # joint-order mismatch. Report it as benign only.
+                    r.warnings.append(
+                        f"Player {player_idx}: {desc} violated in {n_v}/{n_both} "
+                        "frames. Likely transient pose-estimation noise "
+                        "(not a keypoint-order defect)." + _loc("pose_read")
+                    )
+                    r.n_warnings += 1
 
         if n_violations == 0:
             r.n_passed += 1
-        elif n_violations > 3:
+        elif n_systematic >= 2:
+            # Multiple systematically-violated pairs strongly indicate the
+            # pose model emits a different keypoint definition than COCO-17.
             r.warnings.append(
-                f"Joint order: {n_violations} total anatomical violations. "
-                "Pose model may output a different keypoint definition than COCO-17."
-                + _loc("pose_read")
+                f"Joint order: {n_systematic} systematic anatomical violations "
+                "across joint pairs. Pose model may output a different "
+                "keypoint definition than COCO-17." + _loc("pose_read")
             )
             r.n_warnings += 1
         return r
@@ -476,9 +505,10 @@ class BSTInputValidator:
             return r
 
         joints_flat = JnB[:, :, :34]
-        mask = np.any(joints_flat != 0, axis=-1, keepdims=True)
+        nonzero_mask = joints_flat != 0
+        nonzero_count = int(nonzero_mask.sum())
 
-        if not mask.any():
+        if nonzero_count == 0:
             r.warnings.append(
                 "Cannot check center alignment: all joints are zero."
                 + _loc("pose_apply")
@@ -486,9 +516,14 @@ class BSTInputValidator:
             r.n_warnings += 1
             return r
 
-        valid_count = mask.sum()
-        total_sum = joints_flat.sum()
-        mean_val = float(total_sum / valid_count) if valid_count > 0 else 0.0
+        # Per-coordinate mean: divide the sum of ALL coordinate values by the
+        # number of NON-ZERO coordinate values — NOT by the number of
+        # (frame, player) pairs with any valid joint. The pair-wise divisor
+        # inflates a genuine ~-0.08 per-coordinate mean into ~-1.3 and falsely
+        # reports a centering failure on properly aligned clips that merely
+        # have sparse (partially-missing) keypoints.
+        total_sum = float(joints_flat.sum())
+        mean_val = total_sum / nonzero_count
 
         if abs(mean_val) > 0.15:
             r.warnings.append(
@@ -575,7 +610,8 @@ class BSTInputValidator:
                 r.warnings.append(
                     f"Player {p_idx}: {pct_partial:.0f}% frames have partially "
                     "missing joints (some keypoints present, others zero). "
-                    "Inconsistent imputation may confuse the model."
+                    "Missing joints are zeroed consistently, but reduced pose "
+                    "coverage may degrade BST accuracy."
                     + _loc("missing_bbox")
                 )
                 r.n_warnings += 1

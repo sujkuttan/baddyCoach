@@ -255,6 +255,89 @@ def test_validator_anatomy_violation_detected():
     assert any("anatomical" in w or "violated" in w for w in result.warnings)
 
 
+def test_validator_center_align_sparse_joints_not_flagged():
+    """A properly center-aligned clip with sparse (partially-missing) joints
+    and a small genuine mean bias must NOT trigger a false center-align warning.
+
+    Regression test for the divisor bug: dividing the coordinate sum by the
+    number of (frame, player) pairs (instead of non-zero coordinate values)
+    inflated a ~-0.08 per-coordinate mean into ~-1.3, falsely reporting that
+    center alignment was not applied.
+    """
+    v = BSTInputValidator(seq_len=100)
+    clip = _make_good_clip()
+    T = clip['JnB'].shape[0]
+    # Simulate real sparsity: zero out ~half the coordinates per (frame, player)
+    # and give the remaining ones a small genuine negative bias (-0.08).
+    for t in range(T):
+        for p in range(2):
+            coords = clip['JnB'][t, p, :34].reshape(17, 2)
+            zero_idx = np.arange(17) % 2 == 0  # zero every other joint
+            coords[zero_idx] = 0.0
+            keep = ~zero_idx
+            coords[keep] = -0.08  # consistent small bias, still centered range
+            clip['JnB'][t, p, :34] = coords.ravel()
+    result = v.validate_clip(clip)
+    assert not any("center" in w.lower() for w in result.warnings), (
+        f"false center-align warning on properly aligned sparse clip: "
+        f"{[w for w in result.warnings]}"
+    )
+
+
+def test_validator_center_align_uses_per_coordinate_mean():
+    """The center-align mean must be the mean over non-zero coordinate values,
+    not over (frame, player) pairs (which inflates by ~17x)."""
+    from app.pipeline.shared.bst_validator import BSTInputValidator
+
+    v = BSTInputValidator(seq_len=100)
+    clip = _make_good_clip()
+    # All joints present, each shifted so the true per-coordinate mean is 0.5.
+    clip['JnB'][:, :, :34] += 0.5
+    result = v.validate_clip(clip)
+    # The warning must still fire (mean 0.5 >> 0.15), but the reported number
+    # should reflect the per-coordinate mean (~0.5), not the inflated ~17.
+    center_msgs = [w for w in result.warnings if "Joint mean is" in w]
+    assert center_msgs, "expected a center-align warning for mean 0.5"
+    # The absolute mean value is embedded as 'x.xxx'; ensure it's < 5 (i.e. not
+    # the inflated ~17.0 produced by the pair-wise divisor).
+    import re
+    for m in center_msgs:
+        mval = re.search(r"is (-?\d+\.\d+)", m)
+        assert mval is not None
+        assert abs(float(mval.group(1))) < 5.0, f"mean looks inflated: {m}"
+
+
+def test_validator_joint_order_benign_noise_not_systematic():
+    """A few flipped joints per pair (transient pose noise) must be reported
+    as benign, NOT as a keypoint-order mismatch."""
+    v = BSTInputValidator(seq_len=100)
+    clip = _make_good_clip()
+    # Violate L_knee/L_ankle in only 5/100 frames (frac 0.05) for both players.
+    for p in range(2):
+        for t in range(5):
+            clip['JnB'][t, p, 31] = clip['JnB'][t, p, 27] - 0.1
+    result = v.validate_clip(clip)
+    assert any("violated" in w or "noise" in w for w in result.warnings)
+    assert not any("may not match COCO-17" in w for w in result.warnings), (
+        "benign pose noise wrongly flagged as joint-order mismatch"
+    )
+    assert not any("Pose model may output" in w for w in result.warnings)
+
+
+def test_validator_joint_order_systematic_flagged():
+    """When a joint pair is violated in a large fraction of frames, it must be
+    reported as a systematic keypoint-order defect."""
+    v = BSTInputValidator(seq_len=100)
+    clip = _make_good_clip()
+    # Violate L_knee/L_ankle in 40/100 frames for player 0 (frac 0.4 > 0.3).
+    for t in range(40):
+        clip['JnB'][t, 0, 31] = clip['JnB'][t, 0, 27] - 0.1
+    result = v.validate_clip(clip)
+    assert any("may not match COCO-17" in w for w in result.warnings), (
+        "systematic joint-order violation not flagged"
+    )
+
+
 def test_validator_merge_combines_results():
     r1 = ValidationResult(n_checks=2, n_passed=2)
     r2 = ValidationResult(
