@@ -589,3 +589,27 @@ git commit -m "test: guard repaired-fed clip presence/eligibility"
 - **Type consistency:** `benchmark()` returns the same dict keys used by tests; `assign_rally_owners` keeps the `OwnerDecision` dataclass and `players_by_side` signature; `OwnershipScorer` weights already exist in `from_settings()`. `center_align(kps)` signature unchanged.
 
 **Execution handoff:** Two options — (1) Subagent-Driven (recommended): one fresh subagent per task, review between tasks; (2) Inline Execution: batch in this session with checkpoints. Which do you want?
+
+---
+
+## Execution Status (all tasks DONE — 2026-07-15)
+
+Branch `accuracy-improvement`, base `bc7131e`, final HEAD `5b89212`.
+
+| Task | Outcome | Commit |
+|------|---------|--------|
+| 0.1 benchmark harness | COMPLETE (reviewer approved) | 9b0891d, 852960e, 9cd2448 |
+| 1.1 temporal offset | COMPLETE (offset 8→11) | fa4d119 |
+| 2.1 attribution turn/BST | COMPLETE (7 signals) | 74cdba0 |
+| 2.2 full-rally Viterbi | COMPLETE (rally_enabled=True) | 6ef0b39 |
+| 2.3 near/far convention | COMPLETE (no inversion) | a20ce3e |
+| 3.1 joint centering | COMPLETE — NO defect found (regression test) | a2b5216 |
+| 3.2 checkpoint selection | COMPLETE — keep CG_AP (rush→unknown by design) | a971286 |
+| 3.3 joint quality guard | COMPLETE — added joint_degenerate_fraction gate | 5b89212 |
+
+Verification: full backend suite 552 passed / 7 skipped / 4 failed (4 failures pre-existing on clean
+master, unrelated). No new failures from any task.
+
+Final metric re-measurement is PENDING — requires a GPU/Colab pipeline re-run + re-running
+benchmark_labels.py (dev env is CPU-only). See `.superpowers/sdd/progress.md` for the Phase-0
+baseline and re-run steps.
