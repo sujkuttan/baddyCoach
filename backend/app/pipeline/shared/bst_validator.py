@@ -78,7 +78,7 @@ _SRC = {
     # Hit frame alignment
     "clip_window_start": "backend/app/pipeline/strokes.py:27  _build_clip — frame 0 = hit_frame",
     "clip_window_end": "backend/app/pipeline/strokes.py:306-351  floor/ceiling from StrokeClassificationStage.run()",
-    "clip_boundary_setting": "backend/app/config/settings.py:126  bst_clip_boundary = 'hit_start'|'midpoint'",
+    "clip_boundary_setting": "backend/app/config/settings.py:208  bst_clip_boundary = 'midpoint' (hit centered: wind-up + follow-through) | 'hit_start' (frame 0 = hit)",
 }
 
 

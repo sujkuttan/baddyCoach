@@ -205,7 +205,7 @@ class Settings(BaseSettings):
     bst_prior_correction_strength: float = 0.75  # α; 0 = off (reproduces pre-Spec-5 output)
     bst_logit_bias_path: Path | None = _project_root / "ckpts/bst/bst_logit_bias.json"
     bst_prior_min_clips: int = 30  # min clips for self-calibration fallback
-    bst_clip_boundary: str = "hit_start"  # "hit_start" (frame 0 = hit) or "midpoint" (midpoint-to-midpoint + resample)
+    bst_clip_boundary: str = "midpoint"  # "hit_start" (frame 0 = hit, no wind-up) or "midpoint" (centers hit: wind-up + follow-through)
     bst_validation_level: str = "error"  # "off" | "warn" | "error" — BST input tensor validation; set to "error" during debugging for loud failures
     bst_input_quality_enabled: bool = True
     bst_min_clip_video_frames: int = 15
