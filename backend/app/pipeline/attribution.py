@@ -13,6 +13,38 @@ from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CANONICAL NEAR/FAR CONVENTION  (verified against gold labels — Task 2.3)
+# ─────────────────────────────────────────────────────────────────────────────
+# The `side` column of `shots_df` MUST share the exact meaning of the human
+# annotation `side` column in `labels_enriched_new.csv` ("near"/"far" = which
+# player hit the shot). An inverted convention would flip EVERY attribution
+# metric for no good reason, so the mapping below is intentionally direct.
+#
+#   • "near" = the camera-NEAR / lower-court player. In image coordinates the
+#     court y-axis increases downward, so the player with the larger median
+#     court-y (nearer the bottom of the frame) is "near". Player tracking
+#     (`players.py::_resolve_sides`) assigns `player_1` → "near" and
+#     `player_2` → "far" by this rule, independent of track index.
+#
+#   • BST AimPlayer `alpha > 0.5` ⇒ the FAR player hit the shot, which maps to
+#     `side="far"`. `alpha < 0.5` ⇒ "near". (This is used only for diagnostics
+#     in `attention_alpha_owner`; it is NOT the emission that sets `side`.)
+#
+#   • `OwnerDecision.side` ("near"/"far", decided by the Viterbi/anchor logic in
+#     `ownership_quality.assign_rally_owners`) is written DIRECTLY to
+#     `shots_df["side"]` below with NO inversion. Do NOT add any
+#     `side = "far" if decision.side == "near" else "near"` flip — that would
+#     invert the convention vs the gold labels.
+#
+# Regression guard: `tests/test_attribution.py::test_near_far_convention_vs_labels`
+# asserts the committed-only attribution match rate (non-null side AND
+# `owner_uncertain == False`) against the gold labels stays > 50%. The current
+# real run reports ~62.5% committed match, confirming the convention is NOT
+# inverted.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 class PlayerAttributionStage:
     name = "player_attribution"
     input_keys = ["shots", "shuttle", "players", "court", "pose", "rallies"]
@@ -103,6 +135,9 @@ class PlayerAttributionStage:
             for idx in indices:
                 decision = decisions[idx]
                 shots_df.at[idx, "player_id"] = decision.player_id
+                # OwnerDecision.side is "near"/"far" and is written verbatim to
+                # shots_df["side"] — see the CANONICAL NEAR/FAR CONVENTION block
+                # above. Intentionally NO inversion.
                 shots_df.at[idx, "side"] = decision.side
                 shots_df.at[idx, "owner_confident"] = decision.confident
                 shots_df.at[idx, "owner_source"] = decision.source

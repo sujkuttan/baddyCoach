@@ -1,9 +1,97 @@
 import numpy as np
 import pandas as pd
 import pytest
+from pathlib import Path
+
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import PlayerAttributionStage
 from app.pipeline.shared.ownership_scorer import OwnershipScorer
+
+
+# ── Task 2.3: guard against an inverted near/far convention vs gold labels ──
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SHOTS_PARQUET = REPO_ROOT / "results" / "hybrid_results" / "debug" / "shots.parquet"
+LABELS_CSV = REPO_ROOT / "labels_enriched_new.csv"
+FPS = 30.0
+MATCH_RADIUS = 15
+
+
+def _build_gold_labels(csv_path: Path) -> list[dict]:
+    """Mirror evaluate_labels.evaluate_enriched_csv label build (fps=30).
+
+    Only rows with label_status == 'labeled' are used, matching the benchmark
+    harness. `side` is the gold near/far annotation of who hit the shot.
+    """
+    df = pd.read_csv(csv_path)
+    df = df[df["label_status"] == "labeled"].copy()
+    labels = []
+    for _, row in df.iterrows():
+        lf = int(row["shot_frame"]) if "shot_frame" in row and not pd.isna(row.get("shot_frame")) else int(row["label_frame"])
+        labels.append({
+            "frame": int(lf),
+            "player": str(row["side"]).strip().lower(),
+            "stroke": str(row["true_stroke"]).strip(),
+        })
+    return labels
+
+
+def _match_labels_to_shots(labels: list[dict], shots: pd.DataFrame, radius: int = MATCH_RADIUS) -> list[tuple[dict, int | None]]:
+    """Greedy nearest match (one pipeline shot per label), radius in frames.
+
+    Reproduces evaluate_labels.match_labels_to_shots exactly.
+    """
+    shots_unused = set(shots.index)
+    matches = []
+    for lab in labels:
+        best_idx, best_dist = None, float("inf")
+        for idx in shots_unused:
+            dist = abs(int(shots.loc[idx, "frame"]) - lab["frame"])
+            if dist < best_dist and dist <= radius:
+                best_dist, best_idx = dist, idx
+        matches.append((lab, best_idx))
+        if best_idx is not None:
+            shots_unused.remove(best_idx)
+    return matches
+
+
+@pytest.mark.integration
+@pytest.mark.benchmark
+def test_near_far_convention_vs_labels():
+    """Committed-only attribution match rate vs gold labels must stay > 50%.
+
+    An inverted near/far convention would invert every attribution metric. If
+    the pipeline convention were flipped, this committed-only match rate would
+    collapse toward < 50% (random), so this guards against a future sign-flip.
+    Skips cleanly when the real parquet/CSV are absent (CPU-only environments).
+    """
+    if not SHOTS_PARQUET.exists() or not LABELS_CSV.exists():
+        pytest.skip("Real pipeline outputs / gold labels not present")
+
+    shots = pd.read_parquet(SHOTS_PARQUET).sort_values("frame").reset_index(drop=True)
+    shots["time_s"] = shots["frame"] / FPS
+    labels = _build_gold_labels(LABELS_CSV)
+
+    matches = _match_labels_to_shots(labels, shots)
+
+    committed = []  # (pipeline_side, label_side) for committed shots only
+    for lab, idx in matches:
+        if idx is None:
+            continue
+        side = shots.loc[idx, "side"]
+        uncertain = bool(shots.loc[idx, "owner_uncertain"]) if "owner_uncertain" in shots.columns else False
+        if side not in {"near", "far"} or uncertain:
+            continue
+        committed.append((side, lab["player"]))
+
+    assert committed, "no committed (non-null side, owner_uncertain==False) matches found"
+    correct = sum(1 for ps, ls in committed if ps == ls)
+    rate = correct / len(committed)
+    # Regression threshold: an inverted convention yields ~random (<50%).
+    assert rate > 0.50, (
+        f"near/far convention appears INVERTED vs gold labels: "
+        f"committed match rate = {rate:.1%} ({correct}/{len(committed)}). "
+        f"Check the OwnerDecision.side -> shots_df['side'] mapping."
+    )
 
 
 def test_attribution_assigns_player_to_shots(tmp_job_dir):
