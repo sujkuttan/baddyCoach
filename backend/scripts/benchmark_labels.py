@@ -1,349 +1,357 @@
-"""Labels benchmark harness (Task 0.1).
+"""Labels benchmark harness (Task 0.1) — canonical A/B replication.
 
-Loads a real pipeline ``shots`` parquet and the gold ``labels_enriched`` CSV,
-merges them, and reports four metric groups:
+This script REPLICATES ``backend/scripts/evaluate_labels.py::evaluate_enriched_csv``
+exactly so its baseline numbers match the repo's established A/B method
+(``labels_enriched_new.csv`` vs ``results/hybrid_results/debug/shots.parquet``).
 
-  * temporal    - frame alignment error (frame_diff = label_frame - shot frame)
-  * stroke      - exact + similar match rate, top confusions
-  * attribution - committed-only (owner confident) and all (ignore uncertainty)
-  * coverage    - bst_input_eligible fraction (matched + all) and recall
+The first harness attempt (commit 9b0891d) diverged from the canonical method:
+it matched labels on ``label_frame`` and used a new ``stroke_groups.yaml``
+taxonomy. The canonical method matches on the CSV's ``shot_frame`` column and
+uses the ``STROKE_SIMILARITY`` map (see below). This rewrite fixes both.
 
-This script is fully self-contained: it does NOT import from
-``evaluate_labels.py`` or any notebook. Only pandas, numpy and pyyaml are used.
+The script is fully self-contained: it does NOT import from ``evaluate_labels.py``
+or any notebook. The canonical ``STROKE_SIMILARITY`` map and ``stroke_matches`` /
+``normalize_stroke`` are embedded VERBATIM below (clearly marked) so the harness
+stays a standalone measurement tool.
 
-Merge note
-----------
-The gold label CSV's ``shot_id`` column is empty for every row, so a direct
-``shot_id`` join (as originally specced) is impossible. Instead we use the
-repository's established temporal matching (see ``evaluate_labels.py``
-``evaluate_enriched_csv`` / ``match_labels_to_shots``): each gold label is
-matched to the nearest pipeline shot by |label_frame - shot.frame| within a
-radius (default 15 frames), greedily (each shot used at most once). This is the
-only defensible, non-guessed mapping given the data, and is documented in the
-report output.
+Metric groups reported:
+  * temporal    - CSV ``frame_diff`` series + live |label_frame - shot.frame|
+  * stroke      - exact + similar match rate using canonical similarity map
+  * attribution - all matched (matches evaluate_labels.py) + committed-only
+  * coverage    - bst_input_eligible fraction (matched + all labels) and recall
 """
 
 from __future__ import annotations
 
 import argparse
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import yaml
 
-# --- Canonical internal column names ---------------------------------------
-# The brief assumes pipeline columns named shot_frame / stroke / bst_eligible /
-# bst_quality_score, but the real parquet uses frame / stroke_type /
-# bst_input_eligible / bst_input_quality_score. We normalise on load so the
-# harness tolerates both.
-_COLUMN_RENAME = {
-    "stroke": "stroke_type",
-    "bst_eligible": "bst_eligible",
-    "bst_input_eligible": "bst_eligible",
-    "bst_quality_score": "bst_quality_score",
-    "bst_input_quality_score": "bst_quality_score",
+
+# ===========================================================================
+# Canonical stroke taxonomy — COPIED VERBATIM from
+# backend/scripts/evaluate_labels.py (STROKE_SIMILARITY / normalize_stroke /
+# stroke_matches). Do NOT edit independently; this mirrors the canonical method
+# so the harness stays a self-contained replication of evaluate_enriched_csv.
+# ===========================================================================
+STROKE_SIMILARITY = {
+    "lift": ["lift", "defensive_lift", "clear"],
+    "clear": ["clear", "lift", "defensive_lift"],
+    "drop": ["drop", "net_shot"],
+    "net shot": ["net_shot", "drop", "push"],
+    "netshot": ["net_shot", "drop", "push"],
+    "drive": ["drive", "push", "rush"],
+    "smash": ["smash", "rush", "drive"],
+    "serve": ["short_serve", "long_serve", "serve"],
+    "push": ["push", "drive", "net_shot"],
+    "rush": ["rush", "drive", "smash", "push"],
+    "block": ["block", "drive", "net_shot"],
+    "defensive lift": ["lift", "defensive_lift", "clear"],
+    "soft lift or push": ["soft_lift_or_push", "lift", "push"],
+    "cross court": ["cross_court", "drive", "clear"],
 }
 
-# Default embedded stroke-group map, used if the yaml cannot be found.
-_DEFAULT_STROKE_GROUPS = {
-    "clear": "clear_family",
-    "lift": "clear_family",
-    "defensive_lift": "clear_family",
-    "smash": "attack_family",
-    "rush": "attack_family",
-    "drive": "flat_family",
-    "push": "flat_family",
-    "drop": "soft_family",
-    "net_shot": "soft_family",
-    "block": "block_family",
-    "short_serve": "serve_family",
-    "long_serve": "serve_family",
-    "serve": "serve_family",
-    "cross_court": "cross_family",
-}
 
-# Path to the shipped stroke_groups.yaml, relative to this script.
-_STROKE_GROUPS_PATH = (
-    Path(__file__).resolve().parent.parent
-    / "app"
-    / "shuttle_coach"
-    / "feedback"
-    / "stroke_groups.yaml"
-)
+def normalize_stroke(s: str) -> str:
+    # Verbatim mirror of evaluate_labels.py::normalize_stroke
+    return s.strip().lower().replace(" ", "").replace("_", "")
 
 
-# --- Loading ----------------------------------------------------------------
-def load_stroke_groups(path=None):
-    """Load the stroke -> group map from yaml.
+def stroke_matches(pipeline_stroke: str, label_stroke: str) -> str:
+    """Check if pipeline stroke matches label stroke.
 
-    Falls back to an embedded default map if the file is missing or cannot be
-    parsed, so the harness (and its tests) never hard-depend on the file.
+    Returns 'exact', 'similar', or 'wrong'. Copied VERBATIM from
+    backend/scripts/evaluate_labels.py::stroke_matches.
     """
-    p = Path(path) if path else _STROKE_GROUPS_PATH
-    if p and p.exists():
-        try:
-            with open(p) as f:
-                data = yaml.safe_load(f) or {}
-            if isinstance(data, dict) and data:
-                return {str(k): str(v) for k, v in data.items()}
-        except (yaml.YAMLError, OSError):
-            pass
-    return dict(_DEFAULT_STROKE_GROUPS)
+    p_norm = normalize_stroke(pipeline_stroke)
+    l_norm = normalize_stroke(label_stroke)
+
+    if p_norm == l_norm:
+        return "exact"
+
+    # Check similarity map
+    for key, alternatives in STROKE_SIMILARITY.items():
+        key_norm = normalize_stroke(key)
+        alt_norm = [normalize_stroke(a) for a in alternatives]
+        if l_norm == key_norm and p_norm in alt_norm:
+            return "similar"
+        if p_norm == key_norm and l_norm in alt_norm:
+            return "similar"
+
+    return "wrong"
 
 
+# ===========================================================================
+# Loading
+# ===========================================================================
 def load_shots(path):
-    """Load the pipeline shots parquet, normalising column names."""
+    """Load the pipeline shots parquet, sorted by frame (mirrors
+    ``load_pipeline_shots`` in evaluate_labels.py which sorts by frame)."""
     df = pd.read_parquet(path)
-    df = df.rename(columns={k: v for k, v in _COLUMN_RENAME.items() if k in df.columns})
-    if "frame" not in df.columns and "shot_frame" in df.columns:
-        df = df.rename(columns={"shot_frame": "frame"})
-    if "shot_id" not in df.columns:
-        df = df.reset_index(drop=True)
-        df["shot_id"] = np.arange(1, len(df) + 1)
+    # Normalise the eligibility column name if needed.
+    if "bst_input_eligible" in df.columns:
+        df = df.rename(columns={"bst_input_eligible": "bst_input_eligible"})
+    df = df.sort_values("frame").reset_index(drop=True)
+    # Ensure required columns exist for downstream access.
+    for col in ("frame", "side", "stroke_type", "stroke_confidence",
+                "bst_input_eligible", "owner_uncertain"):
+        if col not in df.columns:
+            df[col] = np.nan
     df["frame"] = pd.to_numeric(df["frame"], errors="coerce")
     return df
 
 
 def load_labels(path):
-    """Load the gold label CSV and keep only manually labelled rows."""
-    df = pd.read_csv(path)
-    if "label_status" in df.columns:
-        df = df[df["label_status"].astype(str) == "labeled"].copy()
-    df["label_frame"] = pd.to_numeric(df.get("label_frame"), errors="coerce")
-    if "side" in df.columns:
-        df["side"] = df["side"].astype(str).str.strip().str.lower()
-    if "true_stroke" in df.columns:
-        df["true_stroke"] = df["true_stroke"].astype(str).str.strip()
-    return df.reset_index(drop=True)
+    """Load the gold label CSV and keep only manually labelled rows.
 
-
-# --- Matching ---------------------------------------------------------------
-def match_labels_to_shots(labels_df, shots_df, radius_frames=15):
-    """Greedily match each label to the nearest pipeline shot by frame.
-
-    Returns a list of dicts, one per label, with keys:
-        label_idx, label_frame, side, true_stroke,
-        shot_idx (or None), frame (or None), frame_diff (or None).
-    Each pipeline shot is consumed by at most one label (greedy nearest).
+    Mirrors ``evaluate_enriched_csv``: build the label frame from the CSV's
+    ``shot_frame`` column (the pipeline frame recorded at labeling time),
+    falling back to ``label_frame`` when ``shot_frame`` is missing.
     """
-    shots = shots_df.sort_values("frame").reset_index(drop=True)
-    used = set()
+    df = pd.read_csv(path)
+    df = df[df["label_status"] == "labeled"].copy()
+    df = df.reset_index(drop=True)
+
+    labels = []
+    for _, row in df.iterrows():
+        lf = int(row["shot_frame"]) if ("shot_frame" in row and not pd.isna(row.get("shot_frame"))) else int(row["label_frame"])
+        label_frame = int(row["label_frame"]) if "label_frame" in row and not pd.isna(row.get("label_frame")) else lf
+        labels.append({
+            "time_s": lf / 30.0,
+            "frame": lf,
+            "label_frame": label_frame,
+            "frame_diff": int(row["frame_diff"]) if "frame_diff" in row and not pd.isna(row.get("frame_diff")) else None,
+            "player": str(row["side"]).strip(),
+            "stroke": str(row["true_stroke"]).strip(),
+        })
+    return labels
+
+
+# ===========================================================================
+# Matching — greedy nearest, each pipeline shot used at most once.
+# Mirrors evaluate_labels.py::match_labels_to_shots exactly.
+# ===========================================================================
+def match_labels_to_shots(labels, shots, radius_frames=15):
+    shots_unused = set(shots.index)
     matches = []
-    for li, lab in labels_df.iterrows():
-        lf = lab.get("label_frame")
+
+    for lab in labels:
         best_idx = None
-        best_dist = np.inf
-        if pd.notna(lf):
-            lf = float(lf)
-            for si in range(len(shots)):
-                if si in used:
-                    continue
-                dist = abs(float(shots.loc[si, "frame"]) - lf)
-                if dist < best_dist and dist <= radius_frames:
-                    best_dist = dist
-                    best_idx = si
+        best_dist = float("inf")
+        for idx in shots_unused:
+            dist = abs(shots.loc[idx, "frame"] - lab["frame"])
+            if dist < best_dist and dist <= radius_frames:
+                best_dist = dist
+                best_idx = idx
         if best_idx is not None:
-            used.add(best_idx)
-            sframe = float(shots.loc[best_idx, "frame"])
             matches.append({
-                "label_idx": li,
-                "label_frame": lf,
-                "side": lab.get("side"),
-                "true_stroke": lab.get("true_stroke"),
-                "shot_idx": int(best_idx),
-                "frame": sframe,
-                "frame_diff": lf - sframe,
+                "label": lab,
+                "shot_idx": best_idx,
+                "shot": shots.loc[best_idx].to_dict(),
+                "frame_error": int(best_dist),
             })
+            shots_unused.remove(best_idx)
         else:
             matches.append({
-                "label_idx": li,
-                "label_frame": lf if pd.notna(lf) else None,
-                "side": lab.get("side"),
-                "true_stroke": lab.get("true_stroke"),
+                "label": lab,
                 "shot_idx": None,
-                "frame": None,
-                "frame_diff": None,
+                "shot": None,
+                "frame_error": None,
             })
     return matches
 
 
-# --- Scoring ----------------------------------------------------------------
-def _group_of(stroke, stroke_groups):
-    if stroke is None:
-        return None
-    s = str(stroke).strip().lower()
-    return stroke_groups.get(s, s)
+# ===========================================================================
+# Scoring — mirrors evaluate_enriched_csv / compute_metrics / summarize.
+# ===========================================================================
+def merge_and_score(shots_df, labels, radius_frames=15):
+    matches = match_labels_to_shots(labels, shots_df, radius_frames=radius_frames)
 
+    # Override frame error with the pre-computed CSV frame_diff (canonical does
+    # this by CSV-row index, which aligns with labels order).
+    for i, m in enumerate(matches):
+        if m["shot_idx"] is not None and i < len(labels) and labels[i]["frame_diff"] is not None:
+            m["frame_error"] = labels[i]["frame_diff"]
 
-def merge_and_score(shots_df, labels_df, stroke_groups=None, radius_frames=15):
-    """Merge labels to shots and compute the four benchmark metric groups.
-
-    Returns a dict with top-level keys: temporal, stroke, attribution, coverage,
-    plus summary counts (n_labels, n_shots, n_matched, n_missed).
-    """
-    if stroke_groups is None:
-        stroke_groups = load_stroke_groups()
-    matches = match_labels_to_shots(labels_df, shots_df, radius_frames=radius_frames)
-
-    n_labels = len(matches)
+    n_labels = len(labels)
+    n_shots = len(shots_df)
     n_matched = sum(1 for m in matches if m["shot_idx"] is not None)
     n_missed = n_labels - n_matched
 
-    # Build augmented rows for matched shots.
-    rows = []
+    # Per-shot stroke / player / frame results (mirrors compute_metrics).
+    stroke_results = []
+    player_results = []
+    frame_errors = []
+    live_frame_errors = []  # |label_frame - matched shot.frame|
+    matched_rows = []
     for m in matches:
-        if m["shot_idx"] is None:
+        if m["shot"] is None:
+            stroke_results.append("missed")
+            player_results.append("missed")
             continue
-        s = shots_df.iloc[m["shot_idx"]]
-        rows.append({
-            "label_frame": m["label_frame"],
-            "true_stroke": m["true_stroke"],
-            "label_side": m["side"],
-            "shot_frame": m["frame"],
-            "frame_diff": m["frame_diff"],
-            "pred_stroke": s.get("stroke_type"),
-            "pred_side": s.get("side"),
-            "owner_uncertain": bool(s.get("owner_uncertain")) if pd.notna(s.get("owner_uncertain")) else None,
-            "bst_eligible": bool(s.get("bst_eligible")) if pd.notna(s.get("bst_eligible")) else False,
-        })
-    matched = pd.DataFrame(rows)
+        s_match = stroke_matches(m["shot"]["stroke_type"], m["label"]["stroke"])
+        stroke_results.append(s_match)
+        p_match = "correct" if m["shot"]["side"] == m["label"]["player"].lower() else "wrong"
+        player_results.append(p_match)
+        frame_errors.append(m["frame_error"])
+        live_frame_errors.append(abs(m["label"]["label_frame"] - m["shot"]["frame"]))
 
-    # --- Temporal ---
-    if n_matched:
-        fd = matched["frame_diff"].astype(float)
-        temporal = {
-            "n": int(n_matched),
-            "mean": float(fd.mean()),
-            "median": float(fd.median()),
-            "max": float(fd.max()),
-            "mean_abs": float(fd.abs().mean()),
-            "std": float(fd.std()) if n_matched > 1 else 0.0,
+        row = dict(m["shot"])
+        row["true_stroke"] = m["label"]["stroke"]
+        row["label_player"] = m["label"]["player"].lower()
+        row["label_frame"] = m["label"]["label_frame"]
+        matched_rows.append(row)
+
+    stroke_exact = sum(1 for s in stroke_results if s == "exact")
+    stroke_similar = sum(1 for s in stroke_results if s == "similar")
+    stroke_correct = stroke_exact + stroke_similar
+    player_correct = sum(1 for p in player_results if p == "correct")
+
+    # --- Temporal: CSV frame_diff series (all labeled rows) ---
+    csv_frame_diffs = [lab["frame_diff"] for lab in labels if lab["frame_diff"] is not None]
+    if csv_frame_diffs:
+        temporal_csv = {
+            "n": int(len(csv_frame_diffs)),
+            "mean": float(np.mean(csv_frame_diffs)),
+            "median": float(np.median(csv_frame_diffs)),
+            "max": float(np.max(csv_frame_diffs)),
+            "mean_abs": float(np.mean(np.abs(csv_frame_diffs))),
         }
     else:
-        temporal = {"n": 0, "mean": 0.0, "median": 0.0, "max": 0.0, "mean_abs": 0.0, "std": 0.0}
+        temporal_csv = {"n": 0, "mean": 0.0, "median": 0.0, "max": 0.0, "mean_abs": 0.0}
 
-    # --- Stroke ---
-    exact = similar = 0
-    confusions = Counter()
-    if n_matched:
-        for _, r in matched.iterrows():
-            p = str(r["pred_stroke"]).strip().lower() if pd.notna(r["pred_stroke"]) else ""
-            t = str(r["true_stroke"]).strip().lower() if pd.notna(r["true_stroke"]) else ""
-            if p == t:
-                exact += 1
-                similar += 1
-            elif _group_of(p, stroke_groups) is not None and _group_of(p, stroke_groups) == _group_of(t, stroke_groups):
-                similar += 1
-            else:
-                confusions[(p, t)] += 1
+    # --- Temporal: live |label_frame - matched shot.frame| (matched subset) ---
+    if live_frame_errors:
+        temporal_live = {
+            "n": int(len(live_frame_errors)),
+            "mean": float(np.mean(live_frame_errors)),
+            "median": float(np.median(live_frame_errors)),
+            "max": float(np.max(live_frame_errors)),
+            "mean_abs": float(np.mean(np.abs(live_frame_errors))),
+        }
+    else:
+        temporal_live = {"n": 0, "mean": 0.0, "median": 0.0, "max": 0.0, "mean_abs": 0.0}
+
     stroke = {
         "n": int(n_matched),
-        "exact": int(exact),
-        "similar": int(similar),
-        "exact_rate": exact / n_matched if n_matched else 0.0,
-        "similar_rate": similar / n_matched if n_matched else 0.0,
-        "top_confusions": [
-            {"pred": k[0], "true": k[1], "count": v}
-            for k, v in confusions.most_common(10)
-        ],
+        "exact": int(stroke_exact),
+        "similar": int(stroke_similar),
+        "exact_rate": stroke_exact / n_matched if n_matched else 0.0,
+        "similar_rate": (stroke_exact + stroke_similar) / n_matched * 100 if n_matched else 0.0,
+        "combined_rate": (stroke_exact + stroke_similar) / n_matched * 100 if n_matched else 0.0,
     }
 
-    # --- Attribution ---
-    # Treat a side of 'unknown' (or NaN) as missing: it carries no
-    # attribution information and must not count as a wrong side.
-    def _known_side(v):
-        if v is None or (isinstance(v, float) and np.isnan(v)):
-            return False
-        return str(v).strip().lower() not in ("", "nan", "none", "unknown")
+    # --- Attribution (a): all matched (mirrors compute_metrics player_accuracy) ---
+    attr_all_n = n_matched
+    attr_all_correct = player_correct
+    attr_all_rate = player_correct / n_matched * 100 if n_matched else 0.0
 
-    side_mask = matched["pred_side"].apply(_known_side) & matched["label_side"].apply(_known_side)
-    side_rows = matched[side_mask]
-    committed = side_rows[side_rows["owner_uncertain"] == False]  # noqa: E712
-    attr = {
-        "n_with_side": int(len(side_rows)),
-        "committed_n": int(len(committed)),
-        "committed_correct": int((committed["pred_side"] == committed["label_side"]).sum()) if len(committed) else 0,
-        "committed_rate": float((committed["pred_side"] == committed["label_side"]).mean()) if len(committed) else 0.0,
-        "all_n": int(len(side_rows)),
-        "all_correct": int((side_rows["pred_side"] == side_rows["label_side"]).sum()) if len(side_rows) else 0,
-        "all_rate": float((side_rows["pred_side"] == side_rows["label_side"]).mean()) if len(side_rows) else 0.0,
-    }
+    # --- Attribution (b): committed-only (non-null side AND owner_uncertain==False) ---
+    committed = []
+    for m in matches:
+        if m["shot"] is None:
+            continue
+        side = m["shot"]["side"]
+        ou = m["shot"]["owner_uncertain"]
+        if side is None or (isinstance(side, float) and np.isnan(side)):
+            continue
+        if str(side).strip().lower() in ("", "nan", "none", "unknown"):
+            continue
+        if ou is None or (isinstance(ou, float) and np.isnan(ou)) or ou:
+            continue
+        committed.append(m)
+    committed_n = len(committed)
+    committed_correct = sum(
+        1 for m in committed if m["shot"]["side"] == m["label"]["player"].lower()
+    )
+    committed_rate = committed_correct / committed_n * 100 if committed_n else 0.0
 
     # --- Coverage / recall ---
-    eligible_matched = int(matched["bst_eligible"].sum()) if n_matched else 0
-    coverage = {
-        "recall": n_matched / n_labels if n_labels else 0.0,
-        "eligible_matched": eligible_matched,
-        "eligible_matched_rate": eligible_matched / n_matched if n_matched else 0.0,
-        "eligible_all_rate": eligible_matched / n_labels if n_labels else 0.0,
-    }
+    recall = n_matched / n_labels * 100 if n_labels else 0.0
+    eligible_matched = sum(
+        1 for r in matched_rows if bool(r.get("bst_input_eligible", False))
+    )
+    eligible_rate_matched = eligible_matched / n_matched * 100 if n_matched else 0.0
+    eligible_rate_all = eligible_matched / n_labels * 100 if n_labels else 0.0
 
     return {
-        "n_labels": n_labels,
-        "n_shots": int(len(shots_df)),
-        "n_matched": n_matched,
-        "n_missed": n_missed,
-        "temporal": temporal,
+        "n_labels": int(n_labels),
+        "n_shots": int(n_shots),
+        "n_matched": int(n_matched),
+        "n_missed": int(n_missed),
+        "temporal_csv": temporal_csv,
+        "temporal_live": temporal_live,
         "stroke": stroke,
-        "attribution": attr,
-        "coverage": coverage,
+        "attribution_all_correct": int(attr_all_correct),
+        "attribution_all_n": int(attr_all_n),
+        "attribution_all_rate": float(attr_all_rate),
+        "attribution_committed_correct": int(committed_correct),
+        "attribution_committed_n": int(committed_n),
+        "attribution_committed_rate": float(committed_rate),
+        "coverage_recall": float(recall),
+        "coverage_eligible_matched": int(eligible_matched),
+        "coverage_eligible_rate_matched": float(eligible_rate_matched),
+        "coverage_eligible_rate_all": float(eligible_rate_all),
+        "matches": matches,
     }
 
 
-# --- Reporting --------------------------------------------------------------
+# ===========================================================================
+# Reporting
+# ===========================================================================
 def format_report(metrics, labels_path="?", shots_path="?"):
     out = []
     w = out.append
     w("=" * 70)
     w("  BADDYCOACH LABELS BENCHMARK REPORT (Task 0.1)")
+    w("  [canonical method: mirror of evaluate_labels.py::evaluate_enriched_csv]")
     w("=" * 70)
     w(f"  Labels file: {labels_path}")
     w(f"  Shots file : {shots_path}")
     w("")
-    w("  MERGE NOTE: label shot_id column is empty; matched by nearest")
-    w("  pipeline frame within radius (temporal greedy match).")
+    w("  Coverage / Recall:")
+    w(f"    Labels:          {metrics['n_labels']}")
+    w(f"    Pipeline shots:  {metrics['n_shots']}")
+    w(f"    Matched:         {metrics['n_matched']} ({metrics['coverage_recall']:.1f}% recall)")
+    w(f"    Missed:          {metrics['n_missed']} (label has no nearby pipeline shot)")
     w("")
-    w("  Coverage:")
-    w(f"    Labels:        {metrics['n_labels']}")
-    w(f"    Pipeline shots: {metrics['n_shots']}")
-    w(f"    Matched:       {metrics['n_matched']} ({metrics['coverage']['recall']*100:.1f}% recall)")
-    w(f"    Missed:        {metrics['n_missed']} (no nearby pipeline shot)")
+    w("  Temporal Alignment (CSV frame_diff = label_frame - shot_frame):")
+    tc = metrics["temporal_csv"]
+    w(f"    CSV series   n={tc['n']}  mean={tc['mean']:.2f}  median={tc['median']:.2f}  "
+      f"max={tc['max']:.2f}  mean|diff|={tc['mean_abs']:.2f}")
+    tl = metrics["temporal_live"]
+    w(f"    Live |label_frame-shot.frame| (matched only):")
+    w(f"                  n={tl['n']}  mean={tl['mean']:.2f}  median={tl['median']:.2f}  "
+      f"max={tl['max']:.2f}  mean|diff|={tl['mean_abs']:.2f}")
     w("")
-    w("  Temporal (frame_diff = label_frame - shot frame):")
-    t = metrics["temporal"]
-    w(f"    n={t['n']}  mean={t['mean']:.2f}  median={t['median']:.2f}  "
-      f"max={t['max']:.2f}  mean|diff|={t['mean_abs']:.2f}  std={t['std']:.2f}")
-    w("")
-    w("  Stroke (exact + similar via stroke_groups.yaml):")
+    w("  Stroke Accuracy (exact + similar via canonical STROKE_SIMILARITY):")
     s = metrics["stroke"]
-    w(f"    n={s['n']}  exact={s['exact']} ({s['exact_rate']*100:.1f}%)  "
-      f"similar={s['similar']} ({s['similar_rate']*100:.1f}%)")
-    if s["top_confusions"]:
-        w("    Top confusions (pred -> true : count):")
-        for c in s["top_confusions"]:
-            w(f"      {c['pred']} -> {c['true']} : {c['count']}")
+    w(f"    n={s['n']}  exact={s['exact']}  similar={s['similar']}")
+    w(f"    Exact rate:   {s['exact_rate']*100:.1f}%")
+    w(f"    Similar rate: +{(s['similar'] - s['exact'])/s['n']*100 if s['n'] else 0:.1f}%")
+    w(f"    Combined:     {s['combined_rate']:.1f}%  (=(exact+similar)/matched)")
     w("")
-    w("  Attribution (side vs labeled side):")
-    a = metrics["attribution"]
-    w(f"    Committed-only (owner confident): {a['committed_correct']}/{a['committed_n']} "
-      f"({a['committed_rate']*100:.1f}%)")
-    w(f"    All (ignore uncertainty):         {a['all_correct']}/{a['all_n']} "
-      f"({a['all_rate']*100:.1f}%)")
+    w("  Player Attribution (side vs labeled side):")
+    w(f"    (a) All matched (matches evaluate_labels.py): "
+      f"{metrics['attribution_all_correct']}/{metrics['attribution_all_n']} "
+      f"({metrics['attribution_all_rate']:.1f}%)")
+    w(f"    (b) Committed-only (non-null side AND owner_uncertain==False): "
+      f"{metrics['attribution_committed_correct']}/{metrics['attribution_committed_n']} "
+      f"({metrics['attribution_committed_rate']:.1f}%)")
     w("")
-    w("  BST input eligibility / coverage:")
-    c = metrics["coverage"]
-    w(f"    Eligible among matched: {c['eligible_matched']}/{metrics['n_matched']} "
-      f"({c['eligible_matched_rate']*100:.1f}%)")
-    w(f"    Eligible among all labels: {c['eligible_matched']}/{metrics['n_labels']} "
-      f"({c['eligible_all_rate']*100:.1f}%)")
+    w("  BST Input Eligibility / Coverage:")
+    w(f"    Eligible among matched: {metrics['coverage_eligible_matched']}/{metrics['n_matched']} "
+      f"({metrics['coverage_eligible_rate_matched']:.1f}%)")
+    w(f"    Eligible among all labels: {metrics['coverage_eligible_matched']}/{metrics['n_labels']} "
+      f"({metrics['coverage_eligible_rate_all']:.1f}%)")
     w("=" * 70)
     return "\n".join(out)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BaddyCoach labels benchmark harness")
+    parser = argparse.ArgumentParser(description="BaddyCoach labels benchmark harness (canonical A/B)")
     parser.add_argument("--shots", default="results/hybrid_results/debug/shots.parquet",
                         help="Path to pipeline shots parquet")
     parser.add_argument("--labels", default="labels_enriched_new.csv",
@@ -355,9 +363,8 @@ def main():
     args = parser.parse_args()
 
     shots_df = load_shots(args.shots)
-    labels_df = load_labels(args.labels)
-    stroke_groups = load_stroke_groups()
-    metrics = merge_and_score(shots_df, labels_df, stroke_groups, radius_frames=args.radius)
+    labels = load_labels(args.labels)
+    metrics = merge_and_score(shots_df, labels, radius_frames=args.radius)
 
     report = format_report(metrics, labels_path=args.labels, shots_path=args.shots)
     if not args.quiet:
