@@ -126,8 +126,8 @@ class Settings(BaseSettings):
     ownership_proximity_weight: float = 0.18
     ownership_motion_weight: float = 0.18
     ownership_pose_feasibility_weight: float = 0.12
-    ownership_turn_prior_weight: float = 0.0
-    ownership_bst_weight: float = 0.0
+    ownership_turn_prior_weight: float = 0.25
+    ownership_bst_weight: float = 0.15
     ownership_bst_alpha_threshold: float = 0.15
     ownership_bst_conf_min: float = 0.3
     ownership_min_anchor_confidence: float = 0.68

@@ -499,8 +499,9 @@ class OwnershipScorer:
                  proximity_weight: float = 0.15,
                  motion_weight: float = 0.15,
                  pose_feasibility_weight: float = 0.10,
-                 turn_prior_weight: float = 0.05,
-                 bst_weight: float = 0.06,
+                 # initial calibration; tune after pipeline re-run + benchmark (Task 2.x)
+                 turn_prior_weight: float = 0.25,
+                 bst_weight: float = 0.15,
                  bst_alpha_threshold: float = 0.15,
                  bst_conf_min: float = 0.3,
                  window_frames: int = 3,
@@ -571,8 +572,8 @@ class OwnershipScorer:
             proximity_weight=getattr(settings, 'ownership_proximity_weight', 0.15),
             motion_weight=getattr(settings, 'ownership_motion_weight', 0.15),
             pose_feasibility_weight=getattr(settings, 'ownership_pose_feasibility_weight', 0.10),
-            turn_prior_weight=getattr(settings, 'ownership_turn_prior_weight', 0.05),
-            bst_weight=getattr(settings, 'ownership_bst_weight', 0.06),
+            turn_prior_weight=getattr(settings, 'ownership_turn_prior_weight', 0.25),
+            bst_weight=getattr(settings, 'ownership_bst_weight', 0.15),
             bst_alpha_threshold=getattr(settings, 'ownership_bst_alpha_threshold', 0.15),
             bst_conf_min=getattr(settings, 'ownership_bst_conf_min', 0.3),
             window_frames=getattr(settings, 'ownership_window_frames', 3),
@@ -846,29 +847,37 @@ class OwnershipScorer:
         w_prox = self.proximity_weight
         w_mot = self.motion_weight
         w_pose = self.pose_feasibility_weight
-        total_w = w_traj + w_court + w_prox + w_mot + w_pose
+        w_turn = self.turn_prior_weight
+        w_bst = self.bst_weight
+        total_w = w_traj + w_court + w_prox + w_mot + w_pose + w_turn + w_bst
         if total_w > 0:
             w_traj /= total_w
             w_court /= total_w
             w_prox /= total_w
             w_mot /= total_w
             w_pose /= total_w
+            w_turn /= total_w
+            w_bst /= total_w
         else:
-            w_traj = w_court = w_prox = w_mot = w_pose = 1.0 / 5.0
+            w_traj = w_court = w_prox = w_mot = w_pose = w_turn = w_bst = 1.0 / 7.0
 
         near_score = (
             w_traj * traj_n +
             w_court * court_n +
             w_prox * prox_n +
             w_mot * mot_n +
-            w_pose * pose_n
+            w_pose * pose_n +
+            w_turn * turn_n +
+            w_bst * bst_n
         )
         far_score = (
             w_traj * traj_f +
             w_court * court_f +
             w_prox * prox_f +
             w_mot * mot_f +
-            w_pose * pose_f
+            w_pose * pose_f +
+            w_turn * turn_f +
+            w_bst * bst_f
         )
 
         # Side-specific z-score calibration (spec §18)
