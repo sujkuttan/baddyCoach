@@ -70,6 +70,8 @@ class Settings(BaseSettings):
     # Player tracking
     max_players: int = 2
     track_stitch_enabled: bool = True
+    player_stitch_scene_cut_gap_frames: int = 1
+    player_stitch_scene_cut_jump_px: float = 300.0
     tracker_config_path: Path = _project_root / "backend/app/config/bytetrack_badminton.yaml"
 
     # Hit detection — shuttle-centric GlobalHitCandidateDetector (Section 7)

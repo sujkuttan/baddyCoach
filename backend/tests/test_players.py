@@ -1,6 +1,8 @@
 import numpy as np
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import PlayerTrackingStage
+from app.pipeline.players import stitch_tracks
+
 
 
 def _make_detection(frame, bbox, track_id=None, confidence=0.9):
@@ -284,3 +286,95 @@ def test_no_court_returns_error(tmp_job_dir):
     result = stage.run(store, config, detections=[_make_detection(0, (100, 350, 200, 500))])
 
     assert result.status == "error"
+
+
+def test_stitch_tracks_side_follows_court_position_not_x():
+    """The near player may start on the right; side must follow court y, so
+    player_1 is still the near (lower) player, not the left one."""
+    detections = []
+    for f in range(10):
+        detections.append(_make_detection(f, (800, 350, 900, 500)))  # near (bottom, right)
+        detections.append(_make_detection(f, (100, 100, 200, 250)))  # far (top, left)
+
+    result = stitch_tracks(detections, court_mid_y=300)
+    players = result["players"]
+    assert len(players) == 2
+
+    near = [p for p in players if p["side"] == "near"][0]
+    far = [p for p in players if p["side"] == "far"][0]
+    assert near["id"] == "player_1"
+    assert all(800 <= d["bbox"][0] <= 900 for d in near["detections"])
+    assert all(100 <= d["bbox"][0] <= 200 for d in far["detections"])
+
+
+def test_stitch_tracks_scene_cut_preserves_identity():
+    """Across a pause-record scene cut the players swap halves. Without
+    hardening the near player's detections would be mixed into both tracks;
+    with it, player_1 (near) keeps the same physical player in both segments."""
+    detections = []
+    # Segment 1 (frames 0-9): near left-bottom, far right-top
+    for f in range(10):
+        detections.append(_make_detection(f, (100, 350, 200, 500)))  # near, x~150
+        detections.append(_make_detection(f, (800, 100, 900, 250)))  # far,  x~850
+    # Big frame gap == scene cut (pause-record)
+    # Segment 2 (frames 50-59): players swapped x but same court sides
+    for f in range(50, 60):
+        detections.append(_make_detection(f, (800, 350, 900, 500)))  # near, x~850
+        detections.append(_make_detection(f, (100, 100, 200, 250)))  # far,  x~150
+
+    result = stitch_tracks(detections, court_mid_y=300)
+    players = result["players"]
+    near = [p for p in players if p["side"] == "near"][0]
+    far = [p for p in players if p["side"] == "far"][0]
+
+    assert near["detection_count"] == 20
+    assert far["detection_count"] == 20
+
+    # player_1 (near) must contain the near player from BOTH segments, i.e.
+    # both x-ranges -- proof identity was preserved across the swap.
+    near_left = [d for d in near["detections"] if 100 <= d["bbox"][0] <= 200]
+    near_right = [d for d in near["detections"] if 800 <= d["bbox"][0] <= 900]
+    assert len(near_left) == 10
+    assert len(near_right) == 10
+
+    far_right = [d for d in far["detections"] if 800 <= d["bbox"][0] <= 900]
+    far_left = [d for d in far["detections"] if 100 <= d["bbox"][0] <= 200]
+    assert len(far_right) == 10
+    assert len(far_left) == 10
+
+    assert result["scene_cut_count"] >= 1
+
+
+def test_stitch_tracks_teleport_jump_preserves_identity():
+    """A contiguous-frame teleport (both players jump) must reset matching so
+    the near player keeps its track. jump_px is set low to exercise the path."""
+    detections = []
+    for f in range(5):
+        detections.append(_make_detection(f, (100, 350, 200, 500)))  # near, x~150
+        detections.append(_make_detection(f, (800, 100, 900, 250)))  # far,  x~850
+    # Frame 5: both jump (swap x) with no frame gap -> teleport
+    detections.append(_make_detection(5, (800, 350, 900, 500)))  # near now right
+    detections.append(_make_detection(5, (100, 100, 200, 250)))  # far now left
+
+    result = stitch_tracks(detections, court_mid_y=300, scene_cut_jump_px=50)
+    players = result["players"]
+    near = [p for p in players if p["side"] == "near"][0]
+
+    near_left = [d for d in near["detections"] if 100 <= d["bbox"][0] <= 200]
+    near_right = [d for d in near["detections"] if 800 <= d["bbox"][0] <= 900]
+    assert len(near_left) == 5
+    assert len(near_right) == 1
+    assert result["scene_cut_count"] >= 1
+
+
+def test_stitch_tracks_contiguous_no_false_cut():
+    """Continuous video with no gaps must not report spurious scene cuts."""
+    detections = []
+    for f in range(100):
+        detections.append(_make_detection(f, (100, 350, 200, 500)))
+        detections.append(_make_detection(f, (800, 100, 900, 250)))
+
+    result = stitch_tracks(detections, court_mid_y=300)
+    assert result["scene_cut_count"] == 0
+    players = result["players"]
+    assert all(p["detection_count"] == 100 for p in players)
