@@ -258,6 +258,47 @@ def test_prior_correction_disabled_is_noop():
         settings.bst_prior_correction_enabled = orig_enabled
 
 
+# ── Task 3.2: checkpoint selection regression ───────────────────
+
+def test_configured_bst_checkpoint_loads_n_classes_25():
+    """settings.bst_model_path (CG_AP variant) loads with seq_len=100, n_classes=25."""
+    from app.models.bst import BSTClassifier
+    from app.config.settings import settings
+
+    path = settings.bst_model_path
+    assert path is not None and Path(path).exists(), f"BST checkpoint missing: {path}"
+
+    classifier = BSTClassifier(str(path), device="cpu")
+    assert classifier.model is not None, "BST checkpoint failed to load"
+    assert classifier.seq_len == 100, f"expected seq_len=100, got {classifier.seq_len}"
+    assert classifier.n_classes == 25, f"expected n_classes=25, got {classifier.n_classes}"
+
+
+def test_jnb_alternative_bst_checkpoint_loads():
+    """The JnB (no AimPlayer) variant also loads cleanly — both are interchangeable from a load standpoint."""
+    from app.models.bst import BSTClassifier
+    from pathlib import Path
+
+    jnb = Path(__file__).resolve().parents[2] / "ckpts/bst" / "bst_CG_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"
+    assert jnb.exists(), f"JnB checkpoint missing: {jnb}"
+
+    classifier = BSTClassifier(str(jnb), device="cpu")
+    assert classifier.model is not None, "JnB BST checkpoint failed to load"
+    assert classifier.seq_len == 100
+    assert classifier.n_classes == 25
+
+
+def test_map_to_coach_class_rush_is_unknown():
+    """Rush is net movement, not a stroke type — classes 9/21 must map to 'unknown' (intentional)."""
+    from app.models.bst import map_to_coach_class
+
+    assert map_to_coach_class(9) == "unknown"
+    assert map_to_coach_class(21) == "unknown"
+    # sanity: real stroke classes still map correctly
+    assert map_to_coach_class(1) == "net_shot"
+    assert map_to_coach_class(13) == "net_shot"
+
+
 # ── Calibration tests ────────────────────────────────────────────
 
 def test_calibrate_probs_identity_at_T1():
