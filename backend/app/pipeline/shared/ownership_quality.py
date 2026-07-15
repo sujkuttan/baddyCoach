@@ -2,6 +2,11 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from app.pipeline.shared.ownership_scorer import (
+    assign_hit_owners_viterbi,
+    ViterbiConfig,
+)
+
 
 @dataclass
 class OwnerDecision:
@@ -50,6 +55,36 @@ def assign_rally_owners(
         for idx in indices
     }
     anchors: list[tuple[int, int, str]] = []
+
+    scores_valid = (
+        len(scores) == len(indices)
+        and all(isinstance(s, dict) and "near_score" in s and "far_score" in s for s in scores)
+    )
+
+    if settings.ownership_viterbi_rally_enabled and scores_valid:
+        emissions = [
+            {"near": float(score.get("near_score", 0.5)), "far": float(score.get("far_score", 0.5))}
+            for score in scores
+        ]
+        seq = assign_hit_owners_viterbi(indices, emissions, ViterbiConfig.from_settings())
+        for i, idx in enumerate(indices):
+            score = scores[i]
+            side = seq[i]
+            confident = is_anchor(
+                score,
+                settings.ownership_min_anchor_confidence,
+                settings.ownership_min_anchor_margin,
+                settings.ownership_min_anchor_signals,
+                settings.ownership_signal_neutral_epsilon,
+            )
+            decisions[idx] = OwnerDecision(
+                side=side,
+                player_id=players_by_side.get(side),
+                confident=confident,
+                source="viterbi_rally",
+                reason="full_rally_viterbi",
+            )
+        return decisions
 
     for pos, (idx, score) in enumerate(zip(indices, scores)):
         if not is_anchor(

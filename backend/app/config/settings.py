@@ -136,6 +136,7 @@ class Settings(BaseSettings):
     ownership_signal_neutral_epsilon: float = 0.08
     ownership_viterbi_bridge_enabled: bool = True
     ownership_viterbi_max_bridge_shots: int = 2
+    ownership_viterbi_rally_enabled: bool = True
     ownership_calibration_match_tolerance_frames: int = 15
     ownership_calibration_min_accuracy_lift: float = 0.03
     ownership_calibration_min_coverage_lift: float = 0.05
