@@ -93,9 +93,17 @@ class Settings(BaseSettings):
     wrist_hit_score_weight: float = 0.40 # score weight when merging with shuttle candidates
 
     # Hit frame calibration — systematic offset correction
-    # Previous run had a +8 frame systematic lag (shuttle trajectory inflection lags true contact).
-    # Subtract this offset to center the distribution: median error 8→0, ±8 accuracy 51→66%.
-    hit_frame_calibration_offset: int = 8
+    # DERIVATION (Task 1.1, offset=8 baseline run, label_frame-mode benchmark over
+    # labels_enriched_new.csv): signed median residual frame_error = label_frame - shot.frame
+    # measured -3.00 (mean -1.49, mean|diff| 6.83, n=69 matched). A negative residual means the
+    # pipeline shot frame sits ~3 frames AFTER the human label, i.e. the raw detected candidate
+    # lags true contact by ~11 frames (candidate = label_frame + 11 on median). Since hits.py
+    # SUBTRACTS this offset (emitted = candidate - offset), centering requires offset = 8 - (-3) = 11.
+    # Offline simulation (shift stored frames by -3, isolating the offset effect) confirms
+    # simulated median frame_diff -> 0.00 (<=2 target) and mean|diff| 6.83 -> 6.32.
+    # NOTE: an earlier brief assumed a +6 signed lag implying offset=2; the actual benchmark
+    # measured -3, so offset=11 is the data-driven value. Re-derive if the lag shifts on a re-run.
+    hit_frame_calibration_offset: int = 11
 
     # Contact y_frac sanity nudge (Task 8): after refine + calibration, if the
     # candidate frame still sits at a trajectory y-extreme (likely a mis-aligned

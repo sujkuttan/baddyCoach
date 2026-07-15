@@ -155,3 +155,47 @@ def test_contact_sanity_nudges_extreme_yfrac(tmp_job_dir, monkeypatch):
     assert hits is not None and len(hits) > 0
     assert int(hits["frame"].iloc[0]) == expected
     assert int(hits["frame"].iloc[0]) != 22
+
+
+def test_calibration_offset_applied(tmp_job_dir, monkeypatch):
+    """Task 1.1: the calibration offset must be SUBTRACTED from each candidate
+    frame, clamped at 0, with no refine/contact nudging interfering.
+
+    For a candidate frame f and offset k, emitted frame == max(0, f - k).
+    """
+    monkeypatch.setattr("app.pipeline.hits.settings.audio_hit_enabled", False)
+    monkeypatch.setattr("app.pipeline.hits.settings.wrist_hit_enabled", False)
+    monkeypatch.setattr("app.pipeline.hits.settings.hit_refine_window", 0)
+    monkeypatch.setattr("app.pipeline.hits.settings.hit_contact_sanity_enabled", False)
+
+    def _run_with(offset, candidate_frame):
+        monkeypatch.setattr(
+            "app.pipeline.hits.settings.hit_frame_calibration_offset", offset)
+        monkeypatch.setattr(
+            "app.pipeline.hits.GlobalHitCandidateDetector.detect",
+            lambda self, df: [{"frame": candidate_frame, "score": 1.0}],
+        )
+        store = ArtifactStore(tmp_job_dir)
+        n = 60
+        shuttle_df = pd.DataFrame({
+            "frame": list(range(n)),
+            "x": [150.0] * n, "y": [180.0] * n, "confidence": [0.95] * n,
+        })
+        store.set_parquet("shuttle_raw", shuttle_df)
+        store.set_parquet("pose", pd.DataFrame(
+            {"frame": [], "player_id": [], "keypoints": []}))
+        result = HitFrameLocalizationStage().run(store, StageConfig())
+        assert result.status == "success"
+        hits = store.get_parquet("hits")
+        assert hits is not None and len(hits) == 1
+        return int(hits["frame"].iloc[0])
+
+    # Normal case: f=30, k=11 -> 19
+    assert _run_with(11, 30) == max(0, 30 - 11)
+    # Default-ish case: f=30, k=8 -> 22
+    assert _run_with(8, 30) == max(0, 30 - 8)
+    # Clamp at 0: f=5, k=11 -> 0
+    assert _run_with(11, 5) == max(0, 5 - 11)
+    # Zero offset: identity
+    assert _run_with(0, 42) == 42
+
