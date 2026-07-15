@@ -13,6 +13,30 @@ from app.pipeline.shared.court import (
 )
 
 
+def _manual_corners_sane(corners):
+    """Basic sanity for user-provided (manual) corners.
+
+    Unlike auto-detected corners, manual corners are deliberate input and must
+    NOT be rejected by the trapezoid-reliability gate (a near-rectangular
+    perspective from straight-on phone footage would otherwise be discarded).
+    We only require a non-degenerate, convex quadrilateral with sufficient area.
+    """
+    if corners is None or len(corners) != 4:
+        return False
+    pts = np.array(corners, dtype=np.float64)
+    bl, br, tl, tr = pts
+    boundary = [bl, br, tr, tl]
+    area = cv2.contourArea(np.array(boundary, dtype=np.float32).reshape(-1, 1, 2))
+    if area < 1000:
+        return False
+
+    def _cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    signs = [_cross(boundary[i], boundary[(i + 1) % 4], boundary[(i + 2) % 4]) for i in range(4)]
+    return all(s > 0 for s in signs) or all(s < 0 for s in signs)
+
+
 # ─── Court Keypoint Detector (court_kpRCNN) ────────────────────────────────
 
 class CourtKeypointDetector:
@@ -136,6 +160,12 @@ class CourtDetectionStage:
         if corners is not None and len(corners) == 4:
             corrected = _correct_court_points(corners)
             H, valid = compute_homography(corrected)
+            # Manual corners are deliberate user input: trust them even if they
+            # fail the trapezoid-reliability gate (that gate exists to catch
+            # auto-detection hallucinations, not user clicks). Keep only the
+            # basic non-degenerate / convex sanity check.
+            if is_manual and not valid and H is not None and _manual_corners_sane(corrected):
+                valid = True
 
         # Fallback to proportional corners only when NOT manually set.
         # User-provided manual corners are preserved even if homography fails,

@@ -76,6 +76,32 @@ def test_court_detection_reaches_color_line_when_model_returns_rectangle(tmp_job
     assert court_data["corners_pixel"] == [list(c) for c in color_trapezoid]
 
 
+def test_manual_near_rectangular_corners_accepted(tmp_job_dir):
+    """Manual corners are trusted even when their top/bottom width ratio exceeds
+    geometry_max_trapezoid_ratio (straight-on phone footage looks near-rectangular).
+    The trapezoid-reliability gate must NOT reject deliberate user input."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    # ratio ~0.95 (> 0.92) -> auto gate would reject, manual must accept
+    corners = [(80, 500), (1800, 500), (120, 100), (1760, 100)]
+    result = CourtDetectionStage().run(store, config, corners=corners, is_manual=True)
+    assert result.status == "success"
+    court_data = store.get("court")
+    assert court_data["valid"] is True
+    assert court_data["detection_method"] == "manual"
+
+
+def test_auto_near_rectangular_corners_rejected(tmp_job_dir):
+    """Same near-rectangular corners, but auto-detected -> still rejected by the
+    trapezoid-reliability gate (no special-casing for non-manual input)."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    corners = [(80, 500), (1800, 500), (120, 100), (1760, 100)]
+    result = CourtDetectionStage().run(store, config, corners=corners, is_manual=False)
+    court_data = store.get("court")
+    assert court_data["valid"] is False
+
+
 def test_court_keypoint_detector_fallback():
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     detector = CourtKeypointDetector("/nonexistent/path.pth")

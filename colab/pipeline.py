@@ -532,6 +532,30 @@ def _corners_are_valid(corners):
     return bool(valid)
 
 
+def _manual_corners_sane(corners):
+    """Basic sanity for user-provided (manual) corners.
+
+    Unlike auto-detected corners, manual corners are deliberate input and must
+    NOT be rejected by the trapezoid-reliability gate (a near-rectangular
+    perspective from straight-on phone footage would otherwise be discarded).
+    We only require a non-degenerate, convex quadrilateral with sufficient area.
+    """
+    if corners is None or len(corners) != 4:
+        return False
+    pts = np.array(corners, dtype=np.float64)
+    bl, br, tl, tr = pts
+    boundary = [bl, br, tr, tl]
+    area = cv2.contourArea(np.array(boundary, dtype=np.float32).reshape(-1, 1, 2))
+    if area < 1000:
+        return False
+
+    def _cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    signs = [_cross(boundary[i], boundary[(i + 1) % 4], boundary[(i + 2) % 4]) for i in range(4)]
+    return all(s > 0 for s in signs) or all(s < 0 for s in signs)
+
+
 def _parse_court_corners_arg(value):
     parts = [int(c.strip()) for c in value.split(",") if c.strip()]
     if len(parts) != 8:
@@ -758,7 +782,15 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     court["homography"] = H_smooth if H_smooth is not None else H_raw
     court["valid"] = valid
     court["detection_method"] = detection_method
-    print(f"  Court geometry valid: {valid}")
+    # Manual corners are deliberate user input: trust them even if they fail the
+    # trapezoid-reliability gate (the gate exists to catch auto-detection
+    # hallucinations, not user clicks). Keep only the basic non-degenerate /
+    # convex sanity check so we never feed a garbage homography.
+    if detection_method.startswith("manual") and not court["valid"]:
+        if _manual_corners_sane(corrected_corners):
+            court["valid"] = True
+            print("  Manual corners accepted (bypassing trapezoid-reliability gate).")
+    print(f"  Court geometry valid: {court['valid']}")
 
     # ── Initialize ML models ──
     print("\n  Loading ML models...")
