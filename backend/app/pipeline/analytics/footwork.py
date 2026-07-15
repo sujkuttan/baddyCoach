@@ -63,8 +63,17 @@ class FootworkAnalyticsStage:
             else:
                 base_position = np.array([court_width / 2, court_length / 2])
 
-            # Convert pixel coordinates to court coordinates using homography
-            homography = court.get("homography")
+            # Convert pixel coordinates to court coordinates using homography.
+            # When court geometry is invalid, null the homography so distances
+            # fall back to pixel-space (px_per_m) instead of using a degenerate
+            # (e.g. rectangular proportional-fallback) homography that yields
+            # silently-wrong court metres.
+            court_valid = court.get("valid", False)
+            if not court_valid:
+                logger.warning(
+                    "Court geometry invalid; computing footwork metrics in pixel space (no homography)"
+                )
+            homography = court.get("homography") if court_valid else None
             distance = self._compute_distance(com_trajectory, homography)
             # When homography is available, _compute_distance returns meters directly
             distance_m = distance if homography is not None else (distance / px_per_m if px_per_m > 0 else distance)

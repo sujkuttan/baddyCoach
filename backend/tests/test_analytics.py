@@ -93,6 +93,48 @@ def test_footwork_metrics_computed(tmp_job_dir):
     assert "recovery_times" in result.metadata
 
 
+def test_footwork_degrades_with_invalid_court_geometry(tmp_job_dir):
+    """Invalid court (degenerate homography) must NOT be used for footwork
+    distances — fall back to pixel-space instead of silently-wrong metres."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+
+    H = np.eye(3).tolist()  # degenerate rectangular homography
+    corners = [[100, 500], [1100, 500], [100, 200], [1100, 200]]
+    base_court = {
+        "court_length": 13.4, "court_width": 6.10,
+        "homography": H, "corners_pixel": corners,
+    }
+    rng = np.random.default_rng(0)
+    pose_df = pd.DataFrame({
+        "frame": list(range(30)),
+        "player_id": ["player_1"] * 30,
+        "keypoints": [rng.random((17, 3)).tolist() for _ in range(30)],
+    })
+    store.set_parquet("pose", pose_df)
+    store.set_parquet("rallies", pd.DataFrame({
+        "rally_id": [1], "start_frame": [0], "end_frame": [29], "shot_count": [5],
+    }))
+    store.set_parquet("shots", pd.DataFrame({
+        "frame": [0, 10, 20], "player_id": ["player_1"] * 3,
+        "stroke_type": ["serve", "clear", "drop"],
+        "stroke_confidence": [0.9, 0.85, 0.88],
+    }))
+
+    store.set("court", {**base_court, "valid": True})
+    r_valid = FootworkAnalyticsStage().run(store, config)
+    store.set("court", {**base_court, "valid": False})
+    r_invalid = FootworkAnalyticsStage().run(store, config)
+
+    assert r_valid.status == "success" and r_invalid.status == "success"
+    d_valid = r_valid.metadata["distance_covered"]["player_1"]
+    d_invalid = r_invalid.metadata["distance_covered"]["player_1"]
+    assert np.isfinite(d_invalid) and d_invalid > 0
+    # Guard active: invalid court nulls the homography, so the distance must
+    # differ from the (degenerate) valid-court distance.
+    assert d_invalid != d_valid
+
+
 from app.pipeline.analytics.fitness import FitnessAnalyticsStage
 
 

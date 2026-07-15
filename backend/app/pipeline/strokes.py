@@ -585,7 +585,20 @@ class StrokeClassificationStage:
 
         court_length = court.get("court_length", COURT_LENGTH)
         court_width = court.get("court_width", COURT_WIDTH)
-        homography = np.array(court["homography"]) if court.get("homography") is not None else None
+        # Guard against invalid court geometry: a degenerate (e.g. rectangular
+        # proportional-fallback) homography produces silently-wrong court-space
+        # features. When court is invalid, null the homography so all downstream
+        # `if homography is not None` paths fall back to pixel-space normalization.
+        court_valid = bool(court.get("valid", False)) if isinstance(court, dict) else False
+        if not court_valid:
+            logger.warning(
+                "Court geometry invalid; BST clip court-space features fall back to pixel space"
+            )
+        homography = (
+            np.array(court["homography"])
+            if (court_valid and court.get("homography") is not None)
+            else None
+        )
 
         vid_w, vid_h = settings.default_frame_width, settings.default_frame_height
         video_res = artifacts.get("video_resolution")
