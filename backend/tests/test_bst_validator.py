@@ -338,6 +338,29 @@ def test_validator_joint_order_systematic_flagged():
     )
 
 
+def test_validator_joint_order_raised_arm_not_mismatch():
+    """Systematic violations of a POSE-VARIANT chain (raised-arm: elbow above
+    wrist) must NOT be reported as a COCO-17 keypoint-order mismatch — they are
+    expected for badminton. Regression for the false alarms seen on real runs
+    where L_elbow/L_wrist were inverted at 80-100% across many clips."""
+    v = BSTInputValidator(seq_len=100)
+    clip = _make_good_clip()
+    # Invert L_elbow/L_wrist (joint 7 y at idx 15, joint 9 y at idx 19) in
+    # 70/100 frames for player 0 so elbow_y > wrist_y (raised-arm pose).
+    for t in range(70):
+        clip['JnB'][t, 0, 15] = clip['JnB'][t, 0, 19] + 0.1
+    result = v.validate_clip(clip)
+    assert not any("may not match COCO-17" in w for w in result.warnings), (
+        "raised-arm pose variant wrongly flagged as joint-order mismatch"
+    )
+    assert not any("Pose model may output" in w for w in result.warnings), (
+        "raised-arm pose variant wrongly flagged as different keypoint definition"
+    )
+    assert any("violated" in w or "athletic" in w for w in result.warnings), (
+        "raised-arm inversion should still be reported as informational"
+    )
+
+
 def test_validator_merge_combines_results():
     r1 = ValidationResult(n_checks=2, n_passed=2)
     r2 = ValidationResult(

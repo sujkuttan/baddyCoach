@@ -90,22 +90,32 @@ COCO_17_NAMES = [
     "L_knee", "R_knee", "L_ankle", "R_ankle",
 ]
 
-# Anatomical plausibility checks for COCO-17 joint ordering
-# Each entry: (higher_y_joint, lower_y_joint, description)
+# Anatomical plausibility checks for COCO-17 joint ordering.
+# Each entry: (higher_y_joint, lower_y_joint, description, pose_invariant).
 # In image coords (y ↑ down), the first joint should be above the second.
+#
+# ``pose_invariant`` marks chains whose vertical order holds across ALL athletic
+# poses: eyes above nose, shoulder above hip, knee above ankle. A genuine
+# keypoint-ORDER swap would corrupt these too, so they are the reliable signal
+# for a COCO-17 mismatch.
+#
+# ``pose_invariant=False`` marks chains that LEGITIMATELY invert during badminton
+# motion — raised-racket arms (shoulder>elbow>wrist) and deep lunges
+# (hip>knee). These are NEVER taken as evidence of a joint-order mismatch; they
+# are expected for the sport and only produce an informational note.
 _ANATOMY_CHECKS = [
-    (1, 0, "L_eye should be above nose"),
-    (2, 0, "R_eye should be above nose"),
-    (5, 7, "L_shoulder should be above L_elbow"),
-    (7, 9, "L_elbow should be above L_wrist"),
-    (6, 8, "R_shoulder should be above R_elbow"),
-    (8, 10, "R_elbow should be above R_wrist"),
-    (5, 11, "L_shoulder should be above L_hip"),
-    (6, 12, "R_shoulder should be above R_hip"),
-    (11, 13, "L_hip should be above L_knee"),
-    (13, 15, "L_knee should be above L_ankle"),
-    (12, 14, "R_hip should be above R_knee"),
-    (14, 16, "R_knee should be above R_ankle"),
+    (1, 0, "L_eye should be above nose", True),
+    (2, 0, "R_eye should be above nose", True),
+    (5, 11, "L_shoulder should be above L_hip", True),
+    (6, 12, "R_shoulder should be above R_hip", True),
+    (13, 15, "L_knee should be above L_ankle", True),
+    (14, 16, "R_knee should be above R_ankle", True),
+    (5, 7, "L_shoulder should be above L_elbow", False),
+    (7, 9, "L_elbow should be above L_wrist", False),
+    (6, 8, "R_shoulder should be above R_elbow", False),
+    (8, 10, "R_elbow should be above R_wrist", False),
+    (11, 13, "L_hip should be above L_knee", False),
+    (12, 14, "R_hip should be above R_knee", False),
 ]
 
 # Fraction of a clip's valid frames for a (player, joint-pair) above which an
@@ -312,11 +322,12 @@ class BSTInputValidator:
         joints_xy = joints_flat.reshape(*joints_flat.shape[:2], 17, 2)
 
         n_violations = 0
-        n_systematic = 0
+        n_systematic = 0           # systematic POSE-INVARIANT (true order-defect) pairs
+        n_systematic_variant = 0   # systematic pose-variant (athletic) pairs
         for player_idx in range(2):
             player_joints = joints_xy[:, player_idx]
             non_zero_mask = (np.abs(player_joints).sum(axis=-1) > 1e-6)
-            for high_j, low_j, desc in _ANATOMY_CHECKS:
+            for high_j, low_j, desc, invariant in _ANATOMY_CHECKS:
                 both_valid = non_zero_mask[:, high_j] & non_zero_mask[:, low_j]
                 n_both = int(both_valid.sum())
                 if n_both == 0:
@@ -330,16 +341,29 @@ class BSTInputValidator:
                 n_violations += 1
                 frac = n_v / n_both
                 if frac > _ANATOMY_SYSTEMATIC_FRAC:
-                    # Violations affect a large fraction of the clip's frames
-                    # for this pair → a real keypoint-order defect (e.g. the
-                    # pose model emitting a different ordering than COCO-17).
-                    n_systematic += 1
-                    r.warnings.append(
-                        f"Player {player_idx}: {desc} violated in {n_v}/{n_both} "
-                        f"frames ({frac:.0%}) — systematic. Joint order may not "
-                        "match COCO-17." + _loc("pose_read")
-                    )
-                    r.n_warnings += 1
+                    if invariant:
+                        # Violations affect a large fraction of the clip's frames
+                        # for a POSE-INVARIANT pair → a real keypoint-order defect
+                        # (e.g. the pose model emitting a different ordering than
+                        # COCO-17).
+                        n_systematic += 1
+                        r.warnings.append(
+                            f"Player {player_idx}: {desc} violated in {n_v}/{n_both} "
+                            f"frames ({frac:.0%}) — systematic. Joint order may not "
+                            "match COCO-17." + _loc("pose_read")
+                        )
+                        r.n_warnings += 1
+                    else:
+                        # Pose-variant pair (raised-arm / lunge) inverted at high
+                        # rate — expected for badminton, NOT an order defect.
+                        n_systematic_variant += 1
+                        r.warnings.append(
+                            f"Player {player_idx}: {desc} violated in {n_v}/{n_both} "
+                            f"frames ({frac:.0%}). Expected for raised-arm / lunge "
+                            "athletic poses; not treated as a keypoint-order defect."
+                            + _loc("pose_read")
+                        )
+                        r.n_warnings += 1
                 elif n_violations <= 3:
                     # A handful of frames per pair is normal pose-estimation
                     # noise (cocked racket, occlusion) and does NOT indicate a
@@ -354,8 +378,9 @@ class BSTInputValidator:
         if n_violations == 0:
             r.n_passed += 1
         elif n_systematic >= 2:
-            # Multiple systematically-violated pairs strongly indicate the
-            # pose model emits a different keypoint definition than COCO-17.
+            # Multiple systematically-violated POSE-INVARIANT pairs strongly
+            # indicate the pose model emits a different keypoint definition
+            # than COCO-17.
             r.warnings.append(
                 f"Joint order: {n_systematic} systematic anatomical violations "
                 "across joint pairs. Pose model may output a different "
