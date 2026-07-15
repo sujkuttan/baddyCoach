@@ -4,7 +4,9 @@ Constructs tiny synthetic shots/labels (no real files, no network, no model)
 and asserts the core merge/score functions replicate the canonical
 ``evaluate_labels.py::evaluate_enriched_csv`` method:
 
-  * matching is done on the CSV ``shot_frame`` column (NOT label_frame)
+  * DEFAULT matching is on the human ground-truth ``label_frame`` column
+    (re-anchors labels to the current run); ``shot_frame`` reproduces the
+    canonical evaluate_labels.py numbers.
   * stroke similarity uses the canonical ``STROKE_SIMILARITY`` map verbatim
   * combined = (exact + similar) / matched
 
@@ -62,18 +64,36 @@ def _make_shots():
     })
 
 
-def _make_labels():
-    """Labels list mirroring load_labels' dict shape (shot_frame-driven)."""
-    return [
-        {"time_s": 100 / 30.0, "frame": 100, "label_frame": 100, "frame_diff": 0,
+def _make_labels(match_key="label_frame"):
+    """Labels list mirroring load_labels' dict shape.
+
+    ``frame`` is the match frame (label_frame by default, shot_frame when
+    match_key == "shot_frame"). ``frame_diff`` is deliberately stale for the
+    row at frame 305 (999) to prove label_frame mode ignores it while
+    shot_frame mode uses it.
+    """
+    rows = [
+        {"time_s": 100 / 30.0, "label_frame": 100, "shot_frame": 100, "frame_diff": 0,
          "player": "far", "stroke": "smash"},
-        {"time_s": 200 / 30.0, "frame": 200, "label_frame": 200, "frame_diff": 0,
+        {"time_s": 200 / 30.0, "label_frame": 200, "shot_frame": 200, "frame_diff": 0,
          "player": "near", "stroke": "push"},
-        {"time_s": 305 / 30.0, "frame": 305, "label_frame": 305, "frame_diff": 5,
+        {"time_s": 305 / 30.0, "label_frame": 305, "shot_frame": 305, "frame_diff": 999,
          "player": "far", "stroke": "clear"},
-        {"time_s": 500 / 30.0, "frame": 500, "label_frame": 500, "frame_diff": 30,
+        {"time_s": 500 / 30.0, "label_frame": 500, "shot_frame": 500, "frame_diff": 30,
          "player": "near", "stroke": "drop"},
     ]
+    out = []
+    for r in rows:
+        mf = r["shot_frame"] if match_key == "shot_frame" else r["label_frame"]
+        out.append({
+            "time_s": mf / 30.0,
+            "frame": mf,
+            "label_frame": r["label_frame"],
+            "frame_diff": r["frame_diff"],
+            "player": r["player"],
+            "stroke": r["stroke"],
+        })
+    return out
 
 
 def _canonical_module():
@@ -85,22 +105,22 @@ def _canonical_module():
     return mod
 
 
-def test_match_labels_to_shots_uses_shot_frame():
+def test_match_labels_to_shots_geometry():
     shots = _make_shots()
-    labels = _make_labels()
+    labels = _make_labels("shot_frame")
     matches = match_labels_to_shots(labels, shots, radius_frames=15)
     # label@frame100->shot1, @200->shot2, @305->shot3 (dist 5, within radius),
     # @500->missed (nearest shot @400 is dist 100 > 15)
     assert [m["shot_idx"] for m in matches] == [0, 1, 2, None]
-    # frame_error is overridden by the CSV frame_diff for matched rows.
+    # match_labels_to_shots only computes the nearest-frame distance.
     assert matches[0]["frame_error"] == 0
-    assert matches[2]["frame_error"] == 5  # CSV frame_diff, not live |305-300|
+    assert matches[2]["frame_error"] == 5  # live |305-300|, override happens in merge_and_score
 
 
 def test_merge_and_score_coverage_recall():
     shots = _make_shots()
-    labels = _make_labels()
-    m = merge_and_score(shots, labels, radius_frames=15)
+    labels = _make_labels("shot_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="shot_frame")
     assert m["n_labels"] == 4
     assert m["n_shots"] == 4
     assert m["n_matched"] == 3
@@ -110,8 +130,8 @@ def test_merge_and_score_coverage_recall():
 
 def test_merge_and_score_stroke_canonical():
     shots = _make_shots()
-    labels = _make_labels()
-    m = merge_and_score(shots, labels, radius_frames=15)
+    labels = _make_labels("shot_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="shot_frame")
     s = m["stroke"]
     # exact: smash==smash (label1), clear==clear (label3) => 2
     # similar: drive vs push (label2) => 1 (count of 'similar' results only)
@@ -123,8 +143,8 @@ def test_merge_and_score_stroke_canonical():
 
 def test_merge_and_score_attribution():
     shots = _make_shots()
-    labels = _make_labels()
-    m = merge_and_score(shots, labels, radius_frames=15)
+    labels = _make_labels("shot_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="shot_frame")
     # (a) all matched: 3/3 correct (sides far/near/far match)
     assert m["attribution_all_n"] == 3
     assert m["attribution_all_correct"] == 3
@@ -137,8 +157,8 @@ def test_merge_and_score_attribution():
 
 def test_merge_and_score_coverage_eligibility():
     shots = _make_shots()
-    labels = _make_labels()
-    m = merge_and_score(shots, labels, radius_frames=15)
+    labels = _make_labels("shot_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="shot_frame")
     # eligible matched: shot1 True, shot2 True, shot3 False => 2/3
     assert m["coverage_eligible_matched"] == 2
     assert abs(m["coverage_eligible_rate_matched"] - 100.0 * 2 / 3) < 1e-9
@@ -146,22 +166,32 @@ def test_merge_and_score_coverage_eligibility():
     assert abs(m["coverage_eligible_rate_all"] - 50.0) < 1e-9
 
 
-def test_merge_and_score_temporal_split():
+def test_merge_and_score_temporal_shot_frame_uses_csv():
     shots = _make_shots()
-    labels = _make_labels()
-    m = merge_and_score(shots, labels, radius_frames=15)
-    # CSV frame_diff series over all 4 labeled rows: [0,0,5,30]
-    tc = m["temporal_csv"]
-    assert tc["n"] == 4
-    assert abs(tc["mean"] - 8.75) < 1e-9
-    assert tc["median"] == 2.5
-    assert tc["max"] == 30.0
-    # Live |label_frame - shot.frame| over matched 3: [0,0,5]
-    tl = m["temporal_live"]
-    assert tl["n"] == 3
-    assert abs(tl["mean"] - (5.0 / 3.0)) < 1e-9
-    assert tl["median"] == 0.0
-    assert tl["max"] == 5.0
+    labels = _make_labels("shot_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="shot_frame")
+    # For shot_frame mode the temporal series is the stale CSV frame_diff.
+    # Matched rows: label@100(diff0), @200(diff0), @305(diff999); @500 missed.
+    t = m["temporal"]
+    assert t["n"] == 3
+    assert abs(t["mean"] - 333.0) < 1e-9
+    assert t["median"] == 0.0
+    assert t["max"] == 999.0
+
+
+def test_merge_and_score_temporal_label_frame_is_live():
+    shots = _make_shots()
+    labels = _make_labels("label_frame")
+    m = merge_and_score(shots, labels, radius_frames=15, match_key="label_frame")
+    # For label_frame mode temporal = label_frame - matched shot.frame (signed,
+    # live). Matched: @100 -> 100-100=0, @200 -> 0, @305 -> 305-300=5; @500 missed.
+    t = m["temporal"]
+    assert t["n"] == 3
+    assert abs(t["mean"] - (5.0 / 3.0)) < 1e-9
+    assert t["median"] == 0.0
+    assert t["max"] == 5.0
+    # Crucially the stale CSV frame_diff (999) is NOT used here.
+    assert t["max"] != 999.0
 
 
 def test_load_shots_sorts_by_frame():
@@ -177,18 +207,32 @@ def test_load_shots_sorts_by_frame():
     assert list(out["frame"]) == [100, 200, 300, 400]
 
 
-def test_load_labels_filters_labeled_and_uses_shot_frame(tmp_path):
+def test_load_labels_default_uses_label_frame(tmp_path):
     csv = pd.DataFrame([
-        {"label_frame": 100, "shot_frame": 100, "frame_diff": 0, "side": "far",
+        {"label_frame": 100, "shot_frame": 130, "frame_diff": 30, "side": "far",
          "true_stroke": "smash", "label_status": "labeled", "true_class_id": 9},
         {"label_frame": 999, "shot_frame": 999, "frame_diff": 0, "side": "near",
          "true_stroke": "drop", "label_status": "unlabeled", "true_class_id": 5},
     ])
     p = tmp_path / "labels.csv"
     csv.to_csv(p, index=False)
-    labels = load_labels(p)
+    labels = load_labels(p)  # default match_key=label_frame
     assert len(labels) == 1
-    assert labels[0]["frame"] == 100  # from shot_frame, not label_frame
+    assert labels[0]["frame"] == 100  # from label_frame, NOT shot_frame (130)
+
+
+def test_load_labels_shot_frame_mode(tmp_path):
+    csv = pd.DataFrame([
+        {"label_frame": 100, "shot_frame": 130, "frame_diff": 30, "side": "far",
+         "true_stroke": "smash", "label_status": "labeled", "true_class_id": 9},
+        {"label_frame": 999, "shot_frame": 999, "frame_diff": 0, "side": "near",
+         "true_stroke": "drop", "label_status": "unlabeled", "true_class_id": 5},
+    ])
+    p = tmp_path / "labels.csv"
+    csv.to_csv(p, index=False)
+    labels = load_labels(p, match_key="shot_frame")
+    assert len(labels) == 1
+    assert labels[0]["frame"] == 130  # from shot_frame, matches canonical
 
 
 def test_embedded_similarity_matches_canonical():
