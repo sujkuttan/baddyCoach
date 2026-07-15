@@ -568,7 +568,12 @@ def test_stroke_stage_marks_aim_alpha_unreliable_when_probe_offsets_flip(monkeyp
         "confidence": [0.9] * 40,
         "was_repaired": [False] * 40,
     }))
-    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    # Non-collapsed skeleton (distinct joint coordinates) so the clip's joints
+    # are not all-zero after normalization — otherwise it is correctly rejected
+    # as degenerate before reaching the classifier.
+    kp_x = np.arange(17, dtype=float)
+    kp_y = np.arange(17, dtype=float) * 2.0 + 10.0
+    keypoints = np.column_stack([kp_x, kp_y, np.ones(17)])
     store.set_parquet("pose", pd.DataFrame([
         {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
         for f in range(40) for p in ("player_1", "player_2")

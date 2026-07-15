@@ -26,6 +26,36 @@ def _provenance(**overrides):
     return value
 
 
+def test_quality_hard_rejects_degenerate_joints_that_slip_past_other_gates():
+    # A collapsed/NaN skeleton: pose_present is True every frame, keypoint
+    # confidence is high, and joint_abs_mean is ~0 (not extreme), so the
+    # existing coverage / confidence / extreme_joint_mean gates would ALL pass.
+    # Only the degenerate-joints fraction catches it and routes to abstention.
+    good = _provenance(
+        joint_abs_mean=0.0,
+        joint_degenerate_fraction=0.9,
+        pose_present_far=[True] * 20,
+        pose_present_near=[True] * 20,
+        pose_keypoint_confidence_far=[0.9] * 20,
+        pose_keypoint_confidence_near=[0.9] * 20,
+    )
+    result = evaluate_bst_clip_quality(good)
+
+    assert result["eligible"] is False
+    assert "degenerate_joints" in result["reasons"]
+    assert "low_pose_coverage" not in result["reasons"]
+    assert "low_keypoint_confidence" not in result["reasons"]
+    assert "extreme_joint_mean" not in result["reasons"]
+    assert result["joint_degenerate_fraction"] == pytest.approx(0.9)
+
+
+def test_quality_accepts_clip_with_clean_joints():
+    result = evaluate_bst_clip_quality(_provenance(joint_degenerate_fraction=0.0))
+
+    assert result["eligible"] is True
+    assert "degenerate_joints" not in result["reasons"]
+
+
 def test_quality_soft_penalizes_extreme_joint_mean():
     base = evaluate_bst_clip_quality(_provenance(joint_abs_mean=0.0))
     extreme = evaluate_bst_clip_quality(_provenance(joint_abs_mean=1.5))

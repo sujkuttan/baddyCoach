@@ -124,6 +124,11 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         score -= 0.10
         reasons.append("extreme_joint_mean")  # soft — not a hard_reason
 
+    joint_degenerate_fraction = float(provenance.get("joint_degenerate_fraction", 0.0))
+    if joint_degenerate_fraction > settings.bst_max_joint_degenerate_fraction:
+        hard_reasons.append("degenerate_joints")
+        score -= 0.30
+
     score = float(np.clip(score, 0.0, 1.0))
     reasons.extend(hard_reasons)
     if score < settings.bst_quality_score_min:
@@ -151,6 +156,7 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
         "near_pose_median_confidence": near_median_conf,
         "max_bbox_gap_frames": max_bbox_gap,
         "joint_abs_mean": joint_abs_mean,
+        "joint_degenerate_fraction": joint_degenerate_fraction,
     }
 
 

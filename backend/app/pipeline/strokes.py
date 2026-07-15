@@ -417,6 +417,18 @@ def _build_clip(
     video_len = min(len(frames), seq_len)
     finite = joints[:video_len][np.isfinite(joints[:video_len])]
     provenance["joint_abs_mean"] = float(np.mean(np.abs(finite))) if finite.size else 0.0
+    # Fraction of frames where every joint coordinate is all-zero OR non-finite.
+    # This catches collapsed/NaN skeletons that still pass pose_present (a
+    # collapsed skeleton has valid keypoints at one point -> pose_present=True,
+    # high confidence, joint_abs_mean~0) and would otherwise be fed to BST.
+    joints_view = joints[:video_len]
+    if video_len:
+        real_joints = np.isfinite(joints_view) & (joints_view != 0.0)
+        frame_has_real = real_joints.any(axis=(1, 2, 3))
+        degenerate_fraction = float(1.0 - frame_has_real.mean())
+    else:
+        degenerate_fraction = 0.0
+    provenance["joint_degenerate_fraction"] = degenerate_fraction
 
     bones = np.zeros((seq_len, 2, len(BONE_PAIRS), 2), dtype=np.float32)
     amp = settings.joint_velocity_amplification

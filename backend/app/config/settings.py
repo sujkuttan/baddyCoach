@@ -196,6 +196,7 @@ class Settings(BaseSettings):
     bst_shuttle_use_interpolated: bool = False  # do NOT feed linearly-interpolated shuttle (fabricated) coords to BST
     bst_joint_norm: str = "bbox"  # "bbox" (diagonal + center_align, as in ShuttleSet) or "court" (homography court-space)
     bst_joint_abs_mean_soft_max: float = 1.0  # soft penalty when abs mean of finite post-norm joint coords exceeds this
+    bst_max_joint_degenerate_fraction: float = 0.5  # hard reject when fraction of frames with all-zero/non-finite joints exceeds this (collapsed/NaN skeletons slip past pose_present/coverage/conf gates)
     bst_bbox_margin: float = 0.15  # expand keypoint bbox by this fraction per side; compensates for keypoint bboxes being ~30% tighter than detection bboxes
     joint_velocity_amplification: float = 0.7  # >0 amplifies bone vectors by joint motion (adds temporal discriminability)
     bst_adapt_batchnorm: bool = False  # use batch stats for BN layers (helps court-space norm adapt)
