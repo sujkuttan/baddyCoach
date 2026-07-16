@@ -240,6 +240,59 @@ def test_tracknet_model_output_range():
 
 
 @pytest.mark.cpu_only
+def test_tracknet_decoder_uses_nearest_upsampling_like_reference():
+    """The reference TrackNetV3 (qaz812345/TrackNetV3) upsamples with
+    nn.Upsample(scale_factor=2), whose default mode is nearest-neighbor. The
+    checkpoint was trained that way, so the backbone decoder must upsample with
+    nearest — not bilinear — to avoid a train/inference feature mismatch.
+
+    We assert equivalence against a from-scratch nearest reference forward pass
+    (same weights) and inequivalence against a bilinear variant.
+    """
+    from app.models.tracknet import TrackNetV3Model
+
+    model = TrackNetV3Model().eval()
+
+    def _forward(up_mode: str, align_corners) -> torch.Tensor:
+        x = model  # local alias
+        d1 = x.down_block_1['conv_2'](x.down_block_1['conv_1'](batch))
+        d1_pool = nn.functional.max_pool2d(d1, 2)
+        d2 = x.down_block_2['conv_2'](x.down_block_2['conv_1'](d1_pool))
+        d2_pool = nn.functional.max_pool2d(d2, 2)
+        d3 = x.down_block_3['conv_3'](
+            x.down_block_3['conv_2'](x.down_block_3['conv_1'](d2_pool)))
+        d3_pool = nn.functional.max_pool2d(d3, 2)
+        b = x.bottleneck['conv_3'](
+            x.bottleneck['conv_2'](x.bottleneck['conv_1'](d3_pool)))
+
+        def up(t, ref):
+            kwargs = {"size": ref.shape[2:], "mode": up_mode}
+            if align_corners is not None:
+                kwargs["align_corners"] = align_corners
+            return nn.functional.interpolate(t, **kwargs)
+
+        u1 = x.up_block_1['conv_3'](x.up_block_1['conv_2'](
+            x.up_block_1['conv_1'](torch.cat([up(b, d3), d3], dim=1))))
+        u2 = x.up_block_2['conv_2'](
+            x.up_block_2['conv_1'](torch.cat([up(u1, d2), d2], dim=1)))
+        u3 = x.up_block_3['conv_2'](
+            x.up_block_3['conv_1'](torch.cat([up(u2, d1), d1], dim=1)))
+        return x.predictor(u3)
+
+    torch.manual_seed(0)
+    batch = torch.randn(1, 27, 288, 512)
+    with torch.no_grad():
+        actual = model(batch)
+        nearest = _forward("nearest", None)
+        bilinear = _forward("bilinear", True)
+
+    assert torch.allclose(actual, nearest, atol=1e-6), \
+        "Backbone decoder must upsample with nearest-neighbor to match the checkpoint"
+    assert not torch.allclose(actual, bilinear, atol=1e-4), \
+        "Backbone output unexpectedly matches bilinear upsampling"
+
+
+@pytest.mark.cpu_only
 def test_inpaintnet_forward():
     """Verify InpaintNet produces correct output shape."""
     from app.models.tracknet import InpaintNet

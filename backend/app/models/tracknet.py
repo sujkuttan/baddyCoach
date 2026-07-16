@@ -3,7 +3,9 @@
 Architecture matches the checkpoint trained by the original authors:
   Input:  static RGB background plus 8 RGB frames stacked → 27 channels
   Encoder: Conv2D-BN-ReLU blocks with MaxPool (27→64→128→256→512)
-  Decoder: Interpolate + skip concat + Conv2D (512→256→128→64→8)
+  Decoder: nearest-neighbor upsample + skip concat + Conv2D (512→256→128→64→8)
+           (nearest matches the reference qaz812345/TrackNetV3, which uses
+            nn.Upsample(scale_factor=2); the checkpoint was trained that way)
   Output: 8 heatmap channels (first channel used for peak extraction)
 
 InpaintNet (trajectory rectification):
@@ -95,18 +97,22 @@ class TrackNetV3Model(nn.Module):
             self.bottleneck['conv_2'](self.bottleneck['conv_1'](d3_pool))
         )
 
-        # Decoder with skip connections
-        b_up = nn.functional.interpolate(b, size=d3.shape[2:], mode='bilinear', align_corners=True)
+        # Decoder with skip connections. The reference TrackNetV3
+        # (qaz812345/TrackNetV3) upsamples with nn.Upsample(scale_factor=2),
+        # whose default mode is nearest-neighbor. The checkpoint was trained
+        # with nearest upsampling, so inference must match to avoid a
+        # train/inference feature mismatch that blurs the heatmap.
+        b_up = nn.functional.interpolate(b, size=d3.shape[2:], mode='nearest')
         u1 = self.up_block_1['conv_3'](
             self.up_block_1['conv_2'](self.up_block_1['conv_1'](torch.cat([b_up, d3], dim=1)))
         )
 
-        u1_up = nn.functional.interpolate(u1, size=d2.shape[2:], mode='bilinear', align_corners=True)
+        u1_up = nn.functional.interpolate(u1, size=d2.shape[2:], mode='nearest')
         u2 = self.up_block_2['conv_2'](
             self.up_block_2['conv_1'](torch.cat([u1_up, d2], dim=1))
         )
 
-        u2_up = nn.functional.interpolate(u2, size=d1.shape[2:], mode='bilinear', align_corners=True)
+        u2_up = nn.functional.interpolate(u2, size=d1.shape[2:], mode='nearest')
         u3 = self.up_block_3['conv_2'](
             self.up_block_3['conv_1'](torch.cat([u2_up, d1], dim=1))
         )
