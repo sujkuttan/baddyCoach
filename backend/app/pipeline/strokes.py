@@ -506,7 +506,13 @@ def _prepare_bst_clip_for_hit(
             clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
             clip['shuttle'] = _temporal_resample(clip['shuttle'], classifier.seq_len, zero_is_missing=True)
             clip['pos'] = _temporal_resample(clip['pos'], classifier.seq_len)
-        clip['video_len'] = min(original_n_frames, classifier.seq_len)
+            # After resampling, the real motion is spread across ALL seq_len
+            # frames — so the whole sequence is valid. Setting video_len to the
+            # pre-resample length would mask out (1 - orig/seq_len) of the clip,
+            # dropping the (now-centered) hit outside the attended window.
+            clip['video_len'] = classifier.seq_len
+        else:
+            clip['video_len'] = original_n_frames
         return clip, clip_frames
 
     start_frame = anchor_frame

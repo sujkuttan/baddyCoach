@@ -6,6 +6,19 @@ from app.pipeline import StrokeClassificationStage
 from app.pipeline.strokes import _temporal_resample
 
 
+def _varied_keypoints() -> np.ndarray:
+    """A spatially-varied, fully-confident COCO-17 skeleton.
+
+    Every joint sits at a distinct location so that joint normalization does
+    not collapse the skeleton to zeros (which would trip the ``degenerate_joints``
+    quality gate). Used by tests that need a clip to pass the input-quality
+    gate on its own merits.
+    """
+    xs = 40.0 + np.arange(17, dtype=float) * 2.0
+    ys = 30.0 + (np.arange(17, dtype=float) % 5) * 6.0
+    return np.column_stack([xs, ys, np.ones(17)])
+
+
 def test_stroke_classification_labels_shots(tmp_job_dir):
     store = ArtifactStore(tmp_job_dir)
     config = StageConfig()
@@ -357,8 +370,12 @@ def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tm
     monkeypatch.setattr("app.pipeline.strokes.settings.hierarchical_enabled", False)
     monkeypatch.setattr("app.pipeline.strokes.settings.confusion_pair_enabled", False)
     monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
+    # Court-space shuttle normalization so the court-rejected hard gate applies.
+    monkeypatch.setattr("app.pipeline.strokes.settings.bst_shuttle_norm", "court")
 
     store = ArtifactStore(tmp_job_dir)
+    # Hits at 0 and 30. Under the default midpoint clip boundary these span
+    # [0:15] (clean) and [15:40] (covers the court-rejected 30-40 window).
     store.set_parquet("hits", pd.DataFrame({"frame": [0, 30], "confidence": [0.9, 0.9]}))
     store.set_parquet("shuttle", pd.DataFrame({
         "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
@@ -369,12 +386,15 @@ def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tm
         "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
         "confidence": [0.9] * 50, "was_repaired": [False] * 50,
     }))
-    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    keypoints = _varied_keypoints()
     store.set_parquet("pose", pd.DataFrame([
         {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
         for f in range(50) for p in ("player_1", "player_2")
     ]))
-    store.set("court", {"court_length": 13.4, "court_width": 6.1})
+    store.set("court", {
+        "court_length": 13.4, "court_width": 6.1,
+        "valid": True, "homography": np.eye(3).tolist(),
+    })
     store.set("players", {"players": [
         {"id": "player_1", "side": "near", "detections": [
             {"frame": f, "bbox": [0, 0, 100, 100]} for f in range(50)
@@ -493,8 +513,13 @@ def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monk
     monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
     monkeypatch.setattr("app.pipeline.strokes.settings.stroke_smoothing_window", 1)
     monkeypatch.setattr("app.pipeline.strokes.settings.stroke_smoothing_majority_count", 1)
+    # Court-space shuttle normalization so the court-rejected hard gate applies.
+    monkeypatch.setattr("app.pipeline.strokes.settings.bst_shuttle_norm", "court")
 
     store = ArtifactStore(tmp_job_dir)
+    # Hits at 0, 30, 60. Under the default midpoint clip boundary the middle
+    # hit (30) spans [15:45], covering the court-rejected 30-40 window so it
+    # abstains and is recovered by temporal smoothing from its neighbours.
     store.set_parquet("hits", pd.DataFrame({"frame": [0, 30, 60], "confidence": [0.9] * 3}))
     store.set_parquet("shuttle", pd.DataFrame({
         "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,
@@ -505,12 +530,15 @@ def test_temporal_smoothing_marks_quality_abstention_as_downstream_override(monk
         "frame": list(range(80)), "x": [100.0] * 80, "y": [100.0] * 80,
         "confidence": [0.9] * 80, "was_repaired": [False] * 80,
     }))
-    keypoints = np.column_stack([np.full(17, 50.0), np.full(17, 50.0), np.ones(17)])
+    keypoints = _varied_keypoints()
     store.set_parquet("pose", pd.DataFrame([
         {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
         for f in range(80) for p in ("player_1", "player_2")
     ]))
-    store.set("court", {"court_length": 13.4, "court_width": 6.1})
+    store.set("court", {
+        "court_length": 13.4, "court_width": 6.1,
+        "valid": True, "homography": np.eye(3).tolist(),
+    })
     store.set("players", {"players": [
         {"id": "player_1", "side": "near", "detections": [
             {"frame": f, "bbox": [0, 0, 100, 100]} for f in range(80)
