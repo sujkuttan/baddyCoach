@@ -102,6 +102,40 @@ def test_auto_near_rectangular_corners_rejected(tmp_job_dir):
     assert court_data["valid"] is False
 
 
+def test_invalid_auto_falls_back_to_manual_corners(tmp_job_dir):
+    """When auto-detected corners are degenerate (near-rectangular), the stage
+    falls back to the supplied manual corners instead of the proportional
+    fallback, yielding a valid court-space homography."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    bad_auto = [(80, 500), (1800, 500), (120, 100), (1760, 100)]  # near-rectangular -> invalid
+    good_manual = [(148, 637), (1184, 641), (466, 77), (831, 76)]  # trapezoid
+    result = CourtDetectionStage().run(
+        store, config, corners=bad_auto, is_manual=False,
+        manual_corners_fallback=good_manual,
+    )
+    assert result.status == "success"
+    court_data = store.get("court")
+    assert court_data["valid"] is True
+    assert court_data["detection_method"] == "manual_fallback"
+
+
+def test_valid_auto_ignores_manual_fallback(tmp_job_dir):
+    """When auto-detection succeeds, the manual fallback is not used."""
+    store = ArtifactStore(tmp_job_dir)
+    config = StageConfig()
+    good_auto = [(100, 500), (1180, 500), (250, 150), (1030, 150)]  # trapezoid
+    good_manual = [(148, 637), (1184, 641), (466, 77), (831, 76)]
+    result = CourtDetectionStage().run(
+        store, config, corners=good_auto, is_manual=False,
+        manual_corners_fallback=good_manual,
+    )
+    assert result.status == "success"
+    court_data = store.get("court")
+    assert court_data["valid"] is True
+    assert court_data["detection_method"] != "manual_fallback"
+
+
 def test_court_keypoint_detector_fallback():
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     detector = CourtKeypointDetector("/nonexistent/path.pth")

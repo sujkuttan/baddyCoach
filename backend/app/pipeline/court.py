@@ -4,6 +4,7 @@ from collections import deque
 from pathlib import Path
 
 from app.pipeline.base import ArtifactStore, StageConfig, StageResult
+from app.pipeline.shared.logging import logger
 from app.config.settings import settings
 from app.pipeline.shared.court import (
     COURT_LENGTH, COURT_WIDTH, NET_HEIGHT,
@@ -148,7 +149,8 @@ class CourtDetectionStage:
     def run(self, artifacts: ArtifactStore, config: StageConfig,
             corners: list[tuple[int, int]] | None = None,
             frame: np.ndarray | None = None,
-            is_manual: bool = False) -> StageResult:
+            is_manual: bool = False,
+            manual_corners_fallback: list[tuple[int, int]] | None = None) -> StageResult:
         H, valid = None, False
         corrected = None
         detection_method = "auto"
@@ -166,6 +168,21 @@ class CourtDetectionStage:
             # basic non-degenerate / convex sanity check.
             if is_manual and not valid and H is not None and _manual_corners_sane(corrected):
                 valid = True
+
+        # When auto-detection produced an invalid/degenerate court, prefer
+        # user-supplied manual corners (if available) over the proportional
+        # fallback. Manual corners bypass the trapezoid-reliability gate, so
+        # they yield a usable (valid) homography for court-space features.
+        if not valid and not is_manual and manual_corners_fallback is not None \
+                and len(manual_corners_fallback) == 4:
+            fb_corrected = _correct_court_points(manual_corners_fallback)
+            fb_H, fb_valid = compute_homography(fb_corrected)
+            if fb_H is not None and _manual_corners_sane(fb_corrected):
+                corrected = fb_corrected
+                H, valid = fb_H, True
+                is_manual = True
+                detection_method = "manual_fallback"
+                logger.info("Auto court detection invalid; using manual corners fallback")
 
         # Fallback to proportional corners only when NOT manually set.
         # User-provided manual corners are preserved even if homography fails,
@@ -195,7 +212,7 @@ class CourtDetectionStage:
             "court_width": COURT_WIDTH,
             "net_height": NET_HEIGHT,
             "valid": valid_smooth,
-            "detection_method": "manual" if is_manual else detection_method,
+            "detection_method": detection_method if detection_method == "manual_fallback" else ("manual" if is_manual else detection_method),
             "has_manual_corners": is_manual,
         }
 

@@ -95,20 +95,26 @@ def run_pipeline(job_id: str):
         if not ret:
             court_frame = None
 
-    # Use manual corners if available, otherwise fall back to auto-detection.
-    # When manual corners are provided, pass is_manual=True so the court stage
-    # does NOT overwrite user input with proportional fallback on homography failure.
+    # Court corner resolution:
+    #  - Auto-detection runs first (using the extracted frame).
+    #  - When it produces invalid/degenerate geometry, the court stage falls
+    #    back to manual corners (if available). Manual corners are looked up in
+    #    the job dir first, then the repo-root manual_corners.json.
     manual_corners = job.get("manual_corners")
     if manual_corners is None:
-        manual_corners_path = settings.job_dir(job_id) / "manual_corners.json"
-        if manual_corners_path.exists():
-            import json
-            manual_corners = json.loads(manual_corners_path.read_text()).get("corners")
+        import json
+        for manual_corners_path in (
+            settings.job_dir(job_id) / "manual_corners.json",
+            Path("manual_corners.json"),
+        ):
+            if manual_corners_path.exists():
+                manual_corners = json.loads(manual_corners_path.read_text()).get("corners")
+                if manual_corners is not None:
+                    break
 
+    court_kwargs = {"frame": court_frame}
     if manual_corners is not None:
-        court_kwargs = {"corners": manual_corners, "is_manual": True}
-    else:
-        court_kwargs = {"frame": court_frame}
+        court_kwargs["manual_corners_fallback"] = manual_corners
 
     def _run_rally_finalization(store, config):
         rallies_df = store.get("rallies")
