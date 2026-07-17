@@ -116,6 +116,59 @@ def test_colab_preserves_aim_alpha_quality_fields_in_outputs():
     assert '"aim_alpha_route"' in source
 
 
+def test_colab_resolves_manual_corners_from_output_dir_then_repo_root(tmp_path, monkeypatch):
+    import json
+    import colab.pipeline as pipeline
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    output_path = out_dir / "report.json"
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / "manual_corners.json").write_text(
+        json.dumps({"corners": [[1, 2], [3, 4], [5, 6], [7, 8]]})
+    )
+    monkeypatch.setattr(pipeline, "_REPO_ROOT", repo_root, raising=False)
+
+    corners = pipeline._resolve_manual_corners(str(output_path))
+    assert corners == [(1, 2), (3, 4), (5, 6), (7, 8)]
+
+    (out_dir / "manual_corners.json").write_text(
+        json.dumps({"corners": [[10, 20], [30, 40], [50, 60], [70, 80]]})
+    )
+    corners = pipeline._resolve_manual_corners(str(output_path))
+    assert corners == [(10, 20), (30, 40), (50, 60), (70, 80)]
+
+
+def test_colab_falls_back_to_manual_corners_when_auto_invalid():
+    """When auto-detection yields invalid geometry, colab uses the manual
+    corners fallback instead of accepting the degenerate auto result."""
+    import colab.pipeline as pipeline
+
+    bad_auto = [(80, 500), (1800, 500), (120, 100), (1760, 100)]  # near-rectangular
+    good_manual = [(148, 637), (1184, 641), (466, 77), (831, 76)]  # trapezoid
+
+    corners, method, valid = pipeline._select_court_corners(
+        auto_corners=bad_auto,
+        manual_fallback=good_manual,
+        vid_w=1920,
+        vid_h=1080,
+    )
+    assert valid is True
+    assert method == "manual_fallback"
+    assert corners == good_manual
+
+    corners, method, valid = pipeline._select_court_corners(
+        auto_corners=[(100, 500), (1180, 500), (250, 150), (1030, 150)],
+        manual_fallback=good_manual,
+        vid_w=1920,
+        vid_h=1080,
+    )
+    assert valid is True
+    assert method != "manual_fallback"
+
+
 def test_colab_uses_continuity_aware_tracknet_candidate_selection():
     source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
 

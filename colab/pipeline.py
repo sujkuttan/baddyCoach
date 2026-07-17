@@ -28,6 +28,7 @@ from tqdm import tqdm
 # ─── Shared module imports ──────────────────────────────────────────────────
 # Add backend to path for shared modules (unification with backend pipeline)
 _BACKEND_DIR = Path(__file__).resolve().parent.parent / "backend"
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(_BACKEND_DIR))
 
@@ -563,6 +564,71 @@ def _parse_court_corners_arg(value):
     return [(parts[i], parts[i + 1]) for i in range(0, 8, 2)]
 
 
+def _load_corners_json(path):
+    """Load 4 (x, y) corners from a manual_corners.json file, or None."""
+    import json
+    try:
+        raw = json.loads(Path(path).read_text()).get("corners")
+    except Exception:
+        return None
+    if raw and len(raw) == 4:
+        return [(int(pt[0]), int(pt[1])) for pt in raw]
+    return None
+
+
+def _resolve_manual_corners(output_path):
+    """Resolve manual court corners for the manual-fallback path.
+
+    Mirrors the backend routes.py resolution order: the job/output dir's
+    manual_corners.json first, then the repo-root manual_corners.json.
+    """
+    candidates = [
+        Path(output_path).parent / "manual_corners.json",
+        _REPO_ROOT / "manual_corners.json",
+    ]
+    for cand in candidates:
+        if cand.exists():
+            corners = _load_corners_json(cand)
+            if corners is not None:
+                return corners
+    return None
+
+
+def _select_court_corners(auto_corners, manual_fallback, vid_w, vid_h,
+                          use_default_corners=False):
+    """Pick court corners, preferring valid auto-detection, then manual
+    corners fallback, then (optionally) repo defaults, then proportional.
+
+    Mirrors backend CourtDetectionStage.run(): auto-detection runs first, and
+    only when it yields invalid/degenerate geometry do we fall back to
+    user-supplied manual corners (which bypass the trapezoid-reliability gate).
+
+    Returns (corners, detection_method, valid).
+    """
+    if auto_corners is not None and _corners_are_valid(auto_corners):
+        return auto_corners, "auto", True
+
+    if manual_fallback is not None and len(manual_fallback) == 4 \
+            and _manual_corners_sane(_correct_court_points(manual_fallback)):
+        return list(manual_fallback), "manual_fallback", True
+
+    if auto_corners is not None:
+        return auto_corners, "auto", False
+
+    if use_default_corners:
+        default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
+        corners = _load_corners_json(default_corners_path)
+        if corners is not None:
+            return corners, "manual (default_corners.json)", _corners_are_valid(corners)
+
+    margin_x = int(vid_w * 0.08)
+    court_top = int(vid_h * 0.28)
+    court_bottom = int(vid_h * 0.72)
+    corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
+               (margin_x, court_top), (vid_w - margin_x, court_top)]
+    return corners, "proportional", False
+
+
 # ─── PRD §2.5: Per-frame homography with geometric validation ───────────────
 
 CORNER_NAMES = ["outer_bl", "outer_br", "outer_tl", "outer_tr"]
@@ -710,70 +776,52 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
     ret, sample_frame = cap.read()
     cap.release()
 
-    # Fallback chain:
-    #   1. CLI `--court-corners` arg
-    #   2. {output_dir}/manual_corners.json
-    #   3. Auto-detect (court_kpRCNN / color+line)
-    #   4. Proportional rectangle fallback
-    #   5. ONLY if `--use-default-corners`: repo default_corners.json
-    detected_corners = None
+    # Corner-selection order (mirrors backend CourtDetectionStage.run):
+    #   1. Explicit CLI `--court-corners` arg (trusted, bypasses trapezoid gate)
+    #   2. Auto-detect (court_kpRCNN / color+line) — used if valid
+    #   3. Manual corners fallback ({output_dir} then repo-root manual_corners.json)
+    #      — used only when auto-detection is invalid/degenerate
+    #   4. ONLY if `--use-default-corners`: repo default_corners.json
+    #   5. Proportional rectangle fallback (invalid)
+    corners = None
     detection_method = "none"
 
     if court_corners is not None:
-        detected_corners = court_corners
+        corners = court_corners
         detection_method = "manual (CLI arg)"
-        print(f"  Using manual corners from CLI: {detected_corners}")
+        print(f"  Using manual corners from CLI: {corners}")
 
-    if detected_corners is None:
-        corners_path = Path(output_path).parent / "manual_corners.json"
-        if corners_path.exists():
-            try:
-                stored = json.loads(corners_path.read_text())
-                raw = stored.get("corners")
-                if raw and len(raw) == 4:
-                    detected_corners = [(int(pt[0]), int(pt[1])) for pt in raw]
-                    detection_method = "manual (persisted JSON)"
-                    print(f"  Using manual corners from {corners_path}: {detected_corners}")
-            except Exception as e:
-                print(f"  Warning: failed to load {corners_path}: {e}")
+    if corners is None:
+        auto_corners = None
+        if ret and sample_frame is not None:
+            auto_corners = court_kp_detector.detect_with_fallback(sample_frame)
+            if auto_corners is not None:
+                auto_method = "court_kpRCNN" if court_kp_detector.model is not None else "color+line"
+                print(f"  Auto-detected court ({auto_method}): {auto_corners}")
 
-    if detected_corners is None and ret and sample_frame is not None:
-        detected_corners = court_kp_detector.detect_with_fallback(sample_frame)
-        if detected_corners is not None:
-            detection_method = "court_kpRCNN" if court_kp_detector.model is not None else "color+line"
-            print(f"  Auto-detected court ({detection_method}): {detected_corners}")
+        manual_fallback = _resolve_manual_corners(output_path)
+        if manual_fallback is not None:
+            print(f"  Manual corners fallback available: {manual_fallback}")
 
-    corners = None
-    if detected_corners is not None:
-        corners = detected_corners
-    else:
-        # Only when the user explicitly opts in: try repo default corners
-        # before the generic proportional rectangle. default_corners.json is
-        # often wrong for arbitrary phone framing, so it is NOT applied silently.
-        if use_default_corners:
-            default_corners_path = _BACKEND_DIR / "app" / "config" / "default_corners.json"
-            if default_corners_path.exists():
-                try:
-                    raw = json.loads(default_corners_path.read_text())
-                    if raw and len(raw) == 4:
-                        corners = [(int(pt[0]), int(pt[1])) for pt in raw]
-                        detection_method = "manual (default_corners.json)"
-                        print("!" * 60)
-                        print("  WARNING: using repo default_corners.json for court geometry.")
-                        print("  This geometry may NOT match your video and produces unreliable")
-                        print("  homography-based cues (zones, contact height, physics).")
-                        print(f"  Prefer CourtCornerSetup or {Path(output_path).parent}/manual_corners.json instead.")
-                        print(f"  Loaded default corners: {corners}")
-                        print("!" * 60)
-                except Exception as e:
-                    print(f"  Warning: failed to load default_corners.json: {e}")
-        if corners is None:
-            margin_x = int(vid_w * 0.08)
-            court_top = int(vid_h * 0.28)
-            court_bottom = int(vid_h * 0.72)
-            corners = [(margin_x, court_bottom), (vid_w - margin_x, court_bottom),
-                       (margin_x, court_top), (vid_w - margin_x, court_top)]
+        corners, detection_method, _sel_valid = _select_court_corners(
+            auto_corners=auto_corners,
+            manual_fallback=manual_fallback,
+            vid_w=vid_w,
+            vid_h=vid_h,
+            use_default_corners=use_default_corners,
+        )
+        if detection_method == "manual_fallback":
+            print("  Auto court detection invalid; using manual corners fallback.")
+        elif detection_method == "proportional":
             print(f"  Using proportional corners: {corners}")
+        elif detection_method == "manual (default_corners.json)":
+            print("!" * 60)
+            print("  WARNING: using repo default_corners.json for court geometry.")
+            print("  This geometry may NOT match your video and produces unreliable")
+            print("  homography-based cues (zones, contact height, physics).")
+            print(f"  Prefer CourtCornerSetup or {Path(output_path).parent}/manual_corners.json instead.")
+            print(f"  Loaded default corners: {corners}")
+            print("!" * 60)
 
     corrected_corners = _correct_court_points(corners)
     court = stage_court_detection(corrected_corners)
