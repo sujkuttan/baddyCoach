@@ -169,6 +169,53 @@ def test_colab_falls_back_to_manual_corners_when_auto_invalid():
     assert method != "manual_fallback"
 
 
+def test_colab_hrnet_decode_applies_msra_subpixel_refinement():
+    """Colab _decode_hrnet must apply the MMPose MSRAHeatmap sub-pixel
+    refinement (move 0.25 index toward the higher neighbor) before rescaling,
+    matching mmpose.codecs.utils.refinement.refine_keypoints."""
+    import numpy as np
+    import colab.pipeline as pipeline
+
+    est = pipeline.RTMPoseEstimator.__new__(pipeline.RTMPoseEstimator)
+    est.model_type = "hrnet"
+
+    K, H, W = 17, 64, 48
+    heatmap = np.zeros((K, H, W), dtype=np.float32)
+    # Joint 0: peak at (x=10, y=20); higher neighbor on +x and +y side.
+    heatmap[0, 20, 10] = 1.0
+    heatmap[0, 20, 11] = 0.8
+    heatmap[0, 20, 9] = 0.2
+    heatmap[0, 21, 10] = 0.8
+    heatmap[0, 19, 10] = 0.2
+
+    crop_info = (0, 0, W, H)  # 1:1 crop -> index space == pixel space
+    kps = est._decode_hrnet([heatmap[None]], crop_info)
+
+    # Reference: index refined by +0.25 in x and +0.25 in y, then * (crop/W).
+    exp_x = (10 + 0.25) / W * W
+    exp_y = (20 + 0.25) / H * H
+    assert abs(kps[0, 0] - exp_x) < 1e-4
+    assert abs(kps[0, 1] - exp_y) < 1e-4
+    assert abs(kps[0, 2] - 1.0) < 1e-6
+
+
+def test_colab_hrnet_decode_no_refinement_at_border():
+    """Border keypoints get no sub-pixel shift (matches reference guards)."""
+    import numpy as np
+    import colab.pipeline as pipeline
+
+    est = pipeline.RTMPoseEstimator.__new__(pipeline.RTMPoseEstimator)
+    est.model_type = "hrnet"
+
+    K, H, W = 17, 64, 48
+    heatmap = np.zeros((K, H, W), dtype=np.float32)
+    heatmap[0, 0, 0] = 1.0  # top-left corner -> guards prevent refinement
+
+    kps = est._decode_hrnet([heatmap[None]], (0, 0, W, H))
+    assert abs(kps[0, 0] - 0.0) < 1e-4
+    assert abs(kps[0, 1] - 0.0) < 1e-4
+
+
 def test_colab_uses_continuity_aware_tracknet_candidate_selection():
     source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
 

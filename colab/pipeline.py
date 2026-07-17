@@ -429,9 +429,20 @@ class RTMPoseEstimator:
             kps = np.zeros((17, 3), dtype=np.float32)
             for k in range(min(17, heatmap.shape[0])):
                 hm = heatmap[k]
+                H, W = hm.shape
                 y_idx, x_idx = np.unravel_index(hm.argmax(), hm.shape)
-                kps[k, 0] = x1 + (x_idx / hm.shape[1]) * crop_w
-                kps[k, 1] = y1 + (y_idx / hm.shape[0]) * crop_h
+                # MMPose MSRAHeatmap sub-pixel refinement (biased, unbiased=False):
+                # shift 0.25 index toward the higher neighbor before rescaling.
+                # Matches mmpose.codecs.utils.refinement.refine_keypoints.
+                x_ref, y_ref = float(x_idx), float(y_idx)
+                if 1 < x_idx < W - 1 and 0 < y_idx < H:
+                    dx = hm[y_idx, x_idx + 1] - hm[y_idx, x_idx - 1]
+                    x_ref += np.sign(dx) * 0.25
+                if 1 < y_idx < H - 1 and 0 < x_idx < W:
+                    dy = hm[y_idx + 1, x_idx] - hm[y_idx - 1, x_idx]
+                    y_ref += np.sign(dy) * 0.25
+                kps[k, 0] = x1 + (x_ref / W) * crop_w
+                kps[k, 1] = y1 + (y_ref / H) * crop_h
                 kps[k, 2] = float(hm.max())
             return kps
         out = heatmap
