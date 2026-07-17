@@ -111,7 +111,7 @@ class RTMPoseEstimator:
         y_locs = np.argmax(simcc_y, axis=1).astype(np.float32)
         max_x = np.max(simcc_x, axis=1)
         max_y = np.max(simcc_y, axis=1)
-        scores = np.where(max_x > max_y, max_y, max_x)
+        scores = 0.5 * (max_x + max_y)
         scores = 1.0 / (1.0 + np.exp(-scores))
         keypoints = np.column_stack([x_locs, y_locs, scores])
         keypoints[:, :2] /= self.simcc_split_ratio
