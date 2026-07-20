@@ -282,6 +282,26 @@ def get_yolov8():
     return _models.get("yolov8")
 
 
+def get_racket():
+    """Lazy getter for RacketTracker. Returns None if disabled or weights missing."""
+    from app.config.settings import settings as s
+    if not s.racket_enabled:
+        return None
+    if "racket" not in _models:
+        try:
+            from app.models.racket import RacketTracker
+            tr = RacketTracker(
+                model_path=str(s.racket_model_path) if s.racket_model_path else None,
+                conf=s.racket_min_conf,
+                device=_get_device(),
+            )
+            _models["racket"] = tr
+        except ImportError:
+            logger.warning("RacketTracker not available (standalone mode)")
+            return None
+    return _models.get("racket")
+
+
 def get_tracknet():
     if "tracknet" not in _models:
         try:
