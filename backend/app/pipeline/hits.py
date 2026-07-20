@@ -420,6 +420,45 @@ def _find_nearest_wrist_frame(
     return best_frame
 
 
+def _find_nearest_racket_frame(
+    candidate_frame: int,
+    shuttle_df: pd.DataFrame,
+    racket_detections: dict,
+    window: int = 4,
+    min_shuttle_conf: float = 0.30,
+) -> int:
+    """Refine a hit candidate using racket-head proximity to shuttle.
+
+    racket_detections: {frame: {side: (hx, hy)}} produced by RacketTracker,
+    grouped by frame. Returns the frame in [candidate_frame-window,
+    candidate_frame+window+1] minimizing racket-head→shuttle distance
+    (requiring shuttle conf >= min_shuttle_conf); returns candidate_frame
+    unchanged if no racket data or no shuttle at any frame.
+    """
+    if not racket_detections:
+        return candidate_frame
+
+    lo = candidate_frame - window
+    hi = candidate_frame + window + 1
+    best_frame = candidate_frame
+    best_dist: float | None = None
+    for f in range(lo, hi):
+        srows = shuttle_df[
+            (shuttle_df["frame"] == f) &
+            (shuttle_df.get("confidence", pd.Series([1.0]) * len(shuttle_df)) >= min_shuttle_conf)
+        ]
+        if len(srows) == 0:
+            continue
+        sx, sy = float(srows.iloc[0]["x"]), float(srows.iloc[0]["y"])
+        for head in racket_detections.get(f, {}).values():
+            if head is None:
+                continue
+            d = float(np.sqrt((head[0] - sx) ** 2 + (head[1] - sy) ** 2))
+            if best_dist is None or d < best_dist:
+                best_dist, best_frame = d, f
+    return best_frame
+
+
 # ── Wrist-speed hit detector (pose-only fallback) ──────────────────────
 # Adapted from Haimantika/badminton-coach: detect strikes from racket-wrist
 # speed peaks.  Runs when shuttle-based detection finds too few candidates.
@@ -776,6 +815,17 @@ class HitFrameLocalizationStage:
             return StageResult.from_error("Shuttle tracking data required")
 
         pose_df = artifacts.get_parquet("pose")
+        racket_raw = artifacts.get("racket_detections")
+        racket_grouped: dict[int, dict] = {}
+        if racket_raw is not None:
+            for item in racket_raw:
+                f = int(item.get("frame"))
+                side = item.get("player_side")
+                head = item.get("head_point")
+                if f not in racket_grouped:
+                    racket_grouped[f] = {}
+                if side is not None:
+                    racket_grouped[f][side] = head
         video_path: str | None = config.extra.get("video_path", "")
         audio_enabled = (
             getattr(settings, "audio_hit_enabled", True)
@@ -848,9 +898,18 @@ class HitFrameLocalizationStage:
                     search_window=refine_window,
                     min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
                 )
-                if refined != orig_frame:
-                    c["frame"] = refined
-                    c["_refined_offset"] = refined - orig_frame
+                if racket_grouped:
+                    racket_refined = _find_nearest_racket_frame(
+                        orig_frame, shuttle_df, racket_grouped,
+                        window=refine_window,
+                        min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
+                    )
+                    final_frame = int(round(0.7 * refined + 0.3 * racket_refined))
+                else:
+                    final_frame = refined
+                if final_frame != orig_frame:
+                    c["frame"] = final_frame
+                    c["_refined_offset"] = final_frame - orig_frame
                     refined_count += 1
 
         if refined_count > 0:
@@ -885,6 +944,13 @@ class HitFrameLocalizationStage:
                     search_window=refine_window,
                     min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
                 )
+                if racket_grouped:
+                    racket_better = _find_nearest_racket_frame(
+                        c["frame"], shuttle_df, racket_grouped,
+                        window=refine_window,
+                        min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
+                    )
+                    better = int(round(0.7 * better + 0.3 * racket_better))
                 if better != c["frame"]:
                     c["_sanity_offset"] = better - c["frame"]
                     c["frame"] = better

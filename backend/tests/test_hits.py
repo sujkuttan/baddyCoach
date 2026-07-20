@@ -2,6 +2,22 @@ import numpy as np
 import pandas as pd
 from app.pipeline.base import ArtifactStore, StageConfig
 from app.pipeline import HitFrameLocalizationStage
+from app.pipeline.hits import _find_nearest_racket_frame
+
+
+def test_find_nearest_racket_frame_prefers_racket():
+    shuttle_df = pd.DataFrame({
+        "frame": list(range(9)),
+        "x": [100.0] * 9,
+        "y": [100.0] * 9,
+        "confidence": [0.9] * 9,
+    })
+    racket_det = {6: {"near": (100.0, 100.0)}}
+    best = _find_nearest_racket_frame(
+        candidate_frame=4, shuttle_df=shuttle_df, racket_detections=racket_det,
+        window=4, min_shuttle_conf=0.3,
+    )
+    assert best == 6
 
 
 def test_hit_detection_finds_trajectory_changes(tmp_job_dir):
