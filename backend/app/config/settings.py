@@ -19,6 +19,15 @@ class Settings(BaseSettings):
     inpaintnet_model_path: Path = _project_root / "ckpts/InpaintNet_best.pt"
     court_kpRCNN_model_path: Path = _project_root / "ckpts/court_kpRCNN.pth"
     yolov8_model_path: Path | None = None
+
+    # ── Racket detection (RacketDB YOLOv8) ─────────────────────────────
+    racket_enabled: bool = True
+    racket_model_path: str = "ckpts/racketdb_yolov8.pt"
+    racket_min_conf: float = 0.4
+    racket_proximity_blend: float = 0.5
+    racket_motion_weight: float = 0.6
+    racket_dist_weight: float = 0.4
+    racket_head_margin: float = 0.1
     rtmpose_model_path: Path | None = _project_root / "ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
     hrnet_model_path: Path | None = _project_root / "ckpts/mmpose/hrnet_w32_coco_256x192.onnx"
     bst_model_path: Path | None = _project_root / "ckpts/bst/bst_CG_AP_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"
