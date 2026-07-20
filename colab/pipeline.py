@@ -1158,6 +1158,14 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                             player_bboxes_by_frame.setdefault(det["frame"], {})[side] = det["bbox"]
 
                     frames_for_racket = []
+                    # Frame-space contract: RacketTracker.detect indexes its
+                    # output by the *position* of each frame in `frames_for_racket`
+                    # (sample ordinal). But pose_df / shuttle_df / players_data use
+                    # ABSOLUTE frame numbers (`global_idx`). To keep racket
+                    # detections joinable against those artifacts, we record the
+                    # absolute frame for every sampled frame and rewrite each
+                    # detection's `frame` field to the absolute number afterward.
+                    frame_global_idx = []
                     if player_bboxes_by_frame:
                         cap_r = cv2.VideoCapture(str(video_path))
                         f_idx = 0
@@ -1168,6 +1176,7 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                                 break
                             if f_idx % sample_interval == 0:
                                 frames_for_racket.append(frame)
+                                frame_global_idx.append(f_idx)
                                 s_idx += 1
                             f_idx += 1
                         cap_r.release()
@@ -1177,6 +1186,12 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
                     # every frame key present in player_bboxes_by_frame.
                     if frames_for_racket and len(frames_for_racket) > max_frame:
                         racket_detections = racket_tr.detect(frames_for_racket, player_bboxes_by_frame)
+                        # Rewrite sample-ordinal frame -> absolute frame number so
+                        # downstream consumers (pose/shuttle join) match correctly.
+                        for rd in racket_detections:
+                            oi = int(rd.get("frame", -1))
+                            if 0 <= oi < len(frame_global_idx):
+                                rd["frame"] = frame_global_idx[oi]
                         store.set("racket_detections", racket_detections)
                         print(f"  Racket detections: {len(racket_detections)}")
                     else:
