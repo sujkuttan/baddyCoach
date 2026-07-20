@@ -43,3 +43,17 @@ class TestDownloadAllModels:
             mock_ensure.return_value = Path("/fake/path.pt")
             results = download_all_models(force=True)
             assert len(results) == len(BACKEND_MODELS)
+
+
+class TestRacketDBRegistry:
+    def test_racketdb_in_model_registry(self):
+        from app.pipeline.shared.models import MODEL_REGISTRY
+        assert "racketdb" in MODEL_REGISTRY
+        local_path, gdrive_id, url = MODEL_REGISTRY["racketdb"]
+        assert str(local_path).endswith(".pt")
+        assert url is not None
+        assert url.endswith(".pt")
+
+    def test_racketdb_in_backend_models(self):
+        from app.config.model_downloader import BACKEND_MODELS
+        assert "racketdb" in BACKEND_MODELS

@@ -13,7 +13,7 @@ from app.pipeline.shared.models import MODEL_REGISTRY, ensure_model
 
 # Models essential for the backend pipeline (excludes colab-only variants)
 BACKEND_MODELS = [
-    "tracknet", "inpaintnet", "bst", "rtmpose", "hrnet", "court_kprcnn", "yolov8s",
+    "tracknet", "inpaintnet", "bst", "rtmpose", "hrnet", "court_kprcnn", "yolov8s", "racketdb",
 ]
 
 

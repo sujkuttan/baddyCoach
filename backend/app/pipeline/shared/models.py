@@ -70,6 +70,11 @@ MODEL_REGISTRY: dict[str, tuple[Path, str | None, str | None]] = {
         None,
         None,  # Ultralytics auto-downloads
     ),
+    "racketdb": (
+        Path("ckpts/racketdb_yolov8.pt"),
+        None,
+        "https://huggingface.co/muhabdulhaq/racketdb/resolve/main/racketdb_yolov8.pt",
+    ),
 }
 
 
