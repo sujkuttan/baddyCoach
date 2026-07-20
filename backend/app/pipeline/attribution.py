@@ -111,6 +111,7 @@ class PlayerAttributionStage:
                 players_data=players_data, court_data=court,
                 frame=frame, prev_owner=None,
                 shot=shot,
+                racket_detections=artifacts.get("racket_detections"),
             )
 
             rally_id = int(rid) if pd.notna(rid) else -1

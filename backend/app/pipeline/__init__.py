@@ -28,6 +28,7 @@ try:
     from .players import PlayerTrackingStage, stitch_tracks
     from .shuttle import ShuttleTrackingStage
     from .pose import PoseEstimationStage
+    from .racket import RacketDetectionStage
     from .hits import HitFrameLocalizationStage
     from .strokes import StrokeClassificationStage
     from .attribution import PlayerAttributionStage
@@ -45,6 +46,7 @@ except (ImportError, Exception):
     PlayerTrackingStage = None
     ShuttleTrackingStage = None
     PoseEstimationStage = None
+    RacketDetectionStage = None
     HitFrameLocalizationStage = None
     StrokeClassificationStage = None
     PlayerAttributionStage = None
@@ -110,6 +112,7 @@ __all__ = [
     'PlayerTrackingStage',
     'ShuttleTrackingStage',
     'PoseEstimationStage',
+    'RacketDetectionStage',
     'HitFrameLocalizationStage',
     'StrokeClassificationStage',
     'PlayerAttributionStage',

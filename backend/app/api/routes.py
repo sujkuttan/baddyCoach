@@ -16,6 +16,7 @@ def run_pipeline(job_id: str):
     from app.pipeline import PlayerTrackingStage
     from app.pipeline import ShuttleTrackingStage
     from app.pipeline import PoseEstimationStage
+    from app.pipeline import RacketDetectionStage
     from app.pipeline import HitFrameLocalizationStage
     from app.pipeline import StrokeClassificationStage
     from app.pipeline import PlayerAttributionStage
@@ -136,6 +137,7 @@ def run_pipeline(job_id: str):
         ("player_tracking", lambda: PlayerTrackingStage().run(store, config, frames=frames if frames else None)),
         ("shuttle_tracking", lambda: ShuttleTrackingStage().run(store, config, frames=frames if frames else None)),
         ("pose_estimation", lambda: PoseEstimationStage().run(store, config, frames=frames if frames else None)),
+        ("racket_detection", lambda: RacketDetectionStage().run(store, config, frames=frames if frames else None)),
         ("hit_frame_localization", lambda: HitFrameLocalizationStage().run(store, config)),
         ("stroke_classification", lambda: StrokeClassificationStage().run(store, config)),
         ("rally_segmentation", lambda: RallySegmentationStage().run(store, config)),
