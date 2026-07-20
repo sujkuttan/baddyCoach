@@ -198,6 +198,35 @@ def extract_clip_features(clip: dict) -> dict:
     # "Above head" classification: use elbow angle as proxy
     feats['contact_height'] = contact_y
 
+    # ── Racket contact cues (Task 6) ─────────────────────────────────
+    rh = clip.get('racket_head')
+    rp = clip.get('racket_present')
+    if rh is not None and rp is not None and len(rh) > 0:
+        present_frac = float(np.mean(rp))
+        feats['racket_present_frac'] = present_frac
+        min_d = None
+        peak_speed = 0.0
+        prev_head = None
+        for t in range(min(len(rh), len(shuttle))):
+            for p_idx in (0, 1):
+                if t < len(rp) and rp[t, p_idx]:
+                    head = rh[t, p_idx]
+                    sh = shuttle[t]
+                    if np.all(np.isfinite(head)) and np.all(np.isfinite(sh)):
+                        d = float(np.linalg.norm(head - sh))
+                        if min_d is None or d < min_d:
+                            min_d = d
+                    if prev_head is not None:
+                        sp = float(np.linalg.norm(head - prev_head))
+                        peak_speed = max(peak_speed, sp)
+            prev_head = rh[t, 0] if (t < len(rp) and rp[t, 0]) else None
+        feats['racket_contact_distance'] = min_d if min_d is not None else 1.0
+        feats['racket_peak_speed'] = peak_speed
+    else:
+        feats['racket_present_frac'] = 0.0
+        feats['racket_contact_distance'] = 1.0
+        feats['racket_peak_speed'] = 0.0
+
     return feats
 
 
@@ -483,6 +512,7 @@ def _build_evidence(stroke: str, feats: dict) -> dict:
         'player_zone': zone,
         'outgoing_trajectory': traj,
         'landing_zone': landing,
+        'racket_contact_distance': feats.get('racket_contact_distance', 1.0),
     }
 
 
