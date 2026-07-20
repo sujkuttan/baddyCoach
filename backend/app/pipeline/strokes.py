@@ -118,6 +118,7 @@ def _build_clip(
     shuttle_raw: pd.DataFrame | None = None,
     hit_frame: int | None = None,
     alpha_probe_offset: int = 0,
+    racket_detections: list | None = None,
 ) -> dict:
     """Build a BST clip from a sequence of frame indices.
 
@@ -308,6 +309,26 @@ def _build_clip(
     # Interpolation was creating fake continuous trajectories (100/100
     # frames "valid" for every clip), destroying the discriminative signal.
 
+    # ── Racket head points + presence (Scope A racket channel) ─────
+    racket_head = np.zeros((seq_len, 2, 2), dtype=np.float32)
+    racket_present = np.zeros((seq_len, 2), dtype=bool)
+    racket_lookup = {}
+    if racket_detections is not None:
+        for rd in racket_detections:
+            racket_lookup.setdefault(int(rd["frame"]), {})[rd["player_side"]] = rd
+    for t, frame in enumerate(frames[:seq_len]):
+        rframe = racket_lookup.get(int(frame))
+        if not rframe:
+            continue
+        for p_idx, side in ((0, "far"), (1, "near")):
+            rd = rframe.get(side)
+            if rd is None:
+                continue
+            hp = rd.get("head_point")
+            if hp is not None:
+                racket_head[t, p_idx] = [float(hp[0]), float(hp[1])]
+                racket_present[t, p_idx] = True
+
     for t, frame in enumerate(frames[:seq_len]):
         # Resolve active players for THIS frame.
         # When one side is missing (e.g. far player not detected in this frame),
@@ -317,12 +338,12 @@ def _build_clip(
         near_pid = frame_players.get('near')
         far_pid = frame_players.get('far')
         if far_pid is None:
-            if near_pid in player_ids and len(player_ids) > 1:
+            if player_ids and near_pid in player_ids and len(player_ids) > 1:
                 far_pid = [p for p in player_ids if p != near_pid][0]
             else:
                 far_pid = 'player_2'
         if near_pid is None:
-            if far_pid in player_ids and len(player_ids) > 1:
+            if player_ids and far_pid in player_ids and len(player_ids) > 1:
                 near_pid = [p for p in player_ids if p != far_pid][0]
             else:
                 near_pid = 'player_1'
@@ -445,6 +466,8 @@ def _build_clip(
         'JnB': JnB.reshape(seq_len, 2, -1),
         'shuttle': shuttle,
         'pos': pos,
+        'racket_head': racket_head,
+        'racket_present': racket_present,
         'video_len': min(n_frames_orig, seq_len),
         'vid_w': vid_w,
         'vid_h': vid_h,
@@ -473,6 +496,7 @@ def _prepare_bst_clip_for_hit(
     homography: np.ndarray | None,
     player_ids: list[str],
     alpha_probe_offset: int = 0,
+    racket_detections: list | None = None,
 ) -> tuple[dict, list[int]]:
     anchor_frame = max(0, int(frame + alpha_probe_offset))
     use_midpoint = settings.bst_clip_boundary == "midpoint"
@@ -501,6 +525,7 @@ def _prepare_bst_clip_for_hit(
             shuttle_raw=shuttle_raw,
             hit_frame=anchor_frame,
             alpha_probe_offset=alpha_probe_offset,
+            racket_detections=racket_detections,
         )
         if original_n_frames != classifier.seq_len:
             clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
@@ -564,6 +589,7 @@ def _prepare_bst_clip_for_hit(
         shuttle_raw=shuttle_raw,
         hit_frame=anchor_frame,
         alpha_probe_offset=alpha_probe_offset,
+        racket_detections=racket_detections,
     )
     return clip, clip_frames
 
@@ -581,6 +607,7 @@ class StrokeClassificationStage:
         shuttle_df = artifacts.get_parquet("shuttle")
         shuttle_raw = artifacts.get_parquet("shuttle_raw")
         pose_df = artifacts.get_parquet("pose")
+        racket_detections = artifacts.get("racket_detections")
         court = artifacts.get("court") or {}
 
         from app.pipeline.shared.models import get_bst
@@ -668,6 +695,7 @@ class StrokeClassificationStage:
                 homography=homography,
                 player_ids=player_ids,
                 alpha_probe_offset=0,
+                racket_detections=racket_detections,
             )
 
             bst_clips_registry[int(frame)] = {"frames": clip_frames}
@@ -766,6 +794,7 @@ class StrokeClassificationStage:
                         homography=homography,
                         player_ids=player_ids,
                         alpha_probe_offset=offset,
+                        racket_detections=racket_detections,
                     )
                     probe_requests.append((clip_idx, offset, probe_clip))
             if probe_requests:
