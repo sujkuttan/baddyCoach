@@ -1139,6 +1139,56 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         config.extra["bst_batch"] = gpu_cfg.get("bst_batch", 32)
         # bst_joint_norm defaults to "bbox" (settings.py) — matches training normalization
         settings.joint_velocity_amplification = 0.0
+
+        # ── Racket detections (Scope A feature channel) ──
+        # Build the player-bbox-by-frame map that RacketTracker._associate expects
+        # ({frame: {side: bbox}}), reusing the already-stitched players_data so we
+        # don't re-run YOLO. Frames are re-read at the same sample interval used by
+        # the main ML loop, indexed by sample ordinal (matching players_data frames).
+        if settings.racket_enabled:
+            try:
+                from app.pipeline.shared.models import get_racket
+
+                racket_tr = get_racket()
+                if racket_tr is not None:
+                    player_bboxes_by_frame = {}
+                    for p in players_data.get("players", []):
+                        side = p.get("side", "near")
+                        for det in p.get("detections", []):
+                            player_bboxes_by_frame.setdefault(det["frame"], {})[side] = det["bbox"]
+
+                    frames_for_racket = []
+                    if player_bboxes_by_frame:
+                        cap_r = cv2.VideoCapture(str(video_path))
+                        f_idx = 0
+                        s_idx = 0
+                        while True:
+                            ret, frame = cap_r.read()
+                            if not ret:
+                                break
+                            if f_idx % sample_interval == 0:
+                                frames_for_racket.append(frame)
+                                s_idx += 1
+                            f_idx += 1
+                        cap_r.release()
+
+                    max_frame = max(player_bboxes_by_frame.keys(), default=-1)
+                    # frames_for_racket is indexed by sample ordinal; it must cover
+                    # every frame key present in player_bboxes_by_frame.
+                    if frames_for_racket and len(frames_for_racket) > max_frame:
+                        racket_detections = racket_tr.detect(frames_for_racket, player_bboxes_by_frame)
+                        store.set("racket_detections", racket_detections)
+                        print(f"  Racket detections: {len(racket_detections)}")
+                    else:
+                        print("  Racket detection skipped: frame/bbox index mismatch")
+                        store.set("racket_detections", [])
+                else:
+                    print("  Racket model unavailable (weights missing or disabled) — skipping")
+                    store.set("racket_detections", [])
+            except Exception as e:
+                print(f"  Racket detection failed (non-fatal): {e}")
+                store.set("racket_detections", [])
+
         shots_result = StrokeClassificationStage().run(store, config)
         shots_df = store.get_parquet("shots")
         shots = shots_df.to_dict("records") if shots_df is not None and len(shots_df) > 0 else []
@@ -1529,6 +1579,21 @@ if __name__ == "__main__":
                         help="RTMPose chunk size (overrides auto-detect). Env: RTMPOSE_BATCH_SIZE")
     parser.add_argument("--ml-batch-size", type=int, default=None,
                         help="Colab frame-loop batch size (default 300). Env: ML_FRAME_BATCH_SIZE")
+    # ── Racket detection (Scope A feature channel) ──
+    parser.add_argument("--racket-enabled", action="store_true", default=False,
+                        help="Enable racket detection (YOLOv8 on ckpts/racketdb) for stroke classification")
+    parser.add_argument("--racket-min-conf", type=float, default=0.4,
+                        help="Racket detection confidence threshold (default: 0.4)")
+    parser.add_argument("--racket-proximity-blend", type=float, default=0.5,
+                        help="Weight blending racket proximity with motion/dist cues (default: 0.5)")
+    parser.add_argument("--racket-head-margin", type=float, default=0.1,
+                        help="Margin fraction for racket head-point estimate (default: 0.1)")
+    parser.add_argument("--racket-motion-weight", type=float, default=0.6,
+                        help="Weight of racket-motion cue vs distance cue (default: 0.6)")
+    parser.add_argument("--racket-dist-weight", type=float, default=0.4,
+                        help="Weight of racket-distance cue vs motion cue (default: 0.4)")
+    parser.add_argument("--racket-model-path", default="ckpts/racketdb_yolov8.pt",
+                        help="Path to racket YOLOv8 weights (default: ckpts/racketdb_yolov8.pt)")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
@@ -1592,6 +1657,18 @@ if __name__ == "__main__":
     settings.audio_hit_enabled = False
     if args.joint_norm != "bbox":
         print(f"Joint normalization mode: {args.joint_norm}")
+
+    # ── Racket detection settings (Scope A feature channel) ──
+    if args.racket_enabled:
+        settings.racket_enabled = True
+        settings.racket_min_conf = args.racket_min_conf
+        settings.racket_proximity_blend = args.racket_proximity_blend
+        settings.racket_head_margin = args.racket_head_margin
+        settings.racket_motion_weight = args.racket_motion_weight
+        settings.racket_dist_weight = args.racket_dist_weight
+        settings.racket_model_path = args.racket_model_path
+        print(f"Racket detection enabled: model={args.racket_model_path}, "
+              f"min_conf={args.racket_min_conf}")
 
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
                  sample_rate=args.sample_rate, court_corners=court_corners,

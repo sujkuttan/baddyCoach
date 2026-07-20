@@ -231,3 +231,21 @@ def test_colab_reuses_backend_tracknet_crop_and_merge_helpers():
     assert "_court_crop_rect" in source
     assert "_gate_tracknet_spikes" in source
     assert "_merge_far_tile_tracks" in source
+
+
+def test_colab_exposes_racket_settings():
+    """Colab must expose the 7 racket CLI flags and wire them to settings."""
+    source = (Path(__file__).resolve().parents[2] / "colab/pipeline.py").read_text()
+
+    flags = [
+        "--racket-enabled",
+        "--racket-min-conf",
+        "--racket-proximity-blend",
+        "--racket-head-margin",
+        "--racket-motion-weight",
+        "--racket-dist-weight",
+        "--racket-model-path",
+    ]
+    assert all(flag in source for flag in flags)
+    # And the settings mapping must wire at least the enable/disable toggle.
+    assert "settings.racket_enabled" in source
