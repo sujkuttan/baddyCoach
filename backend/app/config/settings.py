@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     racket_motion_weight: float = 0.6
     racket_dist_weight: float = 0.4
     racket_head_margin: float = 0.1
+    # Rule-based classifier: max racket-head→shuttle distance (normalized court
+    # units) allowed to treat a contact as a genuine racket strike.
+    racket_contact_max_dist: float = 0.5
+    # Ownership scorer: racket-motion velocity normalizer (px/frame) and the
+    # pixel sigma used in the racket→shuttle distance term.
+    racket_motion_vel_norm: float = 50.0
+    racket_dist_sigma_px: float = 100.0
     rtmpose_model_path: Path | None = _project_root / "ckpts/rtmpose/rtmpose-m_simcc-body7_pt-body7_420e-256x192.onnx"
     hrnet_model_path: Path | None = _project_root / "ckpts/mmpose/hrnet_w32_coco_256x192.onnx"
     bst_model_path: Path | None = _project_root / "ckpts/bst/bst_CG_AP_JnB_bone_between_2_hits_with_max_limits_seq_100_merged.pt"

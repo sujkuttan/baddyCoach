@@ -424,8 +424,8 @@ def _find_nearest_racket_frame(
     candidate_frame: int,
     shuttle_df: pd.DataFrame,
     racket_detections: dict,
-    window: int = 4,
-    min_shuttle_conf: float = 0.30,
+    window: int | None = None,
+    min_shuttle_conf: float | None = None,
 ) -> int:
     """Refine a hit candidate using racket-head proximity to shuttle.
 
@@ -434,7 +434,16 @@ def _find_nearest_racket_frame(
     candidate_frame+window+1] minimizing racket-head→shuttle distance
     (requiring shuttle conf >= min_shuttle_conf); returns candidate_frame
     unchanged if no racket data or no shuttle at any frame.
+
+    Defaults are read from settings (hit_refine_window, shuttle_min_conf)
+    when not explicitly provided.
     """
+    from app.config.settings import settings as _s
+    if window is None:
+        window = getattr(_s, "hit_refine_window", 4)
+    if min_shuttle_conf is None:
+        min_shuttle_conf = getattr(_s, "shuttle_min_conf", 0.30)
+
     if not racket_detections:
         return candidate_frame
 

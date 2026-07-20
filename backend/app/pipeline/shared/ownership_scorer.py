@@ -175,9 +175,16 @@ def normalized_proximity_score(shuttle_px: np.ndarray | None,
         else:
             bbox_h = near_bbox_h if racket_head is racket_head_near else far_bbox_h
         if bbox_h is None or bbox_h < 1:
-            # pure pixel distance fallback (no body scaling)
+            # Pure pixel-distance fallback (no body scaling available). Mirror
+            # the wrist path: a raw pixel distance would otherwise be divided by
+            # the court-space sigma_meters (0.75 m) and collapse to ~0. Use the
+            # dedicated pixel-space sigma (settings.racket_dist_sigma_px) instead.
+            from app.config.settings import settings as _s
+            px_sigma = getattr(_s, "racket_dist_sigma_px", 100.0)
             dist = float(np.linalg.norm(rpx - shuttle_px))
-            score = float(np.exp(-dist / sigma_meters))
+            score = float(np.exp(-dist / px_sigma))
+            if not np.isfinite(score):
+                score = None
         else:
             dist = float(np.linalg.norm(rpx - shuttle_px))
             norm_dist = dist / bbox_h
@@ -226,20 +233,46 @@ def normalized_proximity_score(shuttle_px: np.ndarray | None,
     return ns, fs
 
 
-def racket_motion_score(racket_head_seq: dict | None,
-                         hit_idx: int,
-                         motion_weight: float = 0.6,
-                         dist_weight: float = 0.4,
-                         shuttle_px_seq: dict | None = None,
-                         unknown_score: float = 0.50,
-                         vel_norm: float = 50.0) -> tuple[float, float]:
-    """Racket-based motion score (Scope A).
+def _pose_angular_velocity(kps_prev: np.ndarray, kps_curr: np.ndarray,
+                           kps_nxt: np.ndarray, j_prev: int, j_curr: int,
+                           j_nxt: int) -> float:
+    """Central-difference angular velocity (rad/frame) of joint chain
+    j_prev→j_curr→j_nxt across three consecutive frames."""
+    if any(k.shape != (17, 3) for k in (kps_prev, kps_curr, kps_nxt)):
+        return 0.0
+    v1 = kps_curr[j_curr, :2] - kps_prev[j_prev, :2]
+    v2 = kps_nxt[j_nxt, :2] - kps_curr[j_curr, :2]
+    n1 = float(np.linalg.norm(v1))
+    n2 = float(np.linalg.norm(v2))
+    if n1 < 1e-6 or n2 < 1e-6:
+        return 0.0
+    cos = float(np.clip(np.dot(v1, v2) / (n1 * n2), -1.0, 1.0))
+    return float(np.arccos(cos))
 
-    Uses racket-head speed around hit_idx and min racket-shuttle distance.
-    racket_head_seq: {"near": [ (x,y), ... ], "far": [...]}.
-    Falls back to (unknown_score, unknown_score) when no racket data.
+
+def racket_motion_score(racket_head_seq: dict | None,
+                          hit_idx: int,
+                          motion_weight: float = 0.6,
+                          dist_weight: float = 0.4,
+                          shuttle_px_seq: dict | None = None,
+                          unknown_score: float = 0.50,
+                          vel_norm: float = 50.0,
+                          near_kps_list: list | None = None,
+                          far_kps_list: list | None = None,
+                          min_confidence: float = 0.35,
+                          wrist_weight: float = 0.50,
+                          elbow_weight: float = 0.30,
+                          shoulder_weight: float = 0.20) -> tuple[float, float]:
+    """Motion score blending racket-head signal with pose-derived fallback.
+
+    When ``racket_head_seq`` is present, uses racket-head speed around hit_idx
+    and min racket-shuttle distance (Scope A). When it is ``None`` (no racket
+    data), falls back to the original pose-derived computation: wrist pixel
+    velocity plus elbow/shoulder angular velocity. Both branches return a
+    near/far pair normalized to sum to 1 so the score behaves as a relative
+    comparison.
     """
-    def _motion(seq, sh_seq):
+    def _racket_motion(seq, sh_seq):
         if not seq or len(seq) < 3:
             return unknown_score
         if hit_idx < 1 or hit_idx >= len(seq) - 1:
@@ -260,14 +293,56 @@ def racket_motion_score(racket_head_seq: dict | None,
             sh = np.array(sh_seq[hit_idx], dtype=float)
             if np.all(np.isfinite(sh)):
                 d = float(np.linalg.norm(curr - sh))
-                dist_n = float(np.exp(-d / 100.0))
+                from app.config.settings import settings as _s
+                px_sigma = getattr(_s, "racket_dist_sigma_px", 100.0)
+                dist_n = float(np.exp(-d / px_sigma))
         raw = motion_weight * speed_n + dist_weight * dist_n
         return min(1.0, raw / (motion_weight + dist_weight))
 
-    near = _motion(racket_head_seq.get("near") if racket_head_seq else None,
-                   shuttle_px_seq.get("near") if shuttle_px_seq else None)
-    far = _motion(racket_head_seq.get("far") if racket_head_seq else None,
-                  shuttle_px_seq.get("far") if shuttle_px_seq else None)
+    def _pose_motion(kps_list):
+        if not kps_list or len(kps_list) < 3:
+            return unknown_score
+        if hit_idx < 1 or hit_idx >= len(kps_list) - 1:
+            return unknown_score
+        kp_prev = kps_list[hit_idx - 1]
+        kp_curr = kps_list[hit_idx]
+        kp_nxt = kps_list[hit_idx + 1]
+        if any(k is None for k in (kp_prev, kp_curr, kp_nxt)):
+            return unknown_score
+        kp_prev = np.array(kp_prev)
+        kp_curr = np.array(kp_curr)
+        kp_nxt = np.array(kp_nxt)
+        # Require a minimum upper-body pose confidence.
+        if min(kp_curr[_R_WRIST, 2], kp_curr[_R_ELBOW, 2],
+               kp_curr[_R_SHOULDER, 2]) < min_confidence:
+            return unknown_score
+        # Wrist pixel speed (central difference).
+        wrist_speed = max(
+            float(np.linalg.norm(kp_curr[_R_WRIST, :2] - kp_prev[_R_WRIST, :2])),
+            float(np.linalg.norm(kp_nxt[_R_WRIST, :2] - kp_curr[_R_WRIST, :2])),
+        )
+        wrist_n = min(1.0, wrist_speed / vel_norm)
+        elbow_av = _pose_angular_velocity(kp_prev, kp_curr, kp_nxt, _R_ELBOW, _R_ELBOW, _R_ELBOW)
+        shoulder_av = _pose_angular_velocity(kp_prev, kp_curr, kp_nxt, _R_SHOULDER, _R_SHOULDER, _R_SHOULDER)
+        # Normalize angular velocities to [0,1] (≈π rad is a full reversal).
+        elbow_n = min(1.0, elbow_av / np.pi)
+        shoulder_n = min(1.0, shoulder_av / np.pi)
+        raw = (wrist_weight * wrist_n + elbow_weight * elbow_n
+               + shoulder_weight * shoulder_n)
+        return min(1.0, raw / (wrist_weight + elbow_weight + shoulder_weight))
+
+    use_racket = racket_head_seq is not None
+    near_fn = _racket_motion if use_racket else _pose_motion
+    far_fn = _racket_motion if use_racket else _pose_motion
+
+    near_seq = (racket_head_seq.get("near") if use_racket else near_kps_list)
+    far_seq = (racket_head_seq.get("far") if use_racket else far_kps_list)
+    near_sh = (shuttle_px_seq.get("near") if (use_racket and shuttle_px_seq) else None)
+    far_sh = (shuttle_px_seq.get("far") if (use_racket and shuttle_px_seq) else None)
+
+    near = near_fn(near_seq, near_sh) if use_racket else near_fn(near_seq)
+    far = far_fn(far_seq, far_sh) if use_racket else far_fn(far_seq)
+
     total = near + far
     if total > 0:
         near, far = near / total, far / total
@@ -788,8 +863,8 @@ class OwnershipScorer:
             for f in range(center - half, center + half + 1):
                 head = None
                 for r in racket_detections:
-                    if r.get("frame") == f and r.get("side") == side:
-                        h = r.get("head")
+                    if r.get("frame") == f and r.get("player_side") == side:
+                        h = r.get("head_point")
                         if h is not None:
                             head = (float(h[0]), float(h[1]))
                         break
@@ -866,6 +941,13 @@ class OwnershipScorer:
             motion_weight=racket_mot_w,
             dist_weight=racket_dist_w,
             unknown_score=self.unknown_score,
+            vel_norm=getattr(_settings, "racket_motion_vel_norm", 50.0),
+            near_kps_list=near_kps_seq,
+            far_kps_list=far_kps_seq,
+            min_confidence=self.min_pose_conf,
+            wrist_weight=self.motion_wrist_weight,
+            elbow_weight=self.motion_elbow_weight,
+            shoulder_weight=self.motion_shoulder_weight,
         )
 
         pose_n, pose_f = pose_contact_feasibility_score(
