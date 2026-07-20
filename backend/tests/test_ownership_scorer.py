@@ -118,3 +118,20 @@ def test_defaults_use_raised_weights():
     scorer = OwnershipScorer()
     assert scorer.turn_prior_weight == 0.25
     assert scorer.bst_weight == 0.15
+
+
+def test_racket_motion_score_uses_racket_when_present():
+    from app.pipeline.shared.ownership_scorer import racket_motion_score
+    # near has high racket-head speed around hit; far has none
+    near_heads = [np.array([0.0, 0.0]), np.array([5.0, 0.0]), np.array([0.0, 0.0])]
+    far_heads = [np.array([0.0, 0.0])] * 3
+    racket_seq = {"near": near_heads, "far": far_heads}
+    n, f = racket_motion_score(racket_seq, hit_idx=1, motion_weight=0.6, dist_weight=0.4)
+    assert n > f  # near moved its racket, far did not
+
+
+def test_racket_motion_score_falls_back_when_none():
+    from app.pipeline.shared.ownership_scorer import racket_motion_score
+    n, f = racket_motion_score(None, hit_idx=1)
+    # returns neutral (unknown_score=0.5) split, no error
+    assert n == 0.5 and f == 0.5
