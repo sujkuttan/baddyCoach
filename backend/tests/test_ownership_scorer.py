@@ -135,3 +135,56 @@ def test_racket_motion_score_falls_back_when_none():
     n, f = racket_motion_score(None, hit_idx=1)
     # returns neutral (unknown_score=0.5) split, no error
     assert n == 0.5 and f == 0.5
+
+
+def test_racket_motion_score_pose_fallback_uses_keypoints():
+    """When racket data is absent (racket_head_seq=None) but keypoint sequences
+    are supplied, racket_motion_score must use the pose-derived signal (the
+    pre-feature behavior) instead of returning the neutral (0.5, 0.5) split."""
+    from app.pipeline.shared.ownership_scorer import racket_motion_score
+
+    # near player swings its wrist through the hit frame; far player is static.
+    kps_static = np.array([[0, 0, 1.0]] * 17)  # placeholder per-joint
+    # Build a moving wrist (COCO joint 10) for the near sequence only.
+    def _kps(xy):
+        k = np.zeros((17, 3))
+        k[:, 2] = 0.9
+        k[10, :2] = xy  # wrist
+        return k
+
+    near_seq = [_kps((0, 0)), _kps((20, 0)), _kps((0, 0))]
+    far_seq = [kps_static, kps_static, kps_static]
+
+    n, f = racket_motion_score(
+        None, hit_idx=1,
+        near_kps_list=near_seq, far_kps_list=far_seq,
+        min_confidence=0.5,
+    )
+    # Must NOT be the neutral split, and must favor the moving near player.
+    assert (n, f) != (0.5, 0.5)
+    assert n > f
+
+
+def test_scorer_reads_head_point_and_player_side():
+    """The ownership scorer's racket-head window must read `head_point` /
+    `player_side` (not the wrong `head`/`side` keys) so racket motion proxies
+    through to the sub-scores."""
+    scorer = OwnershipScorer(
+        trajectory_weight=0.0, court_side_weight=0.0, proximity_weight=0.0,
+        motion_weight=1.0, pose_feasibility_weight=0.0,
+        turn_prior_weight=0.0, bst_weight=0.0,
+        calib_near_mean=0.5, calib_near_std=1.0, calib_far_mean=0.5, calib_far_std=1.0,
+    )
+    shuttle_df, players, court = _build_inputs()
+    # Near player has a racket head near the shuttle at the hit frame.
+    racket_detections = [
+        {"frame": 9, "player_side": "near", "head_point": (640.0, 300.0)},
+        {"frame": 10, "player_side": "near", "head_point": (660.0, 310.0)},
+        {"frame": 11, "player_side": "near", "head_point": (700.0, 320.0)},
+    ]
+    res = scorer.score(shuttle_df, None, players, court, frame=10,
+                      prev_owner=None, shot={},
+                      racket_detections=racket_detections)
+    # Racket motion score is non-neutral (racket data was consumed).
+    assert res["motion_far"] != res["motion_near"]
+
