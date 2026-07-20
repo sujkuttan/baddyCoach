@@ -42,6 +42,26 @@ _ZONE_BACK = 0.62
 # Arc / curvature measure
 _HIGH_ARC = 0.020            # std of post-hit shuttle.x around linear fit
 
+# Racket-contact gate (Scope A): when a racket is detected in the clip, a
+# genuine strike should have the racket head close to the shuttle at contact.
+# Distance is the court-normalized min racket-head→shuttle distance computed in
+# extract_clip_features; absent racket defaults to 1.0 (no gate).
+def _racket_contact_ok(feats: dict) -> bool:
+    """True when racket evidence is consistent with an actual strike.
+
+    When no racket is present (frac==0) the gate is disabled. When a racket is
+    present but never comes near the shuttle (distance >= threshold), the clip
+    was not a real contact — callers should fall back to a neutral stroke.
+    """
+    from app.config.settings import settings as _s
+    max_dist = getattr(_s, "racket_contact_max_dist", 0.5)
+    frac = feats.get("racket_present_frac", 0.0)
+    dist = feats.get("racket_contact_distance", 1.0)
+    if frac <= 0.0:
+        return True
+    return dist < max_dist
+
+
 
 def extract_clip_features(clip: dict) -> dict:
     """Extract stroke features from a BST clip dict.
@@ -282,13 +302,13 @@ def classify_overhead(feats: dict) -> str:
     is_front = landing_x > _FRONT_X
     is_high_arc = curvature > _HIGH_ARC
 
-    if is_descend and max_speed > _SMASH_SPEED:
+    if is_descend and max_speed > _SMASH_SPEED and _racket_contact_ok(feats):
         return 'smash'
     if is_descend and is_front and max_speed <= _DROP_SPEED:
         return 'drop'
     if is_high_arc and is_deep:
         return 'clear'
-    if is_descend and max_speed > _SMASH_SPEED * 0.7:
+    if is_descend and max_speed > _SMASH_SPEED * 0.7 and _racket_contact_ok(feats):
         return 'smash'
 
     return 'overhead_unknown'
@@ -325,14 +345,14 @@ def classify_net(feats: dict) -> str:
     is_front = landing_x > _FRONT_X
     is_ascend = outgoing_dy < _ASCEND_THRESH
 
-    if max_speed < _NET_SHOT_SPEED and is_front:
+    if max_speed < _NET_SHOT_SPEED and is_front and _racket_contact_ok(feats):
         return 'net_shot'
     if is_ascend and not is_front:
         return 'net_lift'
     if max_speed > _PUSH_SPEED and abs(outgoing_dy) < _FLAT_THRESH:
         return 'push'
 
-    if max_speed > _NET_SHOT_SPEED and outgoing_dy > _DESCEND_THRESH:
+    if max_speed > _NET_SHOT_SPEED and outgoing_dy > _DESCEND_THRESH and _racket_contact_ok(feats):
         return 'net_kill'
 
     return 'net_unknown'
@@ -348,7 +368,7 @@ def classify_mid_height(feats: dict) -> str:
 
     if is_flat and max_speed > _DRIVE_SPEED:
         return 'drive'
-    if max_speed > _HIGH_INCOMING and outgoing_speed < _BLOCK_SPEED:
+    if max_speed > _HIGH_INCOMING and outgoing_speed < _BLOCK_SPEED and _racket_contact_ok(feats):
         return 'block'
     if is_flat and max_speed > _PUSH_SPEED:
         return 'push'
