@@ -212,7 +212,7 @@ class Settings(BaseSettings):
     bst_min_observed_shuttle_fraction: float = 0.35
     bst_max_raw_shuttle_gap_frames: int = 12  # raised 7->12 (plan Phase-6 override): phone footage has TrackNet dropouts; 12 frames (0.4s) holes are tolerable for BST
     bst_repaired_shuttle_penalty: float = 0.50  # soft score penalty per repaired-shuttle fraction (InpaintNet output: reliable, mild penalty)
-    bst_interpolated_shuttle_penalty: float = 0.80  # soft score penalty per interpolated-shuttle fraction (linear fill: less reliable, heavier penalty)
+    bst_interpolated_shuttle_penalty: float = 0.50  # soft score penalty per interpolated-shuttle fraction (relaxed from 0.80: court-valid footage interpolates reliably in court space)
 
     # ── Batch-size overrides (advanced) ──────────────────────────────
     # When set, these OVERRIDE the auto-detected GPU-VRAM tier in
@@ -225,14 +225,16 @@ class Settings(BaseSettings):
     tracknet_batch_size: int | None = None       # TrackNet chunk size (env TRACKNET_BATCH_SIZE)
     rtmpose_batch_size: int | None = None        # RTMPose chunk size (env RTMPOSE_BATCH_SIZE)
     ml_frame_batch_size: int | None = None       # Colab frame-loop batch (env ML_FRAME_BATCH_SIZE)
-    bst_max_interpolated_shuttle_fraction: float = 0.50  # raised 0.25->0.50: repaired coords now count as present, so the residual linear-interp gate is the only hard shuttle gate
+    bst_max_interpolated_shuttle_fraction: float = 0.65  # raised 0.50->0.65: court-valid footage interpolates reliably in court space
     bst_contact_gap_window: int = 15  # measure max shuttle gap within +-this many frames of the contact frame (shuttle matters most at contact)
     bst_max_court_rejected_shuttle_fraction: float = 0.25
     bst_min_pose_coverage: float = 0.70
     bst_min_keypoint_confidence: float = 0.35
     bst_min_valid_keypoints_fraction: float = 0.5  # fraction of the 17 COCO joints that must be valid per frame/side
     bst_max_bbox_interp_gap: int = 10
-    bst_quality_score_min: float = 0.70
+    bst_quality_score_min: float = 0.55  # relaxed 0.70->0.55 (Spec 3): clips between this and bst_quality_score_soft still get a BST prediction, down-weighted, instead of hard "unknown"
+    bst_quality_score_soft: float = 0.70  # above this = fully trusted; between soft and min = eligible but low_quality_bst (discounted)
+    bst_low_quality_discount: float = 0.8  # confidence multiplier for low_quality_bst clips
     aim_alpha_enabled: bool = True
     aim_alpha_min_quality_score: float = 0.75
     aim_alpha_contact_window: int = 2

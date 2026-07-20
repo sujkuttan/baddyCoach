@@ -134,8 +134,16 @@ def evaluate_bst_clip_quality(provenance: dict) -> dict:
     if score < settings.bst_quality_score_min:
         reasons.append("low_quality_score")
 
+    # Spec 3: hard_reasons always reject. Between bst_quality_score_min and
+    # bst_quality_score_soft the clip is still eligible for a BST prediction
+    # but flagged low_quality (down-weighted in strokes.py) instead of being
+    # dumped to a hard "unknown".
+    soft = not hard_reasons and score >= settings.bst_quality_score_min \
+        and score < settings.bst_quality_score_soft
+
     return {
         "eligible": not hard_reasons and score >= settings.bst_quality_score_min,
+        "soft": soft,
         "score": score,
         "reasons": reasons,
         "observed_shuttle_frames": int(observed.sum()),

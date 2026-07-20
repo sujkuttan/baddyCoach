@@ -854,7 +854,9 @@ class StrokeClassificationStage:
                 "bst_input_eligible": bool(quality["eligible"]),
                 "bst_input_quality_score": float(quality["score"]),
                 "bst_input_quality_reasons": quality["reasons"],
-                "bst_input_route": "bst" if i in eligible_indices else "quality_abstain",
+                "bst_input_route": "bst" if (i in eligible_indices and not quality["soft"])
+                                 else ("low_quality_bst" if (i in eligible_indices and quality["soft"])
+                                       else "quality_abstain"),
                 "bst_input_observed_shuttle_frames": quality["observed_shuttle_frames"],
                 "bst_input_repaired_shuttle_frames": quality["repaired_shuttle_frames"],
                 "bst_input_interpolated_shuttle_frames": quality["interpolated_shuttle_frames"],
@@ -977,6 +979,19 @@ class StrokeClassificationStage:
                 if shot["stroke_type"] != "unknown":
                     shot["bst_input_route"] = "downstream_override"
                     shot["bst_input_override_source"] = "physics"
+
+        # Spec 3: clips admitted on the soft quality tier (between
+        # bst_quality_score_min and bst_quality_score_soft) keep their BST
+        # prediction but are down-weighted so they don't inflate confidence.
+        if settings.bst_low_quality_discount < 1.0:
+            for shot in shots:
+                if shot.get("bst_input_route") == "low_quality_bst":
+                    shot["stroke_source"] = "low_quality_bst"
+                    disc = float(settings.bst_low_quality_discount)
+                    if "stroke_confidence" in shot:
+                        shot["stroke_confidence"] = float(shot["stroke_confidence"]) * disc
+                    if "calibrated_confidence" in shot:
+                        shot["calibrated_confidence"] = float(shot["calibrated_confidence"]) * disc
 
         # Post-classification temporal smoothing: overwrite unknown strokes
         # with the majority type from nearby shots. Determinate predictions

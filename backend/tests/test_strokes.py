@@ -417,6 +417,78 @@ def test_stroke_stage_skips_ineligible_clip_and_persists_quality(monkeypatch, tm
     assert store.get_parquet("debug_bst_input_quality") is not None
 
 
+def test_stroke_stage_soft_quality_tier_keeps_prediction_discounted(monkeypatch, tmp_job_dir):
+    """Spec 3: a clip on the soft quality tier (score between min and soft) is
+    still admitted for a BST prediction but tagged low_quality_bst and its
+    confidence is down-weighted rather than dumped to a hard 'unknown'."""
+    from app.pipeline.shared import models
+
+    classifier = _QualityGateClassifier()
+    monkeypatch.setattr(models, "get_bst", lambda: classifier)
+    monkeypatch.setattr("app.pipeline.strokes.settings.fusion_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.hierarchical_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.confusion_pair_enabled", False)
+    monkeypatch.setattr("app.pipeline.strokes.settings.physics_gate_enabled", False)
+
+    import app.pipeline.strokes as strokes_mod
+    from app.pipeline.shared.bst_input_quality import evaluate_bst_clip_quality
+
+    _calls = {"n": 0}
+
+    def _fake_quality(provenance):
+        base = evaluate_bst_clip_quality(provenance)
+        # Force the second clip (frame-30 hit) into the soft tier.
+        if _calls["n"] == 1:
+            base = dict(base)
+            base["eligible"] = True
+            base["soft"] = True
+            base["score"] = 0.62
+        _calls["n"] += 1
+        return base
+
+    monkeypatch.setattr(strokes_mod, "evaluate_bst_clip_quality", _fake_quality)
+
+    store = ArtifactStore(tmp_job_dir)
+    store.set_parquet("hits", pd.DataFrame({"frame": [0, 30], "confidence": [0.9, 0.9]}))
+    store.set_parquet("shuttle", pd.DataFrame({
+        "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
+        "confidence": [0.9] * 50, "was_interpolated": [False] * 50,
+        "court_rejected": [False] * 50,
+    }))
+    store.set_parquet("shuttle_raw", pd.DataFrame({
+        "frame": list(range(50)), "x": [100.0] * 50, "y": [100.0] * 50,
+        "confidence": [0.9] * 50, "was_repaired": [False] * 50,
+    }))
+    keypoints = _varied_keypoints()
+    store.set_parquet("pose", pd.DataFrame([
+        {"frame": f, "player_id": p, "keypoints": keypoints.tolist()}
+        for f in range(50) for p in ("player_1", "player_2")
+    ]))
+    store.set("court", {
+        "court_length": 13.4, "court_width": 6.1,
+        "valid": True, "homography": np.eye(3).tolist(),
+    })
+    store.set("players", {"players": [
+        {"id": "player_1", "side": "near", "detections": [
+            {"frame": f, "bbox": [0, 0, 100, 100]} for f in range(50)]},
+        {"id": "player_2", "side": "far", "detections": [
+            {"frame": f, "bbox": [200, 0, 300, 100]} for f in range(50)]},
+    ]})
+
+    result = StrokeClassificationStage().run(store, StageConfig(debug_level=1))
+    shots = store.get_parquet("shots").sort_values("frame").reset_index(drop=True)
+
+    assert result.status == "success"
+    assert shots.loc[0, "bst_input_route"] == "bst"
+    # Soft-tier clip keeps its prediction (not 'unknown') and is tagged.
+    assert shots.loc[1, "bst_input_route"] == "low_quality_bst"
+    assert shots.loc[1, "stroke_source"] == "low_quality_bst"
+    assert shots.loc[1, "stroke_type"] != "unknown"
+    # Confidence discounted by bst_low_quality_discount (0.8).
+    raw = 0.9  # _QualityGateClassifier returns 0.9
+    assert shots.loc[1, "stroke_confidence"] == pytest.approx(raw * 0.8, abs=1e-4)
+
+
 def test_build_clip_masks_low_confidence_joints_in_hip_centered_mode(monkeypatch):
     from app.pipeline.strokes import _build_clip
 

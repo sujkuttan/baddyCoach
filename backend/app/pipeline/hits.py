@@ -76,6 +76,30 @@ class GlobalHitCandidateDetector:
         self.threshold = threshold
         self.min_gap_frames = min_gap_frames
 
+    @staticmethod
+    def _to_court(shuttle_track: pd.DataFrame,
+                  homography: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Project pixel (x, y) columns of ``shuttle_track`` to court metres.
+
+        Returns (court_x, court_y) with the same length as the input, leaving
+        NaN where either pixel coord is NaN (so gaps are preserved).
+        """
+        px = shuttle_track["x"].values.astype(np.float64)
+        py = shuttle_track["y"].values.astype(np.float64)
+        H = np.asarray(homography, dtype=np.float64)
+        cx = np.full(len(px), np.nan, dtype=np.float64)
+        cy = np.full(len(py), np.nan, dtype=np.float64)
+        valid = np.isfinite(px) & np.isfinite(py)
+        if not valid.any():
+            return cx, cy
+        pts = np.stack([px[valid], py[valid], np.ones(valid.sum())], axis=1)
+        proj = (H @ pts.T).T
+        w = proj[:, 2]
+        nz = w != 0
+        cx[valid] = np.where(nz, proj[:, 0] / np.where(nz, w, 1.0), np.nan)
+        cy[valid] = np.where(nz, proj[:, 1] / np.where(nz, w, 1.0), np.nan)
+        return cx, cy
+
     @classmethod
     def from_settings(cls) -> "GlobalHitCandidateDetector":
         return cls(
@@ -88,7 +112,8 @@ class GlobalHitCandidateDetector:
             min_gap_frames=getattr(settings, 'hit_min_gap_frames', 6),
         )
 
-    def detect(self, shuttle_track: pd.DataFrame) -> list[dict]:
+    def detect(self, shuttle_track: pd.DataFrame,
+                homography: np.ndarray | None = None) -> list[dict]:
         """Detect hit candidates from cleaned shuttle trajectory.
 
         Parameters
@@ -97,6 +122,13 @@ class GlobalHitCandidateDetector:
             Must contain columns ``x``, ``y`` (pixel coords, NaN for missing
             frames).  May contain ``was_interpolated``; interpolated regions
             are down-weighted via the visibility score.
+        homography : np.ndarray | None
+            Optional 3x3 image->court homography.  When provided, the
+            four-signal fusion (direction change, speed delta, curvature) is
+            computed in court metres instead of pixels.  This removes the
+            perspective-distortion bias that shifts the direction-reversal
+            peak away from the true contact frame on phone footage.  Pixel-space
+            fallback is used when None.
 
         Returns
         -------
@@ -105,8 +137,16 @@ class GlobalHitCandidateDetector:
             ``speed_delta``, ``curvature`` (raw sub-scores before
             weighting) and ``visibility_transition``.
         """
-        x = shuttle_track["x"].values.astype(np.float64)
-        y = shuttle_track["y"].values.astype(np.float64)
+        # When a valid homography is available, project to court space for the
+        # velocity/angle signals so perspective distortion does not bias the
+        # contact-frame localization (Spec 2).
+        if homography is not None and not np.allclose(np.asarray(homography), np.eye(3)):
+            cx, cy = self._to_court(shuttle_track, homography)
+            x = cx
+            y = cy
+        else:
+            x = shuttle_track["x"].values.astype(np.float64)
+            y = shuttle_track["y"].values.astype(np.float64)
         n = len(x)
         w = self.window
 
@@ -763,7 +803,16 @@ class HitFrameLocalizationStage:
             )
 
         # ── Phase 1: shuttle trajectory detector ──
-        shuttle_candidates = detector.detect(shuttle_df)
+        # Use court-space fusion when a valid homography is available, so
+        # perspective distortion does not bias the contact-frame peak (Spec 2).
+        court = artifacts.get("court") or {}
+        court_valid = bool(court.get("valid", False)) if isinstance(court, dict) else False
+        hit_homography = (
+            np.array(court["homography"], dtype=np.float64)
+            if (court_valid and court.get("homography") is not None)
+            else None
+        )
+        shuttle_candidates = detector.detect(shuttle_df, homography=hit_homography)
 
         # ── Merge: fusion candidates get priority, shuttle fills gaps ──
         candidates = list(fusion_candidates)

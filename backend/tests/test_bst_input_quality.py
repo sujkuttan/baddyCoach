@@ -178,15 +178,18 @@ def test_quality_scores_and_rejects_repaired_or_interpolated_shuttle_heavily():
     ))
 
     # Repaired coords now count as present, so the clip is fully present and
-    # has no shuttle gap — it is rejected only by the soft quality-score floor.
+    # has no shuttle gap. With the relaxed penalties (Spec 3: interpolated 0.50,
+    # repaired 0.50) the score is 1 - 0.15 - 0.15 = 0.70, which now lands in the
+    # eligible/soft tier instead of being hard-rejected (the old gate dropped it
+    # at 0.70 with the stricter 0.70 floor).
     assert result["repaired_shuttle_fraction"] == 0.3
     assert result["interpolated_shuttle_fraction"] == 0.3
     assert result["present_shuttle_fraction"] == 1.0
     assert result["max_shuttle_gap_frames"] == 0
-    assert result["eligible"] is False
+    assert result["eligible"] is True
     assert "too_many_interpolated_shuttle" not in result["reasons"]
     assert "long_shuttle_gap" not in result["reasons"]
-    assert "low_quality_score" in result["reasons"]
+    assert "low_quality_score" not in result["reasons"]
 
 
 def test_quality_counts_repaired_as_present_and_admits_clip():
@@ -289,3 +292,41 @@ def test_aim_alpha_quality_does_not_flag_repaired_contact_as_court_instability()
 
     assert result["reliable"] is True
     assert "contact_shuttle_unstable" not in result["reasons"]
+
+
+def test_quality_soft_tier_is_eligible_but_flagged(monkeypatch):
+    """Spec 3: a clip whose score lands between bst_quality_score_min and
+    bst_quality_score_soft is still eligible for a BST prediction (not dumped
+    to a hard 'unknown') but flagged soft so it can be down-weighted."""
+    from app.config import settings as settings_mod
+
+    # observed_rejected (soft 0.20) + long_bbox_gap (soft 0.15) -> score 0.65,
+    # which sits in [bst_quality_score_min, bst_quality_score_soft).
+    rejected = [False] * 20
+    rejected[3] = True  # one observed court-rejected point (soft penalty only)
+    interp = [False] * 20
+    interp[4] = interp[5] = True  # 2/20 interpolated -> 0.10 * 0.50 penalty
+    result = evaluate_bst_clip_quality(_provenance(
+        shuttle_court_rejected=rejected,
+        shuttle_interpolated=interp,
+        joint_abs_mean=1.5,  # extreme_joint_mean soft penalty 0.10
+    ))
+
+    assert result["eligible"] is True
+    assert result["soft"] is True
+    assert "low_quality_score" not in result["reasons"]
+    assert result["score"] < settings_mod.settings.bst_quality_score_soft
+    assert result["score"] >= settings_mod.settings.bst_quality_score_min
+
+
+def test_quality_below_min_still_hard_abstains(monkeypatch):
+    """A clip below bst_quality_score_min is still hard-rejected (eligible
+    False, not soft)."""
+    from app.config import settings as settings_mod
+
+    degen = evaluate_bst_clip_quality(_provenance(
+        joint_degenerate_fraction=0.9,
+    ))
+    assert degen["eligible"] is False
+    assert degen["soft"] is False
+    assert settings_mod.settings.bst_quality_score_min < 1.0
