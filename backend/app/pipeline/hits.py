@@ -889,6 +889,7 @@ class HitFrameLocalizationStage:
 
         # ── Phase 2: pose-based contact refinement (unchanged) ──
         refine_window = getattr(settings, "hit_refine_window", 4)
+        racket_blend = getattr(settings, "hit_refine_racket_blend", 0.3)
         refined_count = 0
         if pose_df is not None and len(pose_df) > 0 and refine_window > 0:
             for c in candidates:
@@ -904,7 +905,7 @@ class HitFrameLocalizationStage:
                         window=refine_window,
                         min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
                     )
-                    final_frame = int(round(0.7 * refined + 0.3 * racket_refined))
+                    final_frame = int(round((1 - racket_blend) * refined + racket_blend * racket_refined))
                 else:
                     final_frame = refined
                 if final_frame != orig_frame:
@@ -950,7 +951,7 @@ class HitFrameLocalizationStage:
                         window=refine_window,
                         min_shuttle_conf=getattr(settings, "shuttle_min_conf", 0.30),
                     )
-                    better = int(round(0.7 * better + 0.3 * racket_better))
+                    better = int(round((1 - racket_blend) * better + racket_blend * racket_better))
                 if better != c["frame"]:
                     c["_sanity_offset"] = better - c["frame"]
                     c["frame"] = better

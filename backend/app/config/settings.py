@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     hit_candidate_threshold: float = 0.50  # minimum event score to accept a candidate
     hit_min_gap_frames: int = 6          # non-maximum suppression window
     hit_refine_window: int = 4           # ±frames for pose-based contact refinement.
+    hit_refine_racket_blend: float = 0.3  # racket tiebreaker weight in wrist/racket blend.
 
     # Wrist-speed hit detector — pose-only fallback (from Haimantika/badminton-coach)
     wrist_hit_enabled: bool = True
