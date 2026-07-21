@@ -44,7 +44,7 @@ class RacketTracker:
         Only detections whose class id == settings.racket_class_id are kept,
         so multi-class YOLOv8 exports (person/racket/shuttle) are safe.
         """
-        results = self.model(frames, conf=self.conf, device=self.device, verbose=False)
+        results = self.model(frames, conf=self.conf, device=self.device, verbose=False, stream=True)
         out: List[dict] = []
         for fi, res in enumerate(results):
             boxes = res.boxes
