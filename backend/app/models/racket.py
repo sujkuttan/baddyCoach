@@ -41,6 +41,8 @@ class RacketTracker:
         frames: list of BGR images (one per frame index 0..N-1)
         player_bboxes: {frame: {side: bbox_tuple}}
         Returns list of {"frame","player_side","bbox","conf","head_point"}.
+        Only detections whose class id == settings.racket_class_id are kept,
+        so multi-class YOLOv8 exports (person/racket/shuttle) are safe.
         """
         results = self.model(frames, conf=self.conf, device=self.device, verbose=False)
         out: List[dict] = []
@@ -49,6 +51,9 @@ class RacketTracker:
             if boxes is None or len(boxes) == 0:
                 continue
             for box in boxes:
+                cls = int(box.cls[0].item()) if box.cls is not None else 0
+                if cls != settings.racket_class_id:
+                    continue
                 x1, y1, x2, y2 = [float(v) for v in box.xyxy[0].tolist()]
                 conf = float(box.conf[0].item()) if box.conf is not None else 1.0
                 bbox = (x1, y1, x2, y2)

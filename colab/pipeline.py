@@ -1609,6 +1609,10 @@ if __name__ == "__main__":
                         help="Weight of racket-distance cue vs motion cue (default: 0.4)")
     parser.add_argument("--racket-model-path", default="ckpts/racketdb_yolov8.pt",
                         help="Path to racket YOLOv8 weights (default: ckpts/racketdb_yolov8.pt)")
+    parser.add_argument("--racket-class-id", type=int, default=0,
+                        help="Index of the 'racket' class in the model's data.yaml names "
+                             "(default: 0). Set if your trained model has multiple classes "
+                             "and 'racket' is not the first class.")
     args = parser.parse_args()
 
     if not Path(args.video).exists():
@@ -1682,8 +1686,9 @@ if __name__ == "__main__":
         settings.racket_motion_weight = args.racket_motion_weight
         settings.racket_dist_weight = args.racket_dist_weight
         settings.racket_model_path = args.racket_model_path
+        settings.racket_class_id = args.racket_class_id
         print(f"Racket detection enabled: model={args.racket_model_path}, "
-              f"min_conf={args.racket_min_conf}")
+              f"min_conf={args.racket_min_conf}, class_id={args.racket_class_id}")
 
     run_pipeline(args.video, args.output, args.device, pose_model=args.pose_model,
                  sample_rate=args.sample_rate, court_corners=court_corners,

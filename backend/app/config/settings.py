@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # ── Racket detection (RacketDB YOLOv8) ─────────────────────────────
     racket_enabled: bool = True
     racket_model_path: str = "ckpts/racketdb_yolov8.pt"
+    racket_class_id: int = 0  # index of the 'racket' class in the model's data.yaml names
     racket_min_conf: float = 0.4
     racket_proximity_blend: float = 0.5
     racket_motion_weight: float = 0.6

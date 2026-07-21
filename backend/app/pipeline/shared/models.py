@@ -73,7 +73,12 @@ MODEL_REGISTRY: dict[str, tuple[Path, str | None, str | None]] = {
     "racketdb": (
         Path("ckpts/racketdb_yolov8.pt"),
         None,
-        "https://huggingface.co/muhabdulhaq/racketdb/resolve/main/racketdb_yolov8.pt",
+        None,  # Weights are NOT auto-downloadable: the pre-trained repo
+               # (huggingface.co/muhabdulhaq/racketdb) is private (401).
+               # Train your own from the PUBLIC dataset
+               # (huggingface.co/datasets/muhabdulhaq/racketdb, YOLOv8 format,
+               # mAP50~0.78) and place the .pt at ckpts/racketdb_yolov8.pt,
+               # or pass --racket-model-path.
     ),
 }
 
