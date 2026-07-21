@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     racket_motion_weight: float = 0.6
     racket_dist_weight: float = 0.4
     racket_head_margin: float = 0.1
+    racket_chunk_size: int = 32  # frames per YOLO call to avoid GPU OOM
     # Rule-based classifier: max racket-head→shuttle distance (normalized court
     # units) allowed to treat a contact as a genuine racket strike.
     racket_contact_max_dist: float = 0.5
