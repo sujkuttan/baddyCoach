@@ -1145,6 +1145,8 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
         # ({frame: {side: bbox}}), reusing the already-stitched players_data so we
         # don't re-run YOLO. Frames are re-read at the same sample interval used by
         # the main ML loop, indexed by sample ordinal (matching players_data frames).
+        print(f"  [debug] racket_enabled={settings.racket_enabled}, "
+              f"model_path={settings.racket_model_path}")
         if settings.racket_enabled:
             try:
                 from app.pipeline.shared.models import get_racket
