@@ -1142,68 +1142,82 @@ def run_pipeline(video_path: str, output_path: str, device: str = "cuda", pose_m
 
         # ── Racket detections (Scope A feature channel) ──
         # Build the player-bbox-by-frame map that RacketTracker._associate expects
-        # ({frame: {side: bbox}}), reusing the already-stitched players_data so we
-        # don't re-run YOLO. Frames are re-read at the same sample interval used by
-        # the main ML loop, indexed by sample ordinal (matching players_data frames).
-        print(f"  [debug] racket_enabled={settings.racket_enabled}, "
-              f"model_path={settings.racket_model_path}")
+        # ({frame: {side: bbox}}) from already-stitched players_data. Frames are
+        # re-read and processed in streaming chunks (settings.racket_chunk_size) to
+        # avoid building a ~25GB in-memory frame list that causes OOM.
         if settings.racket_enabled:
             try:
                 from app.pipeline.shared.models import get_racket
 
                 racket_tr = get_racket()
                 if racket_tr is not None:
-                    player_bboxes_by_frame = {}
+                    # Build global-frame -> player-side bbox lookup from stitched tracks
+                    player_bboxes_global = {}
                     for p in players_data.get("players", []):
                         side = p.get("side", "near")
                         for det in p.get("detections", []):
-                            player_bboxes_by_frame.setdefault(det["frame"], {})[side] = det["bbox"]
+                            player_bboxes_global.setdefault(det["frame"], {})[side] = det["bbox"]
 
-                    frames_for_racket = []
-                    # Frame-space contract: RacketTracker.detect indexes its
-                    # output by the *position* of each frame in `frames_for_racket`
-                    # (sample ordinal). But pose_df / shuttle_df / players_data use
-                    # ABSOLUTE frame numbers (`global_idx`). To keep racket
-                    # detections joinable against those artifacts, we record the
-                    # absolute frame for every sampled frame and rewrite each
-                    # detection's `frame` field to the absolute number afterward.
-                    frame_global_idx = []
-                    if player_bboxes_by_frame:
+                    if not player_bboxes_global:
+                        print("  Racket detection skipped: no player bboxes")
+                        store.set("racket_detections", [])
+                    else:
+                        racket_detections = []
+                        chunk_size = settings.racket_chunk_size
                         cap_r = cv2.VideoCapture(str(video_path))
                         f_idx = 0
-                        s_idx = 0
+                        frames_chunk = []
+                        global_idx_chunk = []
                         while True:
                             ret, frame = cap_r.read()
                             if not ret:
                                 break
                             if f_idx % sample_interval == 0:
-                                frames_for_racket.append(frame)
-                                frame_global_idx.append(f_idx)
-                                s_idx += 1
+                                frames_chunk.append(frame)
+                                global_idx_chunk.append(f_idx)
+                                if len(frames_chunk) >= chunk_size:
+                                    # Build per-chunk player_bboxes keyed by LOCAL
+                                    # ordinal so RacketTracker._associate lookups
+                                    # resolve correctly within this chunk.
+                                    local_bboxes = {}
+                                    for lo, gf in enumerate(global_idx_chunk):
+                                        if gf in player_bboxes_global:
+                                            local_bboxes[lo] = player_bboxes_global[gf]
+                                    chunk_dets = racket_tr.detect(frames_chunk, local_bboxes)
+                                    for rd in chunk_dets:
+                                        lo = int(rd.get("frame", -1))
+                                        if 0 <= lo < len(global_idx_chunk):
+                                            rd["frame"] = global_idx_chunk[lo]
+                                    racket_detections.extend(chunk_dets)
+                                    frames_chunk = []
+                                    global_idx_chunk = []
+                                    gc.collect()
+                                    if device == "cuda":
+                                        import torch; torch.cuda.empty_cache()
                             f_idx += 1
                         cap_r.release()
+                        # Last partial chunk
+                        if frames_chunk:
+                            local_bboxes = {}
+                            for lo, gf in enumerate(global_idx_chunk):
+                                if gf in player_bboxes_global:
+                                    local_bboxes[lo] = player_bboxes_global[gf]
+                            chunk_dets = racket_tr.detect(frames_chunk, local_bboxes)
+                            for rd in chunk_dets:
+                                lo = int(rd.get("frame", -1))
+                                if 0 <= lo < len(global_idx_chunk):
+                                    rd["frame"] = global_idx_chunk[lo]
+                            racket_detections.extend(chunk_dets)
 
-                    max_frame = max(player_bboxes_by_frame.keys(), default=-1)
-                    # frames_for_racket is indexed by sample ordinal; it must cover
-                    # every frame key present in player_bboxes_by_frame.
-                    if frames_for_racket and len(frames_for_racket) > max_frame:
-                        racket_detections = racket_tr.detect(frames_for_racket, player_bboxes_by_frame)
-                        # Rewrite sample-ordinal frame -> absolute frame number so
-                        # downstream consumers (pose/shuttle join) match correctly.
-                        for rd in racket_detections:
-                            oi = int(rd.get("frame", -1))
-                            if 0 <= oi < len(frame_global_idx):
-                                rd["frame"] = frame_global_idx[oi]
                         store.set("racket_detections", racket_detections)
                         print(f"  Racket detections: {len(racket_detections)}")
-                    else:
-                        print("  Racket detection skipped: frame/bbox index mismatch")
-                        store.set("racket_detections", [])
                 else:
                     print("  Racket model unavailable (weights missing or disabled) — skipping")
                     store.set("racket_detections", [])
             except Exception as e:
+                import traceback
                 print(f"  Racket detection failed (non-fatal): {e}")
+                traceback.print_exc()
                 store.set("racket_detections", [])
 
         shots_result = StrokeClassificationStage().run(store, config)
