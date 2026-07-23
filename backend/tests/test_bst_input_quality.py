@@ -130,7 +130,7 @@ def test_quality_does_not_hard_reject_repaired_court_rejected_points():
     )
 
     assert result["eligible"] is True
-    assert result["score"] == pytest.approx(0.9)
+    assert result["score"] == pytest.approx(0.94)
     assert result["reasons"] == []
 
 
@@ -205,10 +205,10 @@ def test_quality_counts_repaired_as_present_and_admits_clip():
     assert result["max_shuttle_gap_frames"] == 0
     assert "low_observed_shuttle" not in result["reasons"]
     assert "long_shuttle_gap" not in result["reasons"]
-    # Mild repaired penalty (0.50 * 1.0) leaves score 0.50 < 0.70 -> rejected by floor.
-    assert result["score"] == pytest.approx(0.5)
-    assert result["eligible"] is False
-    assert "low_quality_score" in result["reasons"]
+    # Mild repaired penalty (0.30 * 1.0) leaves score 0.70 (at soft threshold).
+    assert result["score"] == pytest.approx(0.7)
+    assert result["eligible"] is True
+    assert "low_quality_score" not in result["reasons"]
 
 
 def test_quality_contact_window_limits_shuttle_gap_measurement():

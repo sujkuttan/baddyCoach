@@ -230,7 +230,7 @@ class Settings(BaseSettings):
     bst_min_clip_video_frames: int = 15
     bst_min_observed_shuttle_fraction: float = 0.35
     bst_max_raw_shuttle_gap_frames: int = 12  # raised 7->12 (plan Phase-6 override): phone footage has TrackNet dropouts; 12 frames (0.4s) holes are tolerable for BST
-    bst_repaired_shuttle_penalty: float = 0.50  # soft score penalty per repaired-shuttle fraction (InpaintNet output: reliable, mild penalty)
+    bst_repaired_shuttle_penalty: float = 0.30  # soft score penalty per repaired-shuttle fraction (InpaintNet output: reliable, mild penalty)
     bst_interpolated_shuttle_penalty: float = 0.50  # soft score penalty per interpolated-shuttle fraction (relaxed from 0.80: court-valid footage interpolates reliably in court space)
 
     # ── Batch-size overrides (advanced) ──────────────────────────────

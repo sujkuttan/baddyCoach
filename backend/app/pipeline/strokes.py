@@ -514,10 +514,11 @@ def _prepare_bst_clip_for_hit(
 
         clip_frames = list(range(start_frame, end_frame))
         original_n_frames = len(clip_frames)
+        target_len = max(classifier.seq_len, original_n_frames)
         clip = _build_clip(
             clip_frames, shuttle_df, pose_df,
             vid_w, vid_h, court_length, court_width,
-            seq_len=original_n_frames,
+            seq_len=target_len,
             player_sides=player_sides, player_detections=player_list,
             homography=homography,
             original_len=original_n_frames,
@@ -527,17 +528,7 @@ def _prepare_bst_clip_for_hit(
             alpha_probe_offset=alpha_probe_offset,
             racket_detections=racket_detections,
         )
-        if original_n_frames != classifier.seq_len:
-            clip['JnB'] = _temporal_resample(clip['JnB'], classifier.seq_len)
-            clip['shuttle'] = _temporal_resample(clip['shuttle'], classifier.seq_len, zero_is_missing=True)
-            clip['pos'] = _temporal_resample(clip['pos'], classifier.seq_len)
-            # After resampling, the real motion is spread across ALL seq_len
-            # frames — so the whole sequence is valid. Setting video_len to the
-            # pre-resample length would mask out (1 - orig/seq_len) of the clip,
-            # dropping the (now-centered) hit outside the attended window.
-            clip['video_len'] = classifier.seq_len
-        else:
-            clip['video_len'] = original_n_frames
+        clip['video_len'] = min(original_n_frames, target_len)
         return clip, clip_frames
 
     start_frame = anchor_frame
