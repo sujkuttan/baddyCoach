@@ -797,6 +797,24 @@ class BSTInputValidator:
             r.n_passed += 1
         return r
 
+    # ── Suppressed warning patterns ──────────────────────────────────
+    # These are self-identified as expected or transient by the validator.
+    # The first group are anatomical checks that explicitly say they're
+    # NOT keypoint-order defects (raised-arm athletic poses).
+    # The second is midpoint clip shuttle extremes — expected for clears/lifts.
+    # The third is the per-clip missing-joints diagnostic (no longer affects normalization).
+
+    _SUPPRESSED_WARNINGS = [
+        "Expected for raised-arm / lunge athletic poses",
+        "Likely transient pose-estimation noise (not a keypoint-order defect)",
+        "shuttle y is at trajectory extreme",
+        "partially missing joints",
+    ]
+
+    @staticmethod
+    def _is_suppressed_warning(msg: str) -> bool:
+        return any(p in msg for p in BSTInputValidator._SUPPRESSED_WARNINGS)
+
     # ── Internal helpers ─────────────────────────────────────────────
 
     def _log_and_maybe_raise(self, result: ValidationResult):
@@ -806,6 +824,9 @@ class BSTInputValidator:
         for msg in result.errors:
             logger.error("BST VALIDATION FAIL: %s", msg)
         for msg in result.warnings:
+            if self._is_suppressed_warning(msg):
+                logger.debug("BST VALIDATION (suppressed): %s", msg)
+                continue
             logger.warning("BST VALIDATION: %s", msg)
 
         if result.n_errors > 0 and self.level == "error":
